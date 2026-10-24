@@ -154,7 +154,7 @@
 
 (defmacro with-atomic (&body body)
   "BODY without preemption, and, once there are parallel threads, alone."
-  `(let ((self *self*))
+  `(let ((self (progn (when *future-detached* (future-block)) *self*)))
      (incf (rthread-atomic self))
      (unwind-protect (if *parallel-active*
 			 (sb-thread:with-recursive-lock (*atomic-lock*) ,@body)
@@ -162,14 +162,17 @@
        (decf (rthread-atomic self)))))
 
 (defnative "unsafe-start-atomic" () (:instance "#%unsafe" :leaf t)
+  (when *future-detached* (future-block))
   (incf (rthread-atomic *self*)) *void*)
 (defnative "unsafe-end-atomic" () (:instance "#%unsafe" :leaf t)
   (when (plusp (rthread-atomic *self*)) (decf (rthread-atomic *self*))) *void*)
 (defnative "unsafe-start-breakable-atomic" () (:instance "#%unsafe" :leaf t)
+  (when *future-detached* (future-block))
   (incf (rthread-atomic *self*)) *void*)
 (defnative "unsafe-end-breakable-atomic" () (:instance "#%unsafe" :leaf t)
   (when (plusp (rthread-atomic *self*)) (decf (rthread-atomic *self*))) *void*)
 (defnative "unsafe-start-uninterruptible" () (:instance "#%unsafe" :leaf t)
+  (when *future-detached* (future-block))
   (incf (rthread-atomic *self*)) *void*)
 (defnative "unsafe-end-uninterruptible" () (:instance "#%unsafe" :leaf t)
   (when (plusp (rthread-atomic *self*)) (decf (rthread-atomic *self*))) *void*)
@@ -488,6 +491,9 @@ ready one.  True if it's complete."
 
 (defun reschedule (self)
   "SELF has made itself :runnable or :blocked: run others until it's chosen."
+  (when *future-detached*
+    (future-block)
+    (setq self *self*))
   (when *parallel-p*
     ;; a parallel thread that needs the scheduler becomes an ordinary thread:
     ;; it waits for the baton as a new thread does, the holder picking it
@@ -642,6 +648,7 @@ the custodian's shutdown.  Raises if C is shut down."
 	       (format nil "~A: the custodian has been shut down~%  custodian: #<custodian>" who))))
 
 (defun create-thread (who thunk &optional suspend-to-kill pool)
+  (when *future-detached* (future-block))
   (let ((c (funcall *current-custodian*)))
     (check-custodian-live who c)
     (ensure-scheduler)
@@ -962,6 +969,7 @@ thread is the root's)."
 
 (defun do-sync (who evts timeout enable-break)
   "sync on EVTS (a list), with TIMEOUT (#f, seconds, or a thunk)."
+  (when *future-detached* (future-block))
   (check-sync-timeout who timeout)
   ;; a thunk as the timeout: poll once, and call it if nothing is ready
   (let* ((poll (or (and (realp timeout) (zerop timeout)) (functionp timeout)))
@@ -1538,3 +1546,183 @@ keeping their arities.  Idempotent."
 	   *natives*))
 
 (protect-natives)
+
+;;; ------------------------------------------------------------------
+;;; Futures (racket/future), as Racket CS's: a future's thunk runs on a
+;;; worker of an lparallel kernel (one per processor), in parallel with
+;;; the Racket threads, until it does something future-unsafe (atomic
+;;; mode, a port, the scheduler, raise: see *FUTURE-DETACHED*).  It then
+;;; blocks until it is touched, and goes on in the touching thread: the
+;;; worker takes the toucher's identity, the toucher waiting for it.
+;;; touch of a future no worker has started runs it in the toucher, as
+;;; Racket's does.  An exception the future's own handlers don't take is
+;;; raised by touch.
+;;;
+;;; States: :pending (made), :running (on a worker), :inline (run by its
+;;; toucher), :blocked (waiting to be touched), :resumed (going on for
+;;; its toucher), :done.
+
+(defstruct (rfuture (:constructor make-rfuture (thunk creator specials marks)))
+  thunk creator specials marks
+  (state :pending)
+  (toucher nil)
+  (outcome nil)				; (:values . values) or (:raise v)
+  (lock (sb-thread:make-mutex :name "racket future"))
+  (cv (sb-thread:make-waitqueue)))
+
+(defmethod print-object ((f rfuture) stream) (write-string "#<future>" stream))
+
+(defvar *future-kernel* nil "The lparallel kernel futures run on, once one is made.")
+(defvar *future-kernel-lock* (sb-thread:make-mutex :name "racket future kernel"))
+
+(defun future-kernel ()
+  (or *future-kernel*
+      (sb-thread:with-mutex (*future-kernel-lock*)
+	(or *future-kernel*
+	    (setq *future-kernel* (lparallel:make-kernel (processor-count) :name "racket futures"))))))
+
+(defun timed-wait (lock cv test seconds)
+  "Wait on CV up to SECONDS while TEST, under LOCK, holds.  Not WITH-MUTEX:
+a CONDITION-WAIT that times out returns without the mutex."
+  (sb-sys:without-interrupts
+    (sb-thread:grab-mutex lock)
+    (if (funcall test)
+	(when (sb-thread:condition-wait cv lock :timeout seconds)
+	  (sb-thread:release-mutex lock))
+	(sb-thread:release-mutex lock))))
+
+(defun future-block ()
+  "A future-unsafe operation in a future on its worker: wait to be
+touched, then go on as the toucher's thread (Racket CS's future-block)."
+  (let ((f *future*))
+    (sb-thread:with-mutex ((rfuture-lock f))
+      (setf (rfuture-state f) :blocked)
+      (sb-thread:condition-broadcast (rfuture-cv f))
+      (loop until (eq (rfuture-state f) :resumed)
+	    do (sb-thread:condition-wait (rfuture-cv f) (rfuture-lock f))))
+    (setq *self* (rfuture-toucher f) *future-detached* nil)))
+
+(defun run-future (f detached)
+  "F's thunk, in the parameterization it was made in, its continuation
+delimited: its outcome, (:values . values) or (:raise v)."
+  (flet ((body ()
+	   (multiple-value-call
+	       (lambda (&rest results)
+		 (if (and results (consp (car results)) (eq (caar results) :values) (null (cdr results)))
+		     (car results)
+		     (cons :values results)))
+	     (with-racket-errors
+	       (qsx::call-with-continuation-base
+		(lambda ()
+		  (call-with-continuation-prompt
+		   (lambda () (cons :values (multiple-value-list (funcall (rfuture-thunk f)))))
+		   *default-prompt-tag* nil)))))))
+    (progv *thread-specials* (rfuture-specials f)
+      (let ((*future* f) (*future-detached* detached)
+	    (qs-r6rs::*marks* (rfuture-marks f)))
+	(catch 'future-raise
+	  (if detached
+	      (let ((*self* (rfuture-creator f)) (*in-sched* nil) (*uncaught* nil) (*parallel-p* nil))
+		(qs:disable-float-traps)
+		(qsx::with-thread-state (body)))
+	      (body)))))))
+
+(defun finish-future (f outcome)
+  (sb-thread:with-mutex ((rfuture-lock f))
+    (setf (rfuture-outcome f) outcome (rfuture-state f) :done (rfuture-thunk f) nil)
+    (sb-thread:condition-broadcast (rfuture-cv f))))
+
+(defun claim-future (f state)
+  "Whether F was :pending, and is now STATE."
+  (sb-thread:with-mutex ((rfuture-lock f))
+    (and (eq (rfuture-state f) :pending) (progn (setf (rfuture-state f) state) t))))
+
+(defun make-future (thunk start)
+  (let ((f (make-rfuture thunk *self* (mapcar #'symbol-value *thread-specials*)
+			 (list (list* -1 *parameterization-key* (current-parameterization))))))
+    (when start
+      (let ((lparallel:*kernel* (future-kernel)))
+	(lparallel:future
+	  (when (claim-future f :running)
+	    (finish-future f (run-future f t))))))
+    f))
+
+(defun touch-future (f)
+  (when (and *future-detached* (not (eq (rfuture-state f) :done)))
+    ;; a future touching an unfinished one: it needs a thread to wait in
+    (future-block))
+  (loop
+    (let ((action
+	    (sb-thread:with-mutex ((rfuture-lock f))
+	      (case (rfuture-state f)
+		(:done :done)
+		(:pending (setf (rfuture-state f) :inline) :inline)
+		(:blocked (setf (rfuture-toucher f) *self* (rfuture-state f) :resumed)
+		 (sb-thread:condition-broadcast (rfuture-cv f))
+		 ;; it is this thread now: wait, off the scheduler, for it to end
+		 (loop until (eq (rfuture-state f) :done)
+		       do (sb-thread:condition-wait (rfuture-cv f) (rfuture-lock f)))
+		 :done)
+		(:running :running)
+		(t (sb-thread:condition-wait (rfuture-cv f) (rfuture-lock f)) :wait)))))
+      (case action
+	(:done (return))
+	(:inline (finish-future f (run-future f nil)) (return))
+	;; still running on its worker: wait a little, the other Racket
+	;; threads running meanwhile
+	(:running (timed-wait (rfuture-lock f) (rfuture-cv f) (lambda () (eq (rfuture-state f) :running)) 0.005)
+	 (unless *future-detached* (yield-thread))))))
+  (let ((outcome (rfuture-outcome f)))
+    (if (eq (car outcome) :raise)
+	(do-raise (cadr outcome))
+	(values-list (cdr outcome)))))
+
+(defnative "futures-enabled?" () (:instance "#%futures" :leaf t) qs:true)
+(defnative "future?" (x) (:instance "#%futures" :leaf t) (bool (rfuture-p x)))
+(defnative "current-future" () (:instance "#%futures" :leaf t) (or *future* qs:false))
+(defnative "future" (thunk) (:instance "#%futures" :leaf t)
+  (unless (and (functionp thunk) (accepts-arity-p thunk 0))
+    (racket-error "future" "contract violation~%  expected: (-> any)~%  given: ~A" (written thunk)))
+  (make-future thunk t))
+(defnative "would-be-future" (thunk) (:instance "#%futures" :leaf t)
+  ;; run by touch, in the toucher, as Racket's (which logs what would block)
+  (unless (and (functionp thunk) (accepts-arity-p thunk 0))
+    (racket-error "would-be-future" "contract violation~%  expected: (-> any)~%  given: ~A" (written thunk)))
+  (make-future thunk nil))
+(defnative "touch" (f) (:instance "#%futures")
+  (unless (rfuture-p f)
+    (racket-error "touch" "contract violation~%  expected: future?~%  given: ~A" (written f)))
+  (touch-future f))
+
+;;; fsemaphores: future-safe, waited on without the scheduler in a
+;;; future, and in a Racket thread by letting the others run meanwhile
+
+(defstruct (fsemaphore (:constructor make-fsemaphore* (count)))
+  count
+  (lock (sb-thread:make-mutex :name "racket fsemaphore"))
+  (cv (sb-thread:make-waitqueue)))
+
+(defmethod print-object ((s fsemaphore) stream) (write-string "#<fsemaphore>" stream))
+
+(defun fsemaphore-take (s)
+  "Whether S's count was positive, and is now one less."
+  (sb-thread:with-mutex ((fsemaphore-lock s))
+    (and (plusp (fsemaphore-count s)) (progn (decf (fsemaphore-count s)) t))))
+
+(defnatives "#%futures"
+  ("make-fsemaphore" (n)
+   (unless (and (integerp n) (>= n 0)) (arg-error "make-fsemaphore" "exact-nonnegative-integer?" n))
+   (make-fsemaphore* n))
+  ("fsemaphore?" (x) (bool (fsemaphore-p x)))
+  ("fsemaphore-count" (s) (fsemaphore-count s))
+  ("fsemaphore-post" (s)
+   (sb-thread:with-mutex ((fsemaphore-lock s))
+     (incf (fsemaphore-count s))
+     (sb-thread:condition-broadcast (fsemaphore-cv s)))
+   *void*)
+  ("fsemaphore-try-wait?" (s) (bool (fsemaphore-take s)))
+  ("fsemaphore-wait" (s)
+   (loop until (fsemaphore-take s)
+	 do (timed-wait (fsemaphore-lock s) (fsemaphore-cv s) (lambda () (not (plusp (fsemaphore-count s)))) 0.005)
+	    (unless *future* (yield-thread)))
+   *void*))

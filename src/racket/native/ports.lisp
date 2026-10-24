@@ -640,6 +640,7 @@ prop:output-port PROPERTY (a port, or the index of a field holding one), or NIL.
 (defun unwrap-out (x) (unwrap-port x *prop-output-port*))
 
 (defun input-port (who port)
+  (when *future-detached* (future-block))
   (let ((port (unwrap-in (or port (current-port :input)))))
     (when (and (rinport-p port) (rinport-closed port))
       (racket-error who "input port is closed~%  input port: ~A" (port-desc port)))
@@ -875,6 +876,7 @@ event waiting; else NIL."
 ;;; Output
 
 (defun output-port (port &optional (who "write"))
+  (when *future-detached* (future-block))
   (let ((p (unwrap-out (or port (current-port :output)))))
     (when (and (routport-p p) (routport-closed p))
       (racket-error who "output port is closed~%  output port: ~A" (port-desc p)))

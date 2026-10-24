@@ -110,14 +110,28 @@ keeps those inside).")
 ;;; ------------------------------------------------------------------
 ;;; Raise
 
+(defvar *future* nil
+  "The future (RFUTURE, threads.lisp) this thread is running, if any:
+current-future's value.")
+(defvar *future-detached* nil
+  "True while a future runs on a worker of its own, not yet touched: a
+future-unsafe operation (atomic mode, a port, the scheduler, raise) then
+blocks it until it is (FUTURE-BLOCK), as Racket CS's futures block.")
+
 (defvar *uncaught-exception-handler* nil
   "The uncaught-exception-handler parameter's root value (exn.lisp sets it).")
 
 (defun do-raise (v &optional (barrier t))
   "raise: the innermost handler, in the marks outside its own."
   (declare (ignore barrier))
+  (when *future-detached* (future-block))
   (let* ((marks (current-marks))
 	 (entry (find *exception-handler-key* marks :key #'cadr :test #'eq)))
+    (when (and (null entry) *future*)
+      ;; a future's own handlers are passed: touch raises it, in the
+      ;; toucher's continuation, as a future's continuation is spliced
+      ;; onto the toucher's in Racket CS
+      (throw 'future-raise (list :raise v)))
     (if entry
 	(let ((handler (cddr entry)))
 	  (let ((qs-r6rs::*marks* (cdr (member entry marks :test #'eq))))

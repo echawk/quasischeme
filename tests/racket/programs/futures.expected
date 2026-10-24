@@ -1,0 +1,14 @@
+enabled #t
+results (75025 75025 75025 75025)
+before touch
+in future
+touched 42
+caught contract violation
+  expected: pair?
+  given: 5
+values 1 2
+current #f #t
+would-be 7
+nested 6765
+fsemaphore got 0
+parameter 9
