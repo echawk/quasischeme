@@ -391,6 +391,10 @@ a prompt is."
 	      (lambda (f i &optional repr)
 		(declare (ignore repr))
 		(svref (frame-local "frame-local-ref" f i) i)))
+	;; the values a frame returns, in a return hook: its locals but
+	;; the procedure's slot, as libguile's frames.c reads them
+	(cons "frame-return-values"
+	      (lambda (f) (cdr (coerce (gframe-locals (check-frame "frame-return-values" f)) 'list))))
 	(cons "frame-local-set!"
 	      (lambda (f i v &optional repr)
 		(declare (ignore repr))

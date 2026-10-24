@@ -484,6 +484,20 @@ gives an infinity and 0.0/0.0 a NaN, as in Guile."
 
 (defvar *guile-source-directory* nil "Where Guile's Scheme sources are.")
 
+(defun guile-build-info ()
+  "%guile-build-info's alist: the directories of the Guile whose sources
+these are (DIR/share/guile/3.0/), which (ice-9 slib) and others look in."
+  (let* ((dir (ignore-errors (namestring (or *guile-source-directory* (find-guile-sources)))))
+	 (share (and dir (search "/guile/3.0/" dir) (subseq dir 0 (search "/guile/3.0/" dir))))
+	 (prefix (and share (search "/share" share :from-end t) (subseq share 0 (search "/share" share :from-end t)))))
+    (if prefix
+	(loop for (k . v) in `(("prefix" . ,prefix) ("datadir" . ,share) ("pkgdatadir" . ,(format nil "~A/guile" share))
+			       ("libdir" . ,(format nil "~A/lib" prefix)) ("bindir" . ,(format nil "~A/bin" prefix))
+			       ("includedir" . ,(format nil "~A/include" prefix))
+			       ("guileversion" . "3.0.11") ("effective-version" . "3.0"))
+	      collect (cons (ssym k) v))
+	'())))
+
 (defun find-guile-sources ()
   (let ((env (uiop:getenv "GUILE_SOURCE_DIR")))
     (or (and env (probe-file (uiop:ensure-directory-pathname env)))
@@ -805,7 +819,7 @@ replacements.  True if it did."
 	  ;; a thunk to call instead of the error
 	  ((functionp exception-on-not-found) (funcall exception-on-not-found))
 	  ((truthy exception-on-not-found)
-	   (guile-error (ssym "system-error") "primitive-load-path"
+	   (guile-error (ssym "misc-error") "primitive-load-path"
 			"Unable to find file ~S in load path" (list name)))
 	  (t qs:false))))
 
@@ -985,7 +999,8 @@ not with Guile's behaviour.")
     (def "%compile-fallback-path" qs:false)
     (def "%auto-compilation-options" '())
     (def "%file-port-name-canonicalization" (make-fluid* qs:false))
-    (def "%guile-build-info" '())
+    ;; the installation's directories, where Guile's sources were found
+    (def "%guile-build-info" (guile-build-info))
     (def "%host-type" (host-type))
     (def "*features*" (mapcar #'ssym '("guile" "r7rs" "srfi-0" "srfi-4" "srfi-6" "srfi-13" "srfi-14"
 				       ;; what libguile adds, less fork, effective
