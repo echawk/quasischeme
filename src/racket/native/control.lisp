@@ -20,6 +20,34 @@
 (in-package "QUASISCHEME-RACKET")
 
 ;;; ------------------------------------------------------------------
+;;; Places (threads.lisp): each one's own state, as Racket CS's place
+;;; registers.  The place an SBCL thread runs in is *RPLACE*, which each
+;;; new thread inherits (*THREAD-SPECIALS*); the variables that name its
+;;; parts are symbol macros, so that a SETQ of one sets the place's.
+
+(defstruct (rplace (:constructor make-rplace (parent)) (:copier nil))
+  parent
+  (lock (sb-thread:make-mutex :name "racket place"))
+  (cv (sb-thread:make-waitqueue))
+  ;; the scheduler and its roots (threads.lisp)
+  sched-lock holder (threads '()) (thread-ids 0) ticker parallel-active atomic-lock
+  scheduler-started main-thread root-custodian root-thread-group
+  root-parameterization
+  (parameter-cells nil)			; parameter data -> cell, in a place but the first
+  (locals nil)				; place-local -> value, in a place but the first
+  rktio rktio-std-fds (saved-errno 0)	; rktio.lisp, foreign.lisp
+  (object nil))				; the place as a Racket value, for place-channel-get
+
+(defvar *initial-rplace* (make-rplace nil))
+(defvar *rplace* *initial-rplace* "The place this SBCL thread runs in.")
+
+(defmacro define-place-variable (name accessor)
+  `(define-symbol-macro ,name (,accessor *rplace*)))
+
+(define-place-variable *root-parameterization* rplace-root-parameterization)
+
+
+;;; ------------------------------------------------------------------
 ;;; Continuation marks
 
 (defvar *exception-handler-key* (make-symbol "exception-handler-key"))
@@ -154,18 +182,27 @@ blocks it until it is (FUTURE-BLOCK), as Racket CS's futures block.")
 ;;; data): its value is in a cell, the current parameterization's for it
 ;;; (the innermost parameterization-key mark), else the parameter's own.
 
-(defstruct (parameter-data (:constructor make-parameter-data (cell guard name))) cell guard name)
+(defstruct (parameter-data (:constructor make-parameter-data (cell guard name &aux (initial (car cell)))))
+  cell guard name
+  initial)				; its value when made: a new place's (PARAMETER-CELL)
 (defstruct (parameterization (:constructor make-parameterization (cells))) cells) ; alist: data -> cell
 
 (defvar *parameters* (make-hash-table :test 'eq :weakness :key :synchronized t))
-(defvar *root-parameterization* (make-parameterization '()))
+
+(setq *root-parameterization* (make-parameterization '()))
 
 (defun current-parameterization ()
   (first-mark *parameterization-key* (current-marks) *root-parameterization*))
 
 (defun parameter-cell (data)
   (or (cdr (assoc data (parameterization-cells (current-parameterization)) :test #'eq))
-      (parameter-data-cell data)))
+      (let ((cells (rplace-parameter-cells *rplace*)))
+	(if cells
+	    ;; a place but the first: its own cell, which starts with the
+	    ;; parameter's first value, as a new place's thread cells do
+	    (or (gethash data cells)
+		(setf (gethash data cells) (list (parameter-data-initial data))))
+	    (parameter-data-cell data)))))
 
 (defun make-parameter* (value &optional guard name)
   (let* ((data (make-parameter-data (list value) guard name))
@@ -281,7 +318,8 @@ parameter holds a struct with prop:output-port or prop:input-port)."
   (atomic 0)				; depth of atomic sections: no preemption
   (preempt-queued nil))
 
-(defvar *main-thread* (make-rthread (rsym "main")))
+(define-place-variable *main-thread* rplace-main-thread)
+(setq *main-thread* (make-rthread (rsym "main")))
 (defvar *self* *main-thread*
   "The Racket thread the current SBCL thread runs (bound in each new one).")
 

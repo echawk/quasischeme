@@ -31,8 +31,12 @@
   (if (or (typep x 'fixnum) (characterp x) (symbolp x))
       (logand (sxhash x) most-positive-fixnum)
       (or (gethash x *identity-hashes*)
-	  (setf (gethash x *identity-hashes*)
-		(logand (* (incf *identity-counter*) 2654435761) most-positive-fixnum)))))
+	  ;; looked up again under the table's lock: threads (of places,
+	  ;; futures) asking at once get one hash
+	  (sb-ext:with-locked-hash-table (*identity-hashes*)
+	    (or (gethash x *identity-hashes*)
+		(setf (gethash x *identity-hashes*)
+		      (logand (* (incf *identity-counter*) 2654435761) most-positive-fixnum)))))))
 
 (defun eqv-hash (x)
   (if (numberp x) (logand (sxhash x) most-positive-fixnum) (eq-hash x)))

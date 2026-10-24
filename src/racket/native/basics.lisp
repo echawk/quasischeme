@@ -215,10 +215,25 @@ assigned, which schemify's and the expander's checks compare with.")
   (multiple-value-bind (v alive) (sb-ext:weak-pointer-value b)
     (if alive v gone)))
 
-;;; One place: a place-local is a box
-(defnative "unsafe-make-place-local" (v) (:instance "#%unsafe" :leaf t) (make-rbox :value v))
-(defnative "unsafe-place-local-ref" (b) (:instance "#%unsafe" :leaf t) (rbox-value b))
-(defnative "unsafe-place-local-set!" (b v) (:instance "#%unsafe" :leaf t) (setf (rbox-value b) v) *void*)
+;;; Place-locals, as Racket CS's: the first place's value is the
+;;; place-local's own; another place's is in its table (RPLACE-LOCALS),
+;;; else the value it was made with
+(defstruct (place-local (:constructor make-place-local (default &aux (value default))) (:copier nil))
+  default value)
+
+(defnative "unsafe-make-place-local" (v) (:instance "#%unsafe" :leaf t) (make-place-local v))
+(defnative "unsafe-place-local-ref" (pl) (:instance "#%unsafe" :leaf t)
+  (let ((table (rplace-locals *rplace*)))
+    (if table
+	(multiple-value-bind (v found) (gethash pl table)
+	  (if found v (place-local-default pl)))
+	(place-local-value pl))))
+(defnative "unsafe-place-local-set!" (pl v) (:instance "#%unsafe" :leaf t)
+  (let ((table (rplace-locals *rplace*)))
+    (if table
+	(setf (gethash pl table) v)
+	(setf (place-local-value pl) v)))
+  *void*)
 
 ;;; ------------------------------------------------------------------
 ;;; Struct-type properties the expander's structs carry, and srcloc

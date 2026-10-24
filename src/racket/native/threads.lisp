@@ -80,14 +80,34 @@
 ;;; ------------------------------------------------------------------
 ;;; Structures
 
-(declaim (special *current-custodian* *current-thread-group* *root-custodian*))
+(declaim (special *current-custodian* *current-thread-group*))
 
-(defvar *sched-lock* (sb-thread:make-mutex :name "racket scheduler"))
-(defvar *holder* *main-thread* "The thread that holds the baton.")
-(defvar *threads* (list *main-thread*) "The live threads, in creation order.")
+;; each place's (control.lisp): its scheduler's lock, the thread that
+;; holds the baton, the live threads in creation order, ...
+(define-place-variable *sched-lock* rplace-sched-lock)
+(define-place-variable *holder* rplace-holder)
+(define-place-variable *threads* rplace-threads)
+(define-place-variable *thread-ids* rplace-thread-ids)
+(define-place-variable *ticker* rplace-ticker)
+(define-place-variable *parallel-active* rplace-parallel-active)
+(define-place-variable *atomic-lock* rplace-atomic-lock)
+(define-place-variable *scheduler-started* rplace-scheduler-started)
+(define-place-variable *root-custodian* rplace-root-custodian)
+(define-place-variable *root-thread-group* rplace-root-thread-group)
+
+(defun init-place-scheduler ()
+  "The current place's scheduler, with only its main thread."
+  (setq *sched-lock* (sb-thread:make-mutex :name "racket scheduler")
+	*holder* *main-thread*
+	*threads* (list *main-thread*)
+	*thread-ids* 0
+	*ticker* nil
+	*parallel-active* nil
+	*atomic-lock* (sb-thread:make-mutex :name "racket atomic")
+	*scheduler-started* nil))
+(init-place-scheduler)
+
 (defvar *in-sched* nil "True in a thread that is in the scheduler.")
-(defvar *thread-ids* 0)
-(defvar *ticker* nil)
 (defvar *world-lock*
   (let ((s (find-symbol "**WORLD-LOCK**" "SB-C")))
     (and s (boundp s) (symbol-value s))))
@@ -149,8 +169,6 @@
 ;;; ------------------------------------------------------------------
 ;;; Atomic sections
 
-(defvar *parallel-active* nil "True once a parallel-thread pool has been made.")
-(defvar *atomic-lock* (sb-thread:make-mutex :name "racket atomic"))
 
 (defmacro with-atomic (&body body)
   "BODY without preemption, and, once there are parallel threads, alone."
@@ -552,7 +570,6 @@ ready one.  True if it's complete."
 	   (code (if (and s (boundp s) (integerp (symbol-value s))) (symbol-value s) 0)))
       (sb-ext:exit :code code :abort t))))
 
-(defvar *scheduler-started* nil)
 
 (defun ensure-scheduler ()
   "At the first thread: note the main thread's SBCL thread, start the ticker."
@@ -562,7 +579,9 @@ ready one.  True if it's complete."
     ;; the stacks of threads: the main one's is huge
     (qs:limit-thread-stack-size (* 64 1024 1024))
     (pushnew 'exit-hook sb-ext:*exit-hooks*)
-    (setq *ticker* (sb-thread:make-thread #'ticker-main :name "racket ticker"))))
+    (setq *ticker* (let ((place *rplace*))
+		     (sb-thread:make-thread (lambda () (let ((*rplace* place)) (ticker-main)))
+					    :name "racket ticker")))))
 
 ;;; ------------------------------------------------------------------
 ;;; Creating and finishing threads
@@ -570,7 +589,7 @@ ready one.  True if it's complete."
 (defparameter *thread-specials*
   '(*standard-input* *standard-output* *error-output* *terminal-io* *query-io*
     *default-pathname-defaults* *package* *readtable* *read-default-float-format*
-    *print-pretty*)
+    *print-pretty* *rplace*)
   "The Lisp specials a new thread starts with the creator's values of.")
 
 (defun parameterization-snapshot ()
@@ -1120,7 +1139,7 @@ while other threads run.  With TIMEOUT (seconds), true, or NIL if it passes."
 ;;; ------------------------------------------------------------------
 ;;; Custodians
 
-(defvar *root-custodian* (make-custodian* nil))
+(setq *root-custodian* (make-custodian* nil))
 
 (defvar *current-custodian*
   (make-parameter* *root-custodian*
@@ -1218,7 +1237,7 @@ while other threads run.  With TIMEOUT (seconds), true, or NIL if it passes."
 ;;; ------------------------------------------------------------------
 ;;; Thread groups
 
-(defvar *root-thread-group* (make-thread-group* nil))
+(setq *root-thread-group* (make-thread-group* nil))
 (defvar *current-thread-group*
   (make-parameter* *root-thread-group*
 		   (guard-check "current-thread-group" #'thread-group-p "thread-group?")

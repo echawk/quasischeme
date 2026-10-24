@@ -25,9 +25,11 @@
 (defconstant +rktio-read-error+ -2)
 (defconstant +rktio-poll-error+ -2)
 
-(defvar *rktio* nil "The rktio_t, once rktio_init has made it.")
-(defvar *rktio-std-fds* (make-array 3 :initial-element nil)
-  "rktio's fds for stdin, stdout and stderr, made when first asked for.")
+;; each place's (control.lisp): the rktio_t, once rktio_init has made
+;; it, and rktio's fds for stdin, stdout and stderr, made when first asked for
+(define-place-variable *rktio* rplace-rktio)
+(define-place-variable *rktio-std-fds* rplace-rktio-std-fds)
+(setq *rktio-std-fds* (make-array 3 :initial-element nil))
 (defvar *rktio-library-loaded* nil)
 
 (defun rktio-library ()

@@ -223,7 +223,7 @@ the collector next runs)."
 (defvar *handle-counter* #x7f000000)
 
 (defun scheme-handle (object)
-  (let ((h (incf *handle-counter* 16)))
+  (let ((h (sb-ext:with-locked-hash-table (*handles*) (incf *handle-counter* 16))))
     (setf (gethash h *handles*) object)
     h))
 
@@ -873,7 +873,7 @@ the collector next runs)."
 ;;; ------------------------------------------------------------------
 ;;; errno
 
-(defvar *saved-errno* 0)
+(define-place-variable *saved-errno* rplace-saved-errno) ; each place's (control.lisp)
 
 (defforeign "saved-errno" (&optional (v nil v-p)) (:leaf t)
   (cond (v-p (check-exact-int "saved-errno" v) (setq *saved-errno* v) *void*)
