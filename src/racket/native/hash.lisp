@@ -595,7 +595,7 @@ differ, at SHIFT."
 		  (if (< -1 i (length (entries h)))
 		      (let ((e (svref (entries h) i))) (cons (car e) (cdr e)))
 		      bad)))))
-  (def "mutable") (def "weak"))
+  (def "mutable") (def "weak") (def "ephemeron"))
 
 ;;; ------------------------------------------------------------------
 ;;; current-inspector, a parameter (structs.lisp has what uses it; it

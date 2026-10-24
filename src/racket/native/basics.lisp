@@ -18,17 +18,12 @@
 
 (defparameter *host-aliases*
   '(("#%unsafe" ("unsafe-car" . "car") ("unsafe-cdr" . "cdr") ("unsafe-cons-list" . "cons")
-     ("unsafe-fx+" . "fx+") ("unsafe-fx-" . "fx-") ("unsafe-fx*" . "fx*")
-     ("unsafe-fx=" . "fx=?") ("unsafe-fx<" . "fx<?") ("unsafe-fx>" . "fx>?")
-     ("unsafe-fx<=" . "fx<=?") ("unsafe-fx>=" . "fx>=?")
      ("unsafe-fxand" . "fxand") ("unsafe-fxior" . "fxior") ("unsafe-fxxor" . "fxxor")
      ("unsafe-fxnot" . "fxnot")
      ("unsafe-fxlshift" . "fxarithmetic-shift-left") ("unsafe-fxrshift" . "fxarithmetic-shift-right")
      ("unsafe-fxquotient" . "quotient") ("unsafe-fxremainder" . "remainder")
      ("unsafe-fxmodulo" . "modulo")
      ("unsafe-fl+" . "fl+") ("unsafe-fl-" . "fl-") ("unsafe-fl*" . "fl*") ("unsafe-fl/" . "fl/")
-     ("unsafe-fl=" . "fl=?") ("unsafe-fl<" . "fl<?") ("unsafe-fl>" . "fl>?")
-     ("unsafe-fl<=" . "fl<=?") ("unsafe-fl>=" . "fl>=?")
      ("unsafe-vector-ref" . "vector-ref") ("unsafe-vector-set!" . "vector-set!")
      ("unsafe-vector-length" . "vector-length") ("unsafe-vector*-ref" . "vector-ref")
      ("unsafe-vector*-set!" . "vector-set!") ("unsafe-vector*-length" . "vector-length")
@@ -52,18 +47,55 @@
      ("infinite?" . "infinite?") ("nan?" . "nan?")
      ("vector-map" . "vector-map")
      ("vector-for-each" . "vector-for-each") ("string-for-each" . "string-for-each"))
-    ("#%flfxnum" ("fx+" . "fx+") ("fx-" . "fx-") ("fx*" . "fx*") ("fx=" . "fx=?") ("fx<" . "fx<?")
-     ("fx>" . "fx>?") ("fx<=" . "fx<=?") ("fx>=" . "fx>=?") ("fxand" . "fxand") ("fxior" . "fxior")
+    ("#%flfxnum" ("fxand" . "fxand") ("fxior" . "fxior")
      ("fxxor" . "fxxor") ("fxnot" . "fxnot") ("fxlshift" . "fxarithmetic-shift-left")
      ("fxrshift" . "fxarithmetic-shift-right") ("fxquotient" . "quotient")
      ("fxremainder" . "remainder") ("fxmodulo" . "modulo")
      ("fxmin" . "fxmin") ("fxmax" . "fxmax")
-     ("fl+" . "fl+") ("fl-" . "fl-") ("fl*" . "fl*") ("fl/" . "fl/") ("fl=" . "fl=?")
-     ("fl<" . "fl<?") ("fl>" . "fl>?") ("fl<=" . "fl<=?") ("fl>=" . "fl>=?")
+     ("fl+" . "fl+") ("fl-" . "fl-") ("fl*" . "fl*") ("fl/" . "fl/")
      ("flabs" . "flabs") ("flsqrt" . "flsqrt") ("flfloor" . "flfloor") ("flceiling" . "flceiling")
      ("flround" . "flround") ("fltruncate" . "fltruncate") ("flmin" . "flmin") ("flmax" . "flmax")
      ("fx->fl" . "fixnum->flonum") ("fixnum?" . "fixnum?") ("flonum?" . "flonum?")))
   "Per instance, (Racket name . host name): the same procedure.")
+
+(defparameter *wide-aliases*
+  '(("fx+" "fx+" 0) ("fx-" "fx-" :negate) ("fx*" "fx*" 1)
+    ("fx=" "fx=?" :compare) ("fx<" "fx<?" :compare) ("fx>" "fx>?" :compare)
+    ("fx<=" "fx<=?" :compare) ("fx>=" "fx>=?" :compare)
+    ("fl=" "fl=?" :compare) ("fl<" "fl<?" :compare) ("fl>" "fl>?" :compare)
+    ("fl<=" "fl<=?" :compare) ("fl>=" "fl>=?" :compare))
+  "Racket's fixnum and flonum operations that take more or fewer arguments
+than the host's two (fx+ none or more, fx< one or more, ...): (name host
+how), each in #%flfxnum and, as unsafe-NAME, in #%unsafe.  A call of two
+arguments is the host's (LOWER-EXPR); any other the native's, which folds
+the host's: from HOW's identity, negating one argument, or comparing
+pairwise.")
+
+(defun wide-alias (name)
+  "The host procedure a call of Racket primitive NAME with two arguments is."
+  (let ((name (if (and (> (length name) 7) (string= "unsafe-" name :end2 7)) (subseq name 7) name)))
+    (second (assoc name *wide-aliases* :test #'string=))))
+
+(defun wide-native (host how)
+  (let ((f nil))
+    (flet ((f () (or f (setq f (qsx:host-ref host)))))
+      (case how
+	(:compare (lambda (a &rest more)
+		    (if more
+			(bool (loop for x = a then y for y in more
+				    always (truthy (funcall (f) x y))))
+			(progn (funcall (f) a a) qs:true))))
+	(:negate (lambda (a &rest more)
+		   (if more
+		       (reduce (f) more :initial-value a)
+		       (funcall (f) 0 a))))
+	(t (lambda (&rest xs) (reduce (f) xs :initial-value how)))))))
+
+(loop for (name host how) in *wide-aliases*
+      do (let ((f (wide-native host how)))
+	   (setf (gethash name *natives*) (make-native name f :instance "#%flfxnum" :leaf t))
+	   (let ((u (concatenate 'string "unsafe-" name)))
+	     (setf (gethash u *natives*) (make-native u f :instance "#%unsafe" :leaf t)))))
 
 (defun host-alias (name)
   "The host name for Racket primitive NAME, if it's an alias."

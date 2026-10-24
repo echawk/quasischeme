@@ -67,7 +67,7 @@ Racket's own (primitive-table ...) lists."
 	  when (and start (every (lambda (c) (member c '(#\Space #\Tab))) (subseq line 0 start)))
 	    collect (let* ((text (subseq line (1+ start)))
 			   (space (position #\Space text))
-			   (name (subseq text 0 space))
+			   (name (string-trim "|" (subseq text 0 space))) ; |#%call-with-values|
 			   (rest (string-left-trim " (" (subseq text space)))
 			   (words (uiop:split-string (string-right-trim ")] " rest) :separator " "))
 			   (mask (and (second words) (parse-integer (second words) :junk-allowed t))))
@@ -138,7 +138,11 @@ instances have, and how many have the wrong arity.  MISSING: list them."
 			  (not (ignore-errors (= (arity-mask v) (table-entry-mask e))))
 			  ;; a host procedure's lambda list may be (&rest args)
 			  (not (eql (ignore-errors (arity-mask v)) -1)))
-		     (push (table-entry-name e) wrong)))))
+		     (push (if missing
+			       (format nil "~A[~A/~A]" (table-entry-name e)
+				       (ignore-errors (arity-mask v)) (table-entry-mask e))
+			       (table-entry-name e))
+			   wrong)))))
 	  (incf total (length entries))
 	  (incf have (- (length entries) (length absent)))
 	  (format stream "~&~12A ~4D of ~4D~@[  (arity differs: ~{~A~^ ~})~]~%"

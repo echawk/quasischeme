@@ -1,0 +1,155 @@
+; -*- Mode: Lisp; Syntax: Common-Lisp; Package: QUASISCHEME-RACKET -*-
+
+;;;; #%terminal, as Racket CS's (cs/io/terminal.ss over Chez's
+;;;; expeditor, c/expeditor.c): the terminal the expeditor and raco
+;;;; setup's progress bar draw on, through termios and ANSI sequences.
+
+(in-package "QUASISCHEME-RACKET")
+
+(defvar *term-in* 0 "The terminal's input descriptor, from terminal-init.")
+(defvar *term-out* nil "A stream on its output descriptor.")
+(defvar *term-saved* nil "Its termios before raw mode.")
+(defvar *term-size* nil "The size terminal-pending-winch? last saw.")
+
+(defun term-emit (&rest strings)
+  (when *term-out* (dolist (s strings) (write-string s *term-out*))))
+
+(defun term-csi (&rest parts) (term-emit (format nil "~C[~{~A~}" #\Esc parts)))
+
+(defun term-size ()
+  "(rows . columns): TIOCGWINSZ's, else 24 by 80."
+  (or (ignore-errors
+       (sb-alien:with-alien ((ws (sb-alien:array (sb-alien:unsigned 16) 4)))
+	 (let ((request #+darwin #x40087468 #+linux #x5413 #-(or darwin linux) nil)
+	       (fd (if *term-out* (sb-sys:fd-stream-fd *term-out*) 1)))
+	   (and request (sb-unix:unix-ioctl fd request (sb-alien:alien-sap ws))
+		(plusp (sb-alien:deref ws 1))
+		(cons (sb-alien:deref ws 0) (sb-alien:deref ws 1))))))
+      (cons 24 80)))
+
+(defun term-flags (fn)
+  "Change the terminal's termios by FN, now."
+  (ignore-errors
+   (let ((tio (sb-posix:tcgetattr *term-in*)))
+     (funcall fn tio)
+     (sb-posix:tcsetattr *term-in* sb-posix:tcsadrain tio))))
+
+(defun term-read-byte (block)
+  "The next byte, NIL if BLOCK is false and none is ready, or :EOF."
+  (when (or block (sb-sys:wait-until-fd-usable *term-in* :input 0))
+    (sb-alien:with-alien ((buf (sb-alien:array (sb-alien:unsigned 8) 1)))
+      (loop (multiple-value-bind (n errno) (sb-unix:unix-read *term-in* (sb-alien:alien-sap buf) 1)
+	      (cond ((eql n 1) (return (sb-alien:deref buf 0)))
+		    ((eql errno sb-unix:eintr))
+		    (t (return :eof))))))))
+
+(defun term-char-width (c)
+  "Columns C takes: 2 for East Asian wide ones, 0 for combining marks."
+  (let ((code (char-code c)))
+    (cond ((< code #x20) 0)
+	  ((< code #x300) 1)
+	  ((<= #x300 code #x36f) 0)
+	  ((or (<= #x1100 code #x115f) (<= #x2e80 code #xa4cf) (<= #xac00 code #xd7a3)
+	       (<= #xf900 code #xfaff) (<= #xfe30 code #xfe4f) (<= #xff00 code #xff60)
+	       (<= #xffe0 code #xffe6) (<= #x1f300 code #x1f64f) (<= #x1f900 code #x1f9ff)
+	       (<= #x20000 code #x3fffd))
+	   2)
+	  (t 1))))
+
+(defnatives "#%terminal"
+  ("terminal-init" (in out)
+   ;; #t when both are terminals and $TERM allows drawing, as ee_init_term
+   (if (and (integerp in) (integerp out)
+	    (= 1 (sb-unix:unix-isatty in)) (= 1 (sb-unix:unix-isatty out))
+	    (not (member (sb-posix:getenv "TERM") '(nil "dumb") :test #'equal)))
+       (progn (setf *term-in* in
+		    *term-out* (sb-sys:make-fd-stream out :output t :buffering :full
+							  :external-format :utf-8)
+		    *term-size* (term-size))
+	      qs:true)
+       qs:false))
+  ("terminal-read-char" (block)
+   (let ((b (term-read-byte (truthy block))))
+     (cond ((null b) qs:false)
+	   ((eq b :eof) qs:eof-object)
+	   ((< b #x80) (code-char b))
+	   (t (let* ((n (cond ((>= b #xf0) 3) ((>= b #xe0) 2) (t 1)))
+		     (code (logand b (case n (3 #x07) (2 #x0f) (t #x1f)))))
+		(loop repeat n
+		      for c = (term-read-byte t)
+		      do (if (integerp c)
+			     (setq code (logior (ash code 6) (logand c #x3f)))
+			     (return)))
+		(or (code-char code) #\?))))))
+  ("terminal-pending-winch?" ()
+   (let ((size (term-size)))
+     (bool (not (equal size (shiftf *term-size* size))))))
+  ("terminal-write-char" (c) (term-emit (string c)) (term-char-width c))
+  ("terminal-char-width" (c) (term-char-width c))
+  ("terminal-set-color" (color background?)
+   (let ((base (if (truthy background?) 40 30)))
+     (term-csi (cond ((minusp color) (+ base 9))
+		     ((< color 8) (+ base color))
+		     (t (+ base 60 (- color 8))))
+	       "m"))
+   *void*)
+  ("terminal-flush" () (when *term-out* (finish-output *term-out*)) *void*)
+  ("terminal-get-screen-size" () (term-size))
+  ("terminal-raw-mode" (on?)
+   (if (truthy on?)
+       (term-flags (lambda (tio)
+		     (setq *term-saved* (sb-posix:tcgetattr *term-in*))
+		     (setf (sb-posix:termios-lflag tio)
+			   (logandc2 (sb-posix:termios-lflag tio)
+				     (logior sb-posix:icanon sb-posix:echo sb-posix:iexten))
+			   (sb-posix:termios-iflag tio)
+			   (logandc2 (sb-posix:termios-iflag tio) (logior sb-posix:icrnl sb-posix:ixon)))
+		     (let ((cc (sb-posix:termios-cc tio)))
+		       (setf (aref cc sb-posix:vmin) 1 (aref cc sb-posix:vtime) 0
+			     (sb-posix:termios-cc tio) cc))))
+       (when *term-saved*
+	 (ignore-errors (sb-posix:tcsetattr *term-in* sb-posix:tcsadrain *term-saved*))))
+   *void*)
+  ("terminal-postoutput-mode" (on?)
+   (term-flags (lambda (tio)
+		 (setf (sb-posix:termios-oflag tio)
+		       (if (truthy on?)
+			   (logior (sb-posix:termios-oflag tio) sb-posix:opost)
+			   (logandc2 (sb-posix:termios-oflag tio) sb-posix:opost)))))
+   *void*)
+  ("terminal-signal-mode" (on?)
+   (term-flags (lambda (tio)
+		 (setf (sb-posix:termios-lflag tio)
+		       (if (truthy on?)
+			   (logior (sb-posix:termios-lflag tio) sb-posix:isig)
+			   (logandc2 (sb-posix:termios-lflag tio) sb-posix:isig)))))
+   *void*)
+  ("terminal-automargin-mode" (on?) (term-csi (if (truthy on?) "?7h" "?7l")) *void*)
+  ("terminal-nanosleep" (secs nsecs) (sleep (+ secs (/ nsecs 1d9))) *void*)
+  ("terminal-pause" ()
+   ;; stop, as ^Z would, and carry on when continued
+   (sb-posix:kill (sb-posix:getpid) sb-posix:sigtstp)
+   *void*)
+  ("terminal-get-clipboard" ()
+   (or (ignore-errors
+	(with-output-to-string (o)
+	  (sb-ext:run-program #+darwin "pbpaste" #-darwin "xclip"
+			      #+darwin '() #-darwin '("-o" "-selection" "clipboard")
+			      :search t :output o :error nil :input nil)))
+       ""))
+  ("terminal-move-cursor" (dir amt)
+   (when (plusp amt)
+     (term-csi amt (cond ((symbol-named-p dir "up") "A") ((symbol-named-p dir "down") "B")
+			 ((symbol-named-p dir "right") "C") (t "D"))))
+   *void*)
+  ("terminal-clear" (what)
+   (cond ((symbol-named-p what "eol") (term-csi "K"))
+	 ((symbol-named-p what "eos") (term-csi "J"))
+	 (t (term-csi "H") (term-csi "2J")))
+   *void*)
+  ("terminal-scroll-reverse" (n)
+   (loop repeat n do (term-emit (format nil "~CM" #\Esc)))
+   *void*)
+  ("terminal-bell" () (term-emit (string (code-char 7))) *void*)
+  ("terminal-carriage-return" () (term-emit (string #\Return)) *void*)
+  ("terminal-line-feed" () (term-emit (string #\Newline)) *void*))

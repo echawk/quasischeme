@@ -56,7 +56,7 @@ global (native.lisp), whichever native is behind it."
 	    (loop for file in '("src/racket/linklet/compiler.lisp" "src/racket/cache.lisp"
 				"src/racket/native/native.lisp")
 		  collect (file-write-date (merge-pathnames file root)))
-	    (qsx::fnv-1a (prin1-to-string (list *host-shared* *host-aliases*))))))
+	    (qsx::fnv-1a (prin1-to-string (list *host-shared* *host-aliases* *wide-aliases*))))))
 
 (defun linklet-key (compiled)
   "The cache's key for COMPILED, if it has a source key."

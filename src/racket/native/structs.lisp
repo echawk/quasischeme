@@ -382,38 +382,8 @@ numbers of arguments."
 		:guard (and (truthy guard) guard)
 		:constructor-name (and (truthy constructor-name) constructor-name)
 		:proc-spec (and (truthy proc-spec) proc-spec))))
-    (let* ((who (rname name))
-	   (who-ref (format nil "~A-ref" who))
-	   (who-set (format nil "~A-set!" who))
-	   (accessor (lambda (x i)
-		       (check-instance type x who-ref)
-		       (let* ((index (field-index type i who-ref))
-			      (v (struct-field x index)))
-			 (if (chaperone-layer-p x)
-			     (layered-value x (cons type i) v x)
-			     v))))
-	   (mutator (lambda (x i v)
-		      (check-instance type x who-set)
-		      (when (member i (struct-type-immutables type))
-			(racket-error who-set "field is immutable: ~D" i))
-		      (let ((index (field-index type i who-set)))
-			(if (chaperone-layer-p x)
-			    (layered-set x (cons type (- -1 i)) index v x)
-			    (setf (struct-field x index) v)))
-		      *void*))
-	   ;; what a property's guard gets, as struct-type-info returns it
-	   (info (list name init-field-count auto-field-count accessor mutator
-		       immutables (or parent qs:false) qs:false)))
-      ;; its own properties, supers included (racket/base's prop:procedure
-      ;; is racket/private/kw.rkt's, whose super is the kernel's), over
-      ;; the parent's
-      (let ((own '()))
-	(loop for (property . value) in props
-	      do (setq own (attach-property own property value info)))
-	(setf (struct-type-properties type)
-	      (append own (remove-if (lambda (e) (assoc (car e) own)) (struct-type-properties type))))
-	(let ((proc (cdr (assoc *prop-procedure* own))))
-	  (when proc (setf (struct-type-proc-spec type) proc))))
+    (multiple-value-bind (accessor mutator) (general-field-procedures type)
+      (install-struct-properties type props accessor mutator)
       ;; inspector 'prefab: a prefab struct type, the same for all who
       ;; make one of this name and shape
       (when (and (symbolp inspector) inspector (string= (rname inspector) "prefab"))
@@ -431,18 +401,57 @@ numbers of arguments."
 	      (struct-type-mutator type) mutator)
 	;; their names, as Racket's: make-NAME (or the constructor name),
 	;; NAME?, NAME-ref, NAME-set!
-	(flet ((named (f s) (setf (gethash f *renamed-procedures*) (rsym s))))
+	(flet ((named (f s) (setf (gethash f *renamed-procedures*) (rsym s)))
+	       (who () (rname name)))
 	  (named constructor (if (struct-type-constructor-name type)
 				 (rname (struct-type-constructor-name type))
-				 (format nil "make-~A" who)))
-	  (named predicate (format nil "~A?" who))
-	  (named accessor who-ref)
-	  (named mutator who-set))
+				 (format nil "make-~A" (who))))
+	  (named predicate (format nil "~A?" (who)))
+	  (named accessor (format nil "~A-ref" (who)))
+	  (named mutator (format nil "~A-set!" (who))))
 	(note-struct-procedure constructor :constructor type)
 	(note-struct-procedure predicate :predicate type)
 	(note-struct-procedure accessor :accessor type)
 	(note-struct-procedure mutator :mutator type)
 	(values type constructor predicate accessor mutator)))))
+
+(defun general-field-procedures (type)
+  "TYPE's NAME-ref and NAME-set!, of a field index."
+  (let* ((who (rname (struct-type-name type)))
+	 (who-ref (format nil "~A-ref" who))
+	 (who-set (format nil "~A-set!" who)))
+    (values (lambda (x i)
+	      (check-instance type x who-ref)
+	      (let* ((index (field-index type i who-ref))
+		     (v (struct-field x index)))
+		(if (chaperone-layer-p x)
+		    (layered-value x (cons type i) v x)
+		    v)))
+	    (lambda (x i v)
+	      (check-instance type x who-set)
+	      (when (member i (struct-type-immutables type))
+		(racket-error who-set "field is immutable: ~D" i))
+	      (let ((index (field-index type i who-set)))
+		(if (chaperone-layer-p x)
+		    (layered-set x (cons type (- -1 i)) index v x)
+		    (setf (struct-field x index) v)))
+	      *void*))))
+
+(defun install-struct-properties (type props accessor mutator)
+  "Give TYPE its own properties PROPS, supers included (racket/base's
+prop:procedure is racket/private/kw.rkt's, whose super is the kernel's),
+over the parent's."
+  ;; what a property's guard gets, as struct-type-info returns it
+  (let ((info (list (struct-type-name type) (struct-type-init-field-count type)
+		    (struct-type-auto-field-count type) accessor mutator
+		    (struct-type-immutables type) (or (struct-type-parent type) qs:false) qs:false))
+	(own '()))
+    (loop for (property . value) in props
+	  do (setq own (attach-property own property value info)))
+    (setf (struct-type-properties type)
+	  (append own (remove-if (lambda (e) (assoc (car e) own)) (struct-type-properties type))))
+    (let ((proc (cdr (assoc *prop-procedure* own))))
+      (when proc (setf (struct-type-proc-spec type) proc)))))
 
 ;;; A property accessor made by make-struct-type-property -> its property;
 ;;; a field accessor or mutator -> (type pos), for chaperone-struct

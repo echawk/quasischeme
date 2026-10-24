@@ -580,6 +580,11 @@ NOTE-INLINE-PROCEDURE remembered, with as many arguments as it takes."
 	      (eq (gethash (car x) (linklet-info-variables *info*) :none) :none)
 	      (or (eq-datum-p (second x)) (eq-datum-p (third x))))
 	 (list (core "eq?") (lower-expr (second x) env) (lower-expr (third x) env)))
+	;; fx+, fl<, ... of two arguments: the host's, which cp0 open-codes
+	((and (symbolp (car x)) (not (assoc (car x) env)) (= (length x) 3)
+	      (eq (gethash (car x) (linklet-info-variables *info*) :none) :none)
+	      (wide-alias (rname (car x))))
+	 (list (core (wide-alias (rname (car x)))) (lower-expr (second x) env) (lower-expr (third x) env)))
 	;; a small procedure defined before: its body, lowered at top level
 	;; (its free names are top-level ones), applied to the arguments
 	((inline-procedure x env)

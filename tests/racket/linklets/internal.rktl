@@ -1,0 +1,41 @@
+;;; #%internal and the rest of #%unsafe and #%flfxnum: a struct as
+;;; schemify defines one (schemify/struct-convert.rkt), with a property
+;;; installed after; fixnum operations of other than two arguments.
+(linklet
+ ()
+ ()
+ (define-values (finish) (make-struct-type-install-properties 'pt 2 0 #f (list (cons prop:custom-write (lambda (v o m) (write-string "#<pt>" o)))) #f))
+ (define-values (struct:pt) (make-record-type-descriptor 'pt #f #f #f #f '(2 . 2)))
+ (define-values (effect) (finish struct:pt))
+ (define-values (pt) (#%struct-constructor (record-constructor (make-record-constructor-descriptor struct:pt #f #f)) 4))
+ (define-values (pt?) (#%struct-predicate (record-predicate struct:pt)))
+ (define-values (pt-x) (#%struct-field-accessor (record-accessor struct:pt 0) struct:pt 0))
+ (define-values (pt-y) (record-accessor struct:pt 1))
+ (define-values (set-pt-y!) (record-mutator struct:pt 1))
+ (define-values (p) (pt 1 2))
+ (set-pt-y! p 20)
+ (define-values (o) (open-output-string))
+ (write p o)
+ (define-values (b) (box unsafe-undefined))
+ (list
+  (pt? p) (pt? 5) (pt-x p) (pt-y p) (struct? p) (get-output-string o)
+  (unsafe-struct? p struct:pt)
+  (#%call-with-values (lambda () (values 1 2)) list)
+  (apply-string-append 1 (list "a" "b" "c"))
+  (call-with-continuation-prompt
+   (lambda ()
+     (with-continuation-mark exception-handler-key
+       (lambda (e) (abort-current-continuation (default-continuation-prompt-tag) (lambda () (exn-message e))))
+       (unbox/check-undefined b 'v)))
+   (default-continuation-prompt-tag)
+   (lambda (th) (th)))
+  (fx+) (fx+ 1 2 3) (fx- 5) (fx* 2 3 4) (fx< 1) (fx< 1 2 3) (fl< 1.0 2.0 1.5)
+  (unsafe-fx+ 1 2 3) (apply fx+ '(1 2 3 4))
+  (flbit-field 1.0 52 63)
+  (unsafe-stencil-vector-length (stencil-vector 5 'a 'b))
+  (hash? (unsafe-get-place-table)) (eq? (unsafe-get-place-table) (unsafe-get-place-table))
+  (unsafe-os-thread-enabled?)
+  (let-values (((s) (unsafe-make-os-semaphore)))
+    (unsafe-os-semaphore-post s) (unsafe-os-semaphore-wait s) 'posted)
+  (terminal-char-width #\a)
+  (ptr-ref/int16 (bytes 1 0 2 0) 1 #f)))

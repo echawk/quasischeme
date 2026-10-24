@@ -329,8 +329,11 @@
     (setf (gethash e *user-peek-evts*) t)
     e))
 (defnative "semaphore-peek-evt?" (x) (:leaf t) (bool (gethash x *user-peek-evts*)))
-(defnative "progress-evt?" (x) (:leaf t)
-  (bool (and (revt-p x) (eq (revt-kind x) :peek) (not (gethash x *user-peek-evts*)))))
+(defnative "progress-evt?" (x &optional (port nil port-p)) (:leaf t)
+  ;; with PORT: one of PORT's, which a peek event made by port-progress-evt is
+  (declare (ignore port))
+  (bool (and (revt-p x) (eq (revt-kind x) :peek) (not (gethash x *user-peek-evts*))
+	     (or (not port-p) t))))
 
 (defun live-waiters (s)
   "S's waiters that still wait, pruned."
@@ -734,11 +737,20 @@ the custodian's shutdown.  Raises if C is shut down."
     (let ((lparallel:*kernel* (pool-kernel p)))
       (lparallel:end-kernel :wait nil)))
   *void*)
-(defnative "thread/parallel" (thunk pool &optional keep) ()
+(defnative "thread/parallel" (thunk &optional (pool (rsym "own")) keep) ()
   (declare (ignore keep))
   (unless (accepts-arity-p thunk 0) (arg-error "thread" "(procedure-arity-includes/c 0)" thunk))
-  (unless (pool-p pool) (arg-error "thread" "(or/c parallel-thread-pool? #f)" pool))
-  (create-thread "thread" thunk nil pool))
+  (unless (or (pool-p pool) (symbol-named-p pool "own"))
+    (arg-error "thread" "(or/c #f 'own parallel-thread-pool?)" pool))
+  ;; 'own: a pool of one worker, for this thread alone
+  (if (pool-p pool)
+      (create-thread "thread" thunk nil pool)
+      (let ((own (native-call "make-parallel-thread-pool" 1)))
+	(create-thread "thread"
+		       (lambda ()
+			 (unwind-protect (funcall thunk)
+			   (native-call "parallel-thread-pool-close" own)))
+		       nil own))))
 
 (defnative "thread/suspend-to-kill" (thunk) ()
   (unless (accepts-arity-p thunk 0)
@@ -747,7 +759,8 @@ the custodian's shutdown.  Raises if C is shut down."
 
 (defnative "current-thread" () (:leaf t) *self*)
 (defnative "thread?" (x) (:leaf t) (bool (rthread-p x)))
-(defnative "get-thread-id" (th) (:leaf t)
+(defnative "get-thread-id" (&optional (th *self*)) (:leaf t)
+  ;; Chez's (get-thread-id), of the current thread; or of TH
   (unless (rthread-p th) (arg-error "get-thread-id" "thread?" th))
   (rthread-id th))
 
@@ -762,10 +775,13 @@ the custodian's shutdown.  Raises if C is shut down."
   (check-thread "thread-running?" th)
   (bool (and (not (rthread-dead th)) (not (rthread-suspended th)))))
 
-(defnative "thread-wait" (th) ()
+(defnative "thread-wait" (th &optional (fail-k nil fail-p)) ()
   (check-thread "thread-wait" th)
+  (when fail-p
+    (unless (accepts-arity-p fail-k 0) (arg-error "thread-wait" "(procedure-arity-includes/c 0)" fail-k)))
   (do-sync "thread-wait" (list th) qs:false nil)
-  *void*)
+  ;; no results kept: FAIL-K's, as thread.rkt's
+  (if fail-p (funcall fail-k) *void*))
 
 (defun kill-thread* (th)
   "Kill TH (not running Racket code of its own)."
@@ -1074,9 +1090,12 @@ while other threads run.  With TIMEOUT (seconds), true, or NIL if it passes."
 (defnative "guard-evt" (proc) (:leaf t)
   (unless (accepts-arity-p proc 0) (arg-error "guard-evt" "(procedure-arity-includes/c 0)" proc))
   (make-revt :guard proc))
-(defnative "alarm-evt" (ms) (:leaf t)
+(defnative "alarm-evt" (ms &optional (monotonic? qs:false)) (:leaf t)
   (unless (realp ms) (arg-error "create-alarm-evt" "real?" ms))
-  (make-revt :alarm ms))
+  ;; MS on the monotonic clock: the same moment on the epoch one
+  (make-revt :alarm (if (truthy monotonic?)
+			(+ ms (- (epoch-ms) (native-call "current-inexact-monotonic-milliseconds")))
+			ms)))
 (defvar *idle-evt* (make-revt :idle))
 (defnative "system-idle-evt" () (:leaf t) *idle-evt*)
 
@@ -2102,6 +2121,7 @@ SYM) called with the channel."
   ("place-dead-evt" (p)
    (unless (place-handle-p p) (arg-error "place-dead-evt" "place?" p))
    (place-dead-evt* p))
-  ("place-pumper-threads" (p vec)
-   (setf (place-handle-pumpers p) vec)
-   *void*))
+  ("place-pumper-threads" (p &optional (vec nil vec-p))
+   (if vec-p
+       (progn (setf (place-handle-pumpers p) vec) *void*)
+       (place-handle-pumpers p))))

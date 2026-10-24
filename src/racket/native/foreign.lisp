@@ -208,8 +208,9 @@ the collector next runs)."
 
 (defun call-with-cp-sap (who cp offset size function)
   "Call FUNCTION with a SAP SIZE bytes at OFFSET past CP, pinned."
-  (let ((base (cp-base cp))
-	(pos (+ (cp-offset cp) offset)))
+  ;; a byte string is a pointer to its own bytes, as Racket CS's
+  (let ((base (if (typep cp '(simple-array (unsigned-byte 8) (*))) cp (cp-base cp)))
+	(pos (if (typep cp '(simple-array (unsigned-byte 8) (*))) offset (+ (cp-offset cp) offset))))
     (cond ((null base) (funcall function (sb-sys:int-sap (ldb (byte 64 0) pos))))
 	  (t (unless (<= 0 pos (- (octet-length base) size))
 	       (racket-error (who-string who) "access outside the memory of a byte string~%  offset: ~D~%  size: ~D~%  memory size: ~D"
@@ -627,11 +628,13 @@ the collector next runs)."
 	   (if (and q (cp-origin q)) (- (cp-offset q) (cp-origin q)) 0)))
 	(t (arg-error "ptr-offset" "cpointer?" p))))
 
-(defforeign "set-ptr-offset!" (p n) (:leaf t)
+(defforeign "set-ptr-offset!" (p n &optional (type nil type-p)) (:leaf t)
   (unless (and (cp-p p) (cp-origin p))
     (arg-error "set-ptr-offset!" "(and/c cpointer? ptr-offset?)" p))
   (unless (integerp n) (arg-error "set-ptr-offset!" "exact-integer?" n))
-  (setf (cp-offset p) (+ (cp-origin p) n))
+  (when type-p
+    (unless (fctype-p type) (arg-error "set-ptr-offset!" "ctype?" type)))
+  (setf (cp-offset p) (+ (cp-origin p) (if type-p (* n (fct-sizeof type)) n)))
   *void*)
 
 (defforeign "ptr-add" (p n &optional (type nil type-p)) (:leaf t)

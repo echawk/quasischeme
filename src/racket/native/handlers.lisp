@@ -650,14 +650,18 @@ source locations, if it has any and error-print-context-length isn't 0."
       (values nil nil)))
 
 (defnative "custom-write?" (x) (:leaf t) (bool (nth-value 1 (property-of x "prop:custom-write"))))
-(defnative "custom-write-accessor" (x) (:leaf t)
+(defnative "custom-write-accessor" (x &optional (fail nil fail-p)) ()
   (multiple-value-bind (v found) (property-of x "prop:custom-write")
-    (if found v (arg-error "custom-write-accessor" "custom-write?" x))))
+    (cond (found v)
+	  (fail-p (if (functionp fail) (funcall fail) fail))
+	  (t (arg-error "custom-write-accessor" "custom-write?" x)))))
 (defnative "custom-print-quotable?" (x) (:leaf t)
   (bool (nth-value 1 (property-of x "prop:custom-print-quotable"))))
-(defnative "custom-print-quotable-accessor" (x) (:leaf t)
+(defnative "custom-print-quotable-accessor" (x &optional (fail nil fail-p)) ()
   (multiple-value-bind (v found) (property-of x "prop:custom-print-quotable")
-    (if found v (arg-error "custom-print-quotable-accessor" "custom-print-quotable?" x))))
+    (cond (found v)
+	  (fail-p (if (functionp fail) (funcall fail) fail))
+	  (t (arg-error "custom-print-quotable-accessor" "custom-print-quotable?" x)))))
 
 (defnative "procedure-struct-type?" (type) (:leaf t)
   (unless (struct-type-p type) (arg-error "procedure-struct-type?" "struct-type?" type))
@@ -751,7 +755,8 @@ makes the procedure NAME names."
 	   (qs-r6rs::make-mark-set (if found marks (current-marks)))))
 	(t (arg-error "continuation-marks" "(or/c continuation? thread? #f)" k))))
 
-(defnative "continuation-mark-set->context" (marks) (:leaf t)
+(defnative "continuation-mark-set->context" (marks &optional realms?) (:leaf t)
+  (declare (ignore realms?))
   (unless (qs-r6rs::mark-set-p marks)
     (arg-error "continuation-mark-set->context" "continuation-mark-set?" marks))
   ;; no record of the calls: the context is empty
