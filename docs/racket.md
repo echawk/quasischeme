@@ -41,8 +41,12 @@ linklets to Lisp, with Racket's primitives written natively in Lisp.
   printer, hash tables, `equal?`, exceptions and error messages,
   parameters, continuation marks and prompts, threads, events and
   custodians (SBCL threads with a baton, preempted every 10 ms),
-  `#%foreign` on CFFI, `#%network`, extflonum stubs, places, futures
-  and will executors as stand-ins. Regexps are Racket's own regexp
+  `#%foreign` on CFFI, `#%network`, extflonum stubs, will executors as
+  stand-ins; futures on lparallel's workers, blocking at a
+  future-unsafe operation until touched, and places as SBCL threads
+  with a place's own scheduler, roots, parameter cells, place-locals
+  and namespace, the expander's instance shared (both as Racket CS's;
+  src/racket/native/threads.lisp). Regexps are Racket's own regexp
   layer; the old cl-ppcre natives remain as the fallback
   (`QUASISCHEME_RACKET_REGEXP=native`). A mutable (not weak) hash table is
   SBCL's unsynchronized one under a lock of its own (`WITH-RHASH-LOCK`,
@@ -78,7 +82,7 @@ linklets to Lisp, with Racket's primitives written natively in Lisp.
 
 What's missing: a faster cold start (compiling the linklets with SBCL
 is most of it; a cheaper policy didn't help, and `(debug 0)` breaks
-procedure arities, which is why linklets keep `compute-debug-fun 0`), real places and futures, the thread and io layers themselves, and the
+procedure arities, which is why linklets keep `compute-debug-fun 0`), the thread and io layers themselves, and the
 crashes Racket's suite still finds. `--racket` is strategy B,
 `--racket=linklet`; `--racket=cs` (A) reports "not implemented yet".
 
