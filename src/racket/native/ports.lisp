@@ -1162,6 +1162,13 @@ string and then its bytes, as WRITE-STRING would."
 (defnative "port-closed?" (p) (:leaf t)
   (setq p (unwrap-out (unwrap-in p)))
   (bool (cond ((rinport-p p) (rinport-closed p)) ((routport-p p) (routport-closed p)))))
+(defun host-fd-stream (p)
+  "The SBCL fd-stream host stream P is, through synonym streams, or NIL."
+  (loop while (typep p 'synonym-stream) do (setq p (symbol-value (synonym-stream-symbol p))))
+  (and (sb-sys:fd-stream-p p) p))
+
 (defnative "file-stream-port?" (p) (:leaf t)
+  ;; the host's fd streams too: stdin, stdout and stderr, and pipes
   (bool (or (and (rinport-p p) (rpath-p (rinport-name p)))
-	    (and (routport-p p) (eq (routport-kind p) :file)))))
+	    (and (routport-p p) (eq (routport-kind p) :file))
+	    (and (streamp p) (host-fd-stream p)))))

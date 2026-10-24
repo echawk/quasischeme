@@ -1,0 +1,10 @@
+enabled #t
+fibs (6765 10946 17711 28657)
+waits (0 0 0 0)
+echo (#(a "bc" 3.5 (1 . 2) #hash((k . v))) #t)
+via-channel
+error exit 1
+exit 3
+killed 1 #t
+captured "from a place\n"
+allowed #t #f

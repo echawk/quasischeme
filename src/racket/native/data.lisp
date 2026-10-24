@@ -1317,11 +1317,17 @@ of the square roots of the first (or the ninth to sixteenth) primes."
   (handler-case (float x 1d0)
     (error () (if (plusp x) sb-ext:double-float-positive-infinity sb-ext:double-float-negative-infinity))))
 
+(defvar *place-shared* (make-hash-table :test 'eq :weakness :key :synchronized t)
+  "The byte strings made by shared-bytes and make-shared-bytes: a place
+message passes them to another place, not copies of them (place-shared?).")
+
+(defun place-shared (x) (setf (gethash x *place-shared*) t) x)
+
 (defnative "shared-bytes" (&rest bytes) (:leaf t)
-  (make-array (length bytes) :element-type '(unsigned-byte 8) :initial-contents bytes))
+  (place-shared (make-array (length bytes) :element-type '(unsigned-byte 8) :initial-contents bytes)))
 (defnative "make-shared-bytes" (n &optional (fill 0)) (:leaf t)
   (check-nonneg "make-shared-bytes" n)
-  (make-array n :element-type '(unsigned-byte 8) :initial-element fill))
+  (place-shared (make-array n :element-type '(unsigned-byte 8) :initial-element fill)))
 
 (defstruct (phantom-bytes (:constructor make-phantom-bytes* (size))) size)
 

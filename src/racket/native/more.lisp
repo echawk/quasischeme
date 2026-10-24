@@ -378,42 +378,6 @@
   (error 'racket-error :who who :type "exn:fail:unsupported"
 		       :message (format nil "~A are not supported" what)))
 
-(defstruct (place-channel-end (:constructor make-place-channel-end (in out)))
-  in out)				; conses whose cdr is a queue's list
-
-(defnative "place-enabled?" () (:instance "#%place" :leaf t) qs:false)
-(defnative "place?" (x) (:instance "#%place" :leaf t) (declare (ignore x)) qs:false)
-(defnative "place-channel?" (x) (:instance "#%place" :leaf t) (bool (place-channel-end-p x)))
-(defnative "place-shared?" (x) (:instance "#%place" :leaf t) (declare (ignore x)) qs:false)
-(defnative "place-channel" () (:instance "#%place" :leaf t)
-  (let ((a (list :queue)) (b (list :queue)))
-    (values (make-place-channel-end a b) (make-place-channel-end b a))))
-(defnative "place-channel-put" (ch v) (:instance "#%place" :leaf t)
-  (let ((q (place-channel-end-out ch)))
-    (setf (cdr q) (append (cdr q) (list v))))
-  *void*)
-(defnative "place-channel-get" (ch) (:instance "#%place" :leaf t)
-  (let ((q (place-channel-end-in ch)))
-    (if (cdr q)
-	(pop (cdr q))
-	(racket-error "place-channel-get" "would block forever (one place, one thread)"))))
-(defnative "place-message-allowed?" (v) (:instance "#%place" :leaf t)
-  (labels ((ok (x)
-	     (or (numberp x) (characterp x) (symbolp x) (stringp x) (null x)
-		 (typep x '(simple-array (unsigned-byte 8) (*)))
-		 (eq x qs:true) (eq x qs:false) (eq x *void*)
-		 (place-channel-end-p x)
-		 (and (consp x) (ok (car x)) (ok (cdr x)))
-		 (and (simple-vector-p x) (every #'ok x)))))
-    (bool (ok v))))
-(defnatives "#%place"
-  ("dynamic-place" (&rest args) (declare (ignore args)) (unsupported "dynamic-place" "places"))
-  ("place-break" (&rest args) (declare (ignore args)) (unsupported "place-break" "places"))
-  ("place-kill" (p) (declare (ignore p)) (unsupported "place-kill" "places"))
-  ("place-wait" (p) (declare (ignore p)) (unsupported "place-wait" "places"))
-  ("place-dead-evt" (p) (declare (ignore p)) (unsupported "place-dead-evt" "places"))
-  ("place-pumper-threads" (&rest args) (declare (ignore args)) (unsupported "place-pumper-threads" "places")))
-
 (defnatives "#%futures"
   ("processor-count" () (processor-count))
   ("mark-future-trace-end!" () *void*)

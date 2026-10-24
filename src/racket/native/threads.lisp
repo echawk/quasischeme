@@ -315,7 +315,8 @@
     ((or rsemaphore revt rthread rchannel rwill-executor custodian-box subprocess rinport routport) t)
     ;; the host's own ports (those of racket/base's host layer)
     ((and stream (not rstruct)) (or (input-stream-p x) (output-stream-p x)))
-    (t (and (struct-instance-p x) (nth-value 1 (property-value x *prop-evt*))))))
+    (t (or (pchannel-p x) (place-handle-p x)	; places (below)
+	   (and (struct-instance-p x) (nth-value 1 (property-value x *prop-evt*)))))))
 
 (defnative "evt?" (x) (:leaf t) (bool (evt-value-p x)))
 
@@ -897,6 +898,9 @@ thread is the root's)."
 	  (expand-guard (funcall (revt-target e) nack) who poll (cons sema groups) wraps)))
        (t (list (make-branch e wraps groups)))))
     (t (cond ((not (evt-value-p e)) (arg-error who "evt?" e))
+	     ;; a place channel, or a place: its next message
+	     ((pchannel-p e) (expand-evt (place-channel-evt e) who poll groups wraps))
+	     ((place-handle-p e) (expand-evt (place-channel-evt (place-handle-pch e)) who poll groups wraps))
 	     ((and (streamp e) (not (struct-instance-p e)) (input-stream-p e)) (expand-evt (host-adapter who e) who poll groups wraps))
 	     ((and (streamp e) (not (struct-instance-p e))) (list (make-branch (make-revt :thunk (lambda () e)) wraps groups)))
 	     ((struct-instance-p e)
@@ -1744,4 +1748,360 @@ delimited: its outcome, (:values . values) or (:raise v)."
    (loop until (fsemaphore-take s)
 	 do (timed-wait (fsemaphore-lock s) (fsemaphore-cv s) (lambda () (not (plusp (fsemaphore-count s)))) 0.005)
 	    (unless *future* (yield-thread)))
+   *void*))
+
+;;; ------------------------------------------------------------------
+;;; Places (racket/place), as Racket CS's (racket/src/thread/place.rkt,
+;;; place-message.rkt; cs/main.sps's start-place): a place is an SBCL
+;;; thread running a Racket instance of its own in this image.  The
+;;; expander's instance and the code are shared, as Racket CS's are; a
+;;; place's own are its RPLACE (control.lisp: scheduler, roots,
+;;; parameter cells, place-locals), its namespace and module registry
+;;; (expander-place-init!), and its ports.  Messages are copied
+;;; (MESSAGE-IZE), but for immutable ones and shared byte strings.
+
+(defstruct (message-queue (:constructor make-message-queue ()))
+  (lock (sb-thread:make-mutex :name "racket place channel"))
+  (items '()) (last nil))
+
+(defun enqueue-message (q v)
+  (sb-thread:with-mutex ((message-queue-lock q))
+    (let ((cell (list v)))
+      (if (message-queue-items q)
+	  (setf (cdr (message-queue-last q)) cell)
+	  (setf (message-queue-items q) cell))
+      (setf (message-queue-last q) cell))))
+
+(defun dequeue-message (q)
+  "The next message of Q and T, or NIL and NIL if there is none."
+  (sb-thread:with-mutex ((message-queue-lock q))
+    (let ((items (message-queue-items q)))
+      (if items
+	  (progn (setf (message-queue-items q) (cdr items))
+		 (values (car items) t))
+	  (values nil nil)))))
+
+;;; A place channel's end: the queue it reads, and the one it writes
+(defstruct (pchannel (:constructor make-pchannel (in out))) in out)
+(defmethod print-object ((x pchannel) stream) (write-string "#<place-channel>" stream))
+
+(defun make-place-channel-pair ()
+  (let ((a (make-message-queue)) (b (make-message-queue)))
+    (values (make-pchannel a b) (make-pchannel b a))))
+
+;;; A place, as its creator sees it: also the channel to it
+(defstruct (place-handle (:constructor make-place-handle (rplace pch)))
+  rplace pch
+  (result nil)				; its exit code once it's done
+  (thread nil)				; its SBCL thread
+  (killed nil)				; place-kill asked
+  (pumpers nil))
+(defmethod print-object ((x place-handle) stream) (write-string "#<place>" stream))
+
+(defun unwrap-place-channel (who x)
+  (cond ((pchannel-p x) x)
+	((place-handle-p x) (place-handle-pch x))
+	(t (arg-error who "place-channel?" x))))
+
+;;; Messages: place-message.rkt's rules.  Direct: a value made of
+;;; immutable parts, passed as it is; else copied, cycles and sharing
+;;; kept with placeholders.
+
+(defun prim (name) (values (primitive name)))
+
+(defun immutable-prefab-key (v)
+  "V's prefab key, if V is an instance of a prefab type whose fields are
+all immutable (no mutable-field vector in the key); else NIL."
+  (let ((k (funcall (prim "prefab-struct-key") v)))
+    (and (truthy k)
+	 (labels ((mutable-p (k) (cond ((vectorp k) (plusp (length k)))
+				       ((consp k) (or (mutable-p (car k)) (mutable-p (cdr k))))
+				       (t nil))))
+	   (not (mutable-p k)))
+	 k)))
+
+(defun place-atom-p (v)
+  (or (numberp v) (characterp v) (eq v qs:true) (eq v qs:false) (null v)
+      (eq v *void*) (keywordp v) (racket-symbol-p v)
+      (truthy (funcall (prim "keyword?") v))))
+
+(defun message-allowed-p (v direct)
+  (let ((graph (make-hash-table :test 'eq)))
+    (labels ((imm (x) (truthy (funcall (prim "immutable?") x)))
+	     (imp (x) (truthy (funcall (prim "impersonator?") x)))
+	     (shared (x) (gethash x *place-shared*))
+	     (ok (v)
+	       (cond ((place-atom-p v) t)
+		     ((or (stringp v) (typep v '(simple-array (unsigned-byte 8) (*))))
+		      (or (not direct) (imm v) (shared v)))
+		     ((or (pchannel-p v) (place-handle-p v)) (not direct))
+		     ((gethash v graph) t)
+		     ((consp v) (setf (gethash v graph) t) (and (ok (car v)) (ok (cdr v))))
+		     ((rbox-p v) (setf (gethash v graph) t)
+		      (and (or (not direct) (and (imm v) (not (imp v)))) (ok (rbox-value v))))
+		     ((simple-vector-p v) (setf (gethash v graph) t)
+		      (and (or (not direct) (and (imm v) (not (imp v)))) (every #'ok v)))
+		     ((immutable-prefab-key v) (setf (gethash v graph) t)
+		      (every #'ok (subseq (funcall (prim "struct->vector") v) 1)))
+		     ((truthy (funcall (prim "hash?") v)) (setf (gethash v graph) t)
+		      (and (or (not direct) (and (imm v) (not (imp v))))
+			   (every (lambda (kv) (and (ok (car kv)) (ok (cdr kv))))
+				  (funcall (prim "hash-map") v #'cons))))
+		     (t (and (not direct) (truthy (funcall (prim "cpointer?") v)))))))
+      (ok v))))
+
+(defun immutable-hash-like (h alist)
+  "An immutable table of H's kind with ALIST's entries."
+  (funcall (prim (cond ((truthy (funcall (prim "hash-eq?") h)) "make-immutable-hasheq")
+		       ((truthy (funcall (prim "hash-eqv?") h)) "make-immutable-hasheqv")
+		       ((truthy (funcall (prim "hash-equal-always?") h)) "make-immutable-hashalw")
+		       (t "make-immutable-hash")))
+	   alist))
+
+(defun message-ize (v who)
+  "V copied for another place: mutable strings and byte strings made
+immutable, pairs, boxes, vectors, prefab structs and tables copied
+(sharing and cycles through placeholders), channels kept."
+  (let ((graph (make-hash-table :test 'eq)))
+    (labels ((copy (v)
+	       (cond ((place-atom-p v) v)
+		     ((stringp v) (funcall (prim "string->immutable-string") v))
+		     ((typep v '(simple-array (unsigned-byte 8) (*)))
+		      (if (gethash v *place-shared*) v (funcall (prim "bytes->immutable-bytes") v)))
+		     ((pchannel-p v) v)
+		     ((place-handle-p v) (place-handle-pch v))
+		     ((gethash v graph))
+		     (t (let ((ph (make-placeholder* nil)))
+			  (setf (gethash v graph) ph)
+			  (setf (placeholder-value ph)
+				(cond ((consp v) (cons (copy (car v)) (copy (cdr v))))
+				      ((rbox-p v) (funcall (prim "box") (copy (rbox-value v))))
+				      ((simple-vector-p v) (map 'simple-vector #'copy v))
+				      ((immutable-prefab-key v)
+				       (apply (prim "make-prefab-struct") (immutable-prefab-key v)
+					      (map 'list #'copy (subseq (funcall (prim "struct->vector") v) 1))))
+				      ((truthy (funcall (prim "hash?") v))
+				       (immutable-hash-like v (mapcar (lambda (kv) (cons (copy (car kv)) (copy (cdr kv))))
+								      (funcall (prim "hash-map") v #'cons))))
+				      ((truthy (funcall (prim "cpointer?") v)) (funcall (prim "ptr-add") v 0))
+				      (t (arg-error who "place-message-allowed?" v))))
+			  ph)))))
+      (funcall (prim "make-reader-graph") (copy v)))))
+
+(defun un-message-ize (v)
+  "A copied message as the receiver gets it: vectors and boxes immutable."
+  (labels ((walk (v seen)
+	     (cond ((gethash v seen))
+		   ((consp v) (cons (walk (car v) seen) (walk (cdr v) seen)))
+		   ((rbox-p v) (funcall (prim "box-immutable") (walk (rbox-value v) seen)))
+		   ((simple-vector-p v)
+		    (funcall (prim "vector->immutable-vector") (map 'simple-vector (lambda (e) (walk e seen)) v)))
+		   (t v))))
+    (if (and (consp v) (eq (car v) :message)) (walk (cdr v) (make-hash-table :test 'eq)) v)))
+
+(defun place-message (v who)
+  (if (message-allowed-p v t)
+      v
+      (progn (unless (message-allowed-p v nil) (arg-error who "place-message-allowed?" v))
+	     (cons :message (message-ize v who)))))
+
+(defun place-channel-evt (pch)
+  "An event ready with PCH's next message: polled, as an external one."
+  (make-revt :wrap (list (make-revt :poll (lambda () (dequeue-message (pchannel-in pch))))
+			 (lambda (v) (un-message-ize v)))))
+
+;;; Starting a place: main.sps's start-place, in an SBCL thread of its own
+
+(defun fd-port (fd direction)
+  ;; an input one binary: the host ports' adapter reads bytes (HOST-FILL)
+  (sb-sys:make-fd-stream fd direction t
+			    :element-type (if (eq direction :input) '(unsigned-byte 8) :default)
+			    :buffering (if (eq direction :input) :full :line)
+			    :external-format :utf-8 :auto-close t))
+
+(defun place-std-port (who port direction)
+  "PORT (a file-stream port, or #f) as the new place's end, an fd, and
+the creator's end of a pipe, if one was made."
+  (cond ((not (truthy port))
+	 (multiple-value-bind (r w) (sb-posix:pipe)
+	   (if (eq direction :input)
+	       (values r (fd-port w :output))
+	       (values w (fd-port r :input)))))
+	((and (routport-p port) (eq (routport-kind port) :file))
+	 (finish-output (file-outport-stream port))
+	 (values (sb-posix:dup (file-stream-fd port)) qs:false))
+	((and (streamp port) (host-fd-stream port))
+	 (finish-output port)
+	 (values (sb-posix:dup (sb-sys:fd-stream-fd (host-fd-stream port))) qs:false))
+	(t (arg-error who (if (eq direction :input) "(or/c file-stream-port? #f)" "(or/c file-stream-port? #f)") port))))
+
+(defvar *in-place-body* nil "True in a place's main thread once it can exit (PLACE-EXIT).")
+
+(defun run-place (handle pch path sym fds inherited)
+  "The new place's main thread: its exit code."
+  (let ((place (place-handle-rplace handle)))
+    (destructuring-bind (in out err) fds
+      (let* ((*rplace* place)
+	     (*standard-input* (fd-port in :input))
+	     (*standard-output* (fd-port out :output))
+	     (*error-output* (if (eql err out) *standard-output* (fd-port err :output)))
+	     (*self* nil) (*in-sched* nil) (*uncaught* nil) (*parallel-p* nil) (*in-place-body* nil)
+	     (*future* nil) (*future-detached* nil) (qs-r6rs::*marks* nil))
+	(qs:disable-float-traps)
+	(setq *main-thread* (make-rthread (rsym "main")))
+	(init-place-scheduler)
+	(setf (rthread-state *main-thread*) :running
+	      (rthread-lisp *main-thread*) sb-thread:*current-thread*
+	      *self* *main-thread*
+	      *root-custodian* (make-custodian* nil)
+	      *root-thread-group* (make-thread-group* nil)
+	      *root-parameterization* (make-parameterization '())
+	      ;; rktio.lisp's, after this file
+	      (rplace-rktio place) nil
+	      (rplace-rktio-std-fds place) (make-array 3 :initial-element nil))
+	(unwind-protect
+	     (catch 'place-exit
+	       (setq *in-place-body* t)
+	       (when (place-handle-killed handle) (throw 'place-exit 1))
+	       (qsx::with-thread-state
+		 (with-racket-errors
+		   (qsx::call-with-continuation-base
+		    (lambda ()
+		      (call-with-continuation-prompt
+		       (lambda ()
+			 (funcall *current-custodian* *root-custodian*)
+			 (funcall *current-thread-group* *root-thread-group*)
+			 (funcall *current-plumber* (make-plumber*))
+			 (funcall *exit-handler*
+				  (lambda (v)
+				    (flush-place-output)
+				    (throw 'place-exit (if (and (integerp v) (<= 0 v 255)) v 0))))
+			 (funcall (primitive "current-pseudo-random-generator")
+				  (funcall (primitive "make-pseudo-random-generator")))
+			 (start-place pch path sym inherited)
+			 (flush-place-output)
+			 0)
+		       *default-prompt-tag*
+		       ;; an escape to the default prompt: exit status 1
+		       (lambda (&rest args) (declare (ignore args)) (flush-place-output) 1)))))))
+	  (ignore-errors (shutdown-custodian *root-custodian*))
+	  (ignore-errors (flush-place-output))
+	  ;; io-place-destroy!: the place's ends of its pipes closed, so
+	  ;; that the creator's pumps see their ends
+	  (dolist (s (list *standard-input* *standard-output* *error-output*))
+	    (ignore-errors (close s))))))))
+
+(defun flush-place-output ()
+  (ignore-errors (funcall (primitive "flush-output") (funcall *current-output-port*)))
+  (ignore-errors (funcall (primitive "flush-output") (funcall *current-error-port*)))
+  (ignore-errors (finish-output *standard-output*))
+  (ignore-errors (finish-output *error-output*)))
+
+(defun start-place (pch path sym inherited)
+  "main.sps's start-place: the place's io, expander and namespace made,
+the creator's directory and collection paths, then (dynamic-require PATH
+SYM) called with the channel."
+  (funcall (expander-export "expander-place-init!"))
+  (funcall (expander-export "boot"))
+  (destructuring-bind (dir paths links roots) inherited
+    (funcall (kernel-ref "current-directory") dir)
+    (funcall (kernel-ref "current-library-collection-paths") paths)
+    (funcall (kernel-ref "current-library-collection-links") links)
+    (funcall (kernel-ref "current-compiled-file-roots") roots))
+  (funcall (expander-call "dynamic-require" path sym) pch))
+
+(defun dynamic-place (path sym in out err)
+  (unless (racket-symbol-p sym) (arg-error "dynamic-place" "symbol?" sym))
+  (ensure-scheduler)
+  (let ((inherited (list (funcall (kernel-ref "current-directory"))
+			 (funcall (kernel-ref "current-library-collection-paths"))
+			 (funcall (kernel-ref "current-library-collection-links"))
+			 (funcall (kernel-ref "current-compiled-file-roots")))))
+    (multiple-value-bind (in-fd parent-in) (place-std-port "dynamic-place" in :input)
+      (multiple-value-bind (out-fd parent-out) (place-std-port "dynamic-place" out :output)
+	(multiple-value-bind (err-fd parent-err)
+	    (if (and (racket-symbol-p err) (string= (rname err) "stdout"))
+		(values out-fd qs:false)
+		(place-std-port "dynamic-place" err :output))
+	  (let ((place (make-rplace *rplace*)))
+	    (setf (rplace-parameter-cells place) (make-hash-table :test 'eq :synchronized t)
+		  (rplace-locals place) (make-hash-table :test 'eq :weakness :key :synchronized t))
+	    (multiple-value-bind (parent-pch child-pch) (make-place-channel-pair)
+	      (let ((handle (make-place-handle place parent-pch)))
+		(setf (rplace-object place) handle)
+		(setf (place-handle-thread handle)
+		      ;; its stack is a thread's (ENSURE-SCHEDULER: 64 MB)
+		      (progn
+			(sb-thread:make-thread
+			 (lambda ()
+			   (let ((code (handler-case (run-place handle child-pch path sym
+								(list in-fd out-fd err-fd) inherited)
+					 (error () 1))))
+			     (sb-thread:with-mutex ((rplace-lock place))
+			       (setf (place-handle-result handle) (if (integerp code) code 1))
+			       (sb-thread:condition-broadcast (rplace-cv place)))))
+			 :name "racket place")))
+		(values handle parent-in parent-out parent-err)))))))))
+
+(defun place-done-p (p) (place-handle-result p))
+
+(defun place-dead-evt* (p)
+  "An event ready, with itself, once P has ended."
+  (let ((e nil))
+    (setq e (make-revt :poll (lambda () (if (place-done-p p) (values e t) (values nil nil)))))))
+
+(defun place-wait* (p)
+  (unless (place-done-p p) (sync-evts (list (place-dead-evt* p))))
+  (let ((pumpers (place-handle-pumpers p)))
+    (when (simple-vector-p pumpers)
+      (loop for th across pumpers when (rthread-p th) do (sync-evts (list th))))
+    (setf (place-handle-pumpers p) nil))
+  (place-handle-result p))
+
+(defun place-kill* (p)
+  (unless (place-done-p p)
+    (setf (place-handle-killed p) t)
+    (let ((th (place-handle-thread p)))
+      ;; not before the place can exit: it checks KILLED then
+      (ignore-errors (sb-thread:interrupt-thread th (lambda () (when *in-place-body* (throw 'place-exit 1))))))
+    (place-wait* p))
+  *void*)
+
+(defnatives "#%place"
+  ("place-enabled?" () qs:true)
+  ("place?" (x) (bool (place-handle-p x)))
+  ("place-channel?" (x) (bool (or (pchannel-p x) (place-handle-p x))))
+  ("place-shared?" (x) (bool (gethash x *place-shared*)))
+  ("place-message-allowed?" (v) (bool (message-allowed-p v nil)))
+  ("place-channel" () (make-place-channel-pair))
+  ("place-channel-put" (ch v)
+   (let ((pch (unwrap-place-channel "place-channel-put" ch)))
+     (enqueue-message (pchannel-out pch) (place-message v "place-channel-put")))
+   *void*)
+  ("place-channel-get" (ch)
+   (let ((pch (unwrap-place-channel "place-channel-get" ch)))
+     (multiple-value-bind (v found) (dequeue-message (pchannel-in pch))
+       (if found (un-message-ize v) (sync-evts (list (place-channel-evt pch)))))))
+  ("dynamic-place" (path sym in out err) (dynamic-place path sym in out err))
+  ("place-wait" (p)
+   (unless (place-handle-p p) (arg-error "place-wait" "place?" p))
+   (place-wait* p))
+  ("place-kill" (p)
+   (unless (place-handle-p p) (arg-error "place-kill" "place?" p))
+   (place-kill* p))
+  ("place-break" (p &optional (kind qs:false))
+   (unless (place-handle-p p) (arg-error "place-break" "place?" p))
+   (let ((main (rplace-main-thread (place-handle-rplace p))))
+     (when (and main (not (rthread-dead main)))
+       (setf (rthread-pending-break main)
+	     (cond ((not (truthy kind)) :break)
+		   ((string= (rname kind) "hang-up") :hang-up)
+		   ((string= (rname kind) "terminate") :terminate)
+		   (t (arg-error "place-break" "(or/c #f 'hang-up 'terminate)" kind))))))
+   *void*)
+  ("place-dead-evt" (p)
+   (unless (place-handle-p p) (arg-error "place-dead-evt" "place?" p))
+   (place-dead-evt* p))
+  ("place-pumper-threads" (p vec)
+   (setf (place-handle-pumpers p) vec)
    *void*))
