@@ -79,7 +79,8 @@
 
 ;; Chez's system primitives are named $...: a clause that uses one is
 ;; unsupported, unless the clause binds that name itself (as a test's
-;; own (define $x ...) does)
+;; own (define $x ...) does) or it's bound at top level (an earlier
+;; clause's definition, or a system primitive Quasischeme has)
 (define (uses-system-primitive? clause)
   (define (dollar? x)
     (and (symbol? x)
@@ -116,7 +117,7 @@
        (walk (car x))
        (walk (cdr x))]
       [else #f]))
-  (exists (lambda (u) (not (memq u bound))) used))
+  (exists (lambda (u) (not (or (memq u bound) (eq? u '$primitive) (top-level-bound? u)))) used))
 
 (define (condition-message-string c)
   (let ([s (call-with-string-output-port (lambda (p) (display-condition c p)))])

@@ -578,6 +578,11 @@ Called while the standard libraries are installed."
   (install-interaction-library *chez-interaction-library*)
   (pushnew 'load-library-file-at-top-level qsx::*library-loaders*))
 
+(defparameter *chez-system-library* '("quasischeme" "chez" "system")
+  "The library whose body is (chezscheme)'s: its exports and the system
+procedures, the $-names, which Chez's top level has and (chezscheme)
+doesn't export.")
+
 (defun install-chezscheme-library ()
   (let* ((r6rs (remove-duplicates (qsx:table-exports '("r" "mp" "ms" "r5" "ev")) :test #'string=))
 	 (exports (remove-duplicates
@@ -589,11 +594,18 @@ Called while the standard libraries are installed."
     ;; and define-ftype's (ftype.scm)
     (dolist (form (read-forms (asdf:system-relative-pathname :quasischeme "src/chez/ftype-helpers.sls")))
       (qsx:eval-library form))
-    (qsx:eval-library
-     (list* (ssym "library") (list (ssym "chezscheme"))
-	    (cons (ssym "export")
-		  (mapcar #'ssym exports))
-	    (read-scheme (format nil "(import (rnrs) (rnrs mutable-pairs) (rnrs mutable-strings) (rnrs r5rs) (rnrs eval)
+    ;; The body is (quasischeme chez system)'s, which exports the system
+    ;; procedures (the $-names it defines) too, as Chez's top level has
+    ;; them; (chezscheme) is its exports but those
+    (let* ((body (loop for file in *chezscheme-sources*
+		       append (read-forms (asdf:system-relative-pathname
+					   :quasischeme (concatenate 'string "src/chez/" file)))))
+	   (system (remove-duplicates (system-procedure-names body) :test #'string=)))
+      (qsx:eval-library
+       (list* (ssym "library") (mapcar #'ssym *chez-system-library*)
+	      (cons (ssym "export")
+		    (mapcar #'ssym (append exports (set-difference system exports :test #'string=))))
+	      (read-scheme (format nil "(import (rnrs) (rnrs mutable-pairs) (rnrs mutable-strings) (rnrs r5rs) (rnrs eval)
                                   (only (quasischeme r7rs syntax) parameterize include define-values)
 
                                   (only (quasischeme) ~{~A~^ ~})
@@ -601,11 +613,24 @@ Called while the standard libraries are installed."
                                   (prefix (quasischeme chez host) %)
                                   (quasischeme chez extend-syntax)
                                   (quasischeme chez ftype-helpers))"
-				 *chezscheme-from-psyntax*))
-	    (loop for file in *chezscheme-sources*
-		  append (read-forms (asdf:system-relative-pathname
-				      :quasischeme (concatenate 'string "src/chez/" file))))))
+				   *chezscheme-from-psyntax*))
+	      body))
+      (qsx:eval-library
+       (list (ssym "library") (list (ssym "chezscheme"))
+	     (cons (ssym "export") (mapcar #'ssym exports))
+	     (list (ssym "import") (mapcar #'ssym *chez-system-library*)))))
     exports))
+
+(defun system-procedure-names (forms)
+  "The $-names FORMS define at their top level (in a begin, too)."
+  (loop for form in forms
+	append (cond ((head-is form "begin") (system-procedure-names (cdr form)))
+		     ((and (or (head-is form "define") (head-is form "define-syntax") (head-is form "define-who"))
+			   (consp (cdr form)))
+		      (let ((name (if (consp (cadr form)) (car (cadr form)) (cadr form))))
+			(and (symbolp name)
+			     (let ((n (sname* name))) (and (> (length n) 1) (char= (char n 0) #\$)))
+			     (list (sname* name))))))))
 
 ;;; ------------------------------------------------------------------
 ;;; The top level
@@ -639,7 +664,7 @@ the top level already running, or the main one."
 			  (mapcar #'sname* (funcall (qsx:host-ref "psyntax:interaction-library-name"))))
 		     *chez-interaction-library*)))
     (with-psyntax-parameter ("psyntax:interaction-library-name" (mapcar #'ssym library))
-      (with-psyntax-parameter ("psyntax:interaction-source-name" (list (ssym "chezscheme")))
+      (with-psyntax-parameter ("psyntax:interaction-source-name" (mapcar #'ssym *chez-system-library*))
 	;; a body's definitions come before its expressions, as in Chez
 	(with-psyntax-parameter ("psyntax:mixed-bodies" qs:false)
 	  (eval-top-level-forms form))))))

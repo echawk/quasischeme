@@ -47,7 +47,7 @@ clause:
 | fail | false, or raised no error where it should have |
 | error | raised an unexpected condition |
 | unbound | referred to a name `(chezscheme)` doesn't export |
-| unsup | needs what isn't planned here: Chez's compiler internals, the inspector, `$` system procedures |
+| unsup | needs what isn't planned here: Chez's compiler internals, the inspector, a `$` system procedure not bound here |
 | crash | hung or killed its process, and was skipped on a retry |
 
 The files about the compiler or C (cp0, cptypes, foreign, profile,
@@ -55,10 +55,21 @@ windows) aren't counted in the totals. The latest run:
 
 | | pass | fail | error | unbound | unsup | crash |
 |---|---|---|---|---|---|---|
-| **counted files** | **16391** | **986** | **391** | **485** | **5880** | **22** |
+| **counted files** | **20121** | **1651** | **539** | **142** | **2712** | **30** |
+| before the $-names counted by what's bound (Oct 25) | 16391 | 986 | 391 | 485 | 5880 | 22 |
 | before separate-eval, object files and oop (Oct 13) | 15045 | 989 | 591 | 663 | 6848 | 20 |
 | before compiled programs and the checks below (Oct 12) | 13792 | 1006 | 786 | 1157 | 6802 | 20 |
 | first run | 7892 | 941 | 714 | 1798 | 4726 | 24 |
+
+A clause that names a `$` variable is run if that name is bound at
+Chez's top level when it runs. The mats define many `$` variables of
+their own (`$v1`, `$ht`) in one clause and use them in later ones, and
+those clauses had been counted as unsupported. Chez's system procedures
+(`$fxu<`, `$integer-8?`, `$top-level-value`, ...) are bound at the top
+level as they are in Chez. They live in (quasischeme chez system), whose
+body is (chezscheme)'s, and which exports them too. (chezscheme) exports
+the rest of its names, so a library still doesn't see them. The per-file
+table below predates this.
 
 The first run stopped reading nine files early, at reader syntax we
 didn't have. Once those files read through, more of their clauses

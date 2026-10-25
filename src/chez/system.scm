@@ -237,3 +237,47 @@
   (unless (pseudo-random-generator? g)
     (assertion-violation 'vector->pseudo-random-generator! "not a pseudo-random generator" g))
   (%chez:vector->pseudo-random-generator g v))
+
+;;; Top-level values by the system's names for them
+(define ($top-level-value s . env) (apply top-level-value s env))
+(define ($set-top-level-value! s v . env) (apply set-top-level-value! s v env))
+(define ($top-level-bound? s . env) (apply top-level-bound? s env))
+(define ($system-environment) (interaction-environment))
+
+;;; Exact integers of a width, signed or unsigned: from -2^(n-1) to 2^n-1
+(define-syntax define-integer-width-predicates
+  (syntax-rules ()
+    ((_ (name bits) ...)
+     (begin
+       (define (name x)
+         (and (integer? x) (exact? x)
+              (<= (- (expt 2 (- bits 1))) x (- (expt 2 bits) 1))))
+       ...))))
+(define-integer-width-predicates
+  ($integer-8? 8) ($integer-16? 16) ($integer-24? 24) ($integer-32? 32)
+  ($integer-40? 40) ($integer-48? 48) ($integer-56? 56) ($integer-64? 64))
+
+;;; Fixnum arithmetic whose result may not be a fixnum, and the unsigned
+;;; comparison of fixnums
+(define (check-fixnums who xs)
+  (for-each (lambda (x) (unless (fixnum? x) (assertion-violation who "not a fixnum" x))) xs))
+(define ($fxx+ . xs) (check-fixnums '$fxx+ xs) (apply + xs))
+(define ($fxx- x . xs) (check-fixnums '$fxx- (cons x xs)) (apply - x xs))
+(define ($fxx* . xs) (check-fixnums '$fxx* xs) (apply * xs))
+(define ($fxu< x y)
+  (check-fixnums '$fxu< (list x y))
+  (if (eq? (fx< x 0) (fx< y 0)) (fx< x y) (fx>= x 0)))
+
+;;; A fixnum or an immediate value (a character, boolean, the empty
+;;; list, ...), as Chez's optimizer passes them on
+(define ($fixmediate x)
+  (if (or (fixnum? x) (char? x) (boolean? x) (null? x) (eof-object? x)
+          (eq? x (void)) (bwp-object? x))
+      x
+      (assertion-violation '$fixmediate "not a fixnum or immediate value" x)))
+
+;;; Parameters of Chez's compiler and debugging aids, which change
+;;; nothing here
+(define $suppress-primitive-inlining (make-parameter #f))
+(define $enable-check-heap (make-parameter #f))
+(define $cafe (make-thread-parameter 0))

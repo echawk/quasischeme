@@ -735,10 +735,18 @@
     ((_ var expr) (letrec ((var expr)) var))))
 
 ;; (eval-when (situation ...) form ...): here everything is evaluated as
-;; it's expanded or run, so the forms are simply spliced in
+;; it's expanded or run, so the forms are simply spliced in; a situation
+;; must be one of Chez's
 (define-syntax eval-when
-  (syntax-rules ()
-    ((_ (situation ...) form ...) (begin form ...))))
+  (lambda (x)
+    (syntax-case x ()
+      ((_ (situation ...) form ...)
+       (for-all (lambda (s)
+                  (and (identifier? s)
+                       (memq (syntax->datum s) '(compile load eval visit revisit))))
+                #'(situation ...))
+       #'(begin form ...))
+      (_ (syntax-violation 'eval-when "invalid syntax" x)))))
 
 ;; #%car reads as ($primitive car): the system's car, whatever car is
 ;; where it's used: the name as this library has it (so also the system
