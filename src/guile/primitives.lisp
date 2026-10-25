@@ -1557,7 +1557,7 @@ that name, if the host has one."
 			 (let ((time (cffi:foreign-funcall "mktime" :pointer tm :long)))
 			   (cons time (tm->vector tm)))))))
 (defguile "tzset" () (cffi:foreign-funcall "tzset" :void) *unspecified*)
-(defguile "primitive-fork" () (sb-posix:fork))
+(defguile "primitive-fork" () (qs:fork-process #'sb-posix:fork))
 (defguile "execlp" (program &rest args)
   (sb-ext:run-program program (cdr args) :search t :output t :error t :input t)
   (sb-ext:exit :code 0))

@@ -450,6 +450,46 @@ compiling a function of thousands of local functions quadratic. In
 src/continuations.lisp, `free-lexicals` counts bound variables in a
 table for the same reason (a body of thousands of definitions).
 
+## Deep recursion and the return-address stack (2026-10-25)
+
+A list recursion 500 calls deep took 3.3 times the cycles of the same
+work 10 deep, at the same instruction count, in SBCL and in C alike;
+Chez Scheme took no more. The processor predicts `RET` from its stack of
+return addresses, a few dozen deep, and every return past that
+mispredicts, about 20 cycles each on an M4. Chez's code returns by a jump
+to the frame's return address instead. So, in the fast layer
+(src/sbcl-vops.lisp), a function that calls itself in exactly one place
+that isn't a tail call, and makes no tail call of another function,
+calls itself by `ADR LR` and `B`, which push nothing on that stack. Each
+of its returns compares the return address with that call's and branches
+straight back there if they're equal, else `RET`s to its caller, which
+the undisturbed stack predicts. By cycles, interleaved, against
+`QUASISCHEME_SELF_CALLS=0`: ack 0.39, divrec 0.59, primes 0.62, fft
+0.93, the rest within 2% (mazefun 2-6% more).
+
+What didn't work:
+- Every return of such a function by `BR LR`, predicted by the
+  indirect-branch predictor: the same gains, but nboyer 25% and peval 8%
+  more cycles, where most returns go to callers elsewhere.
+- Choosing `BL` while the recursion is shallow, by the return addresses
+  of the frames 1, 4 and 16 calls up: nothing measurable saved.
+- The first version allowed a tail call of another function: its `RET`
+  to a return address never pushed mispredicts, and so does every
+  return after it. sboyer's `rewrite-args`, which ends in a tail call of
+  `scons`, took 40% more cycles. The generic arithmetic's slow-path
+  calls (`generic+`, ack's `(+ n 1)` on a bignum) are allowed.
+
+**Collections and the control stack.** On arm64, SBCL zeroes the whole
+unused part of every thread's control stack at every collection
+(`scrub_thread_control_stack`, from the stack pointer to the guard page).
+With the command line's 256 MB stack, a nursery collection took 7.9 ms,
+against 0.3 ms with a 2 MB stack. The finalizer thread, started before a
+program runs, had a 256 MB stack too. It is now restarted with 8 MB
+(`shrink-finalizer-stack`, src/numbers.lisp), which brings a collection
+to 6.1 ms. The main thread's zeroing remains: a smaller main stack would
+limit recursion depth. This is why a smaller nursery costs more, as
+"Tried and not kept" records: each collection carries a fixed 3-4 ms.
+
 ## Run time against upstream Racket (October 2026)
 
 By instructions retired, Racket mode's over upstream Racket's on the same

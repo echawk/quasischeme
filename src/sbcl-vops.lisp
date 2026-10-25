@@ -94,5 +94,168 @@ per process.")
 		      (and write (not (sb-c::tn-ref-next write)) (sb-c::tn-ref-vop write)
 			   (eq (sb-c::vop-name (sb-c::tn-ref-vop write)) 'qs-allocate-small-vector-on-stack)))))))))
 
+  ;; Recursion without the processor's stack of return addresses.  RET
+  ;; is predicted by that stack, which is a few dozen deep: a recursion
+  ;; deeper than that mispredicts every return past it (on an M4, 20
+  ;; cycles a return: a list recursion 500 deep took 3.3 times the cycles
+  ;; of one 10 deep, in C as in SBCL; Chez Scheme, whose code returns by
+  ;; a jump to the frame's return address, doesn't).  So in a function
+  ;; that calls itself in exactly one place that isn't a tail call (a
+  ;; recursion down a list or a tree's spine, ack's inner call), that
+  ;; call is ADR LR, #8 and B, which push nothing on the stack of return
+  ;; addresses, in place of BL; and each return of the function compares
+  ;; its return address with that call's and, if they're the same, goes
+  ;; there by a direct branch, else returns by RET to its caller, which
+  ;; the stack, not disturbed by the recursion, predicts:
+  ;;
+  ;;       ADR TMP, back       ; back: just after the call of itself
+  ;;       SUB TMP, LR, TMP
+  ;;       CBNZ TMP, ret
+  ;;       B back
+  ;; ret:  RET LR
+  ;;
+  ;; The function must make no tail call of another (but the generic
+  ;; arithmetic's, a slow path): that function's RET to the call's return
+  ;; address, never pushed, would mispredict, and every return after it
+  ;; (sboyer's REWRITE-ARGS, which ends in a tail call of SCONS, took a
+  ;; third more cycles before that was seen).  ack takes 0.43 of the
+  ;; cycles, divrec 0.53, primes 0.63.  (Choosing BL while the recursion
+  ;; is shallow, by the return addresses of the frames 1, 4 and 16 calls
+  ;; up, saved nothing measurable.  Every return of such a function by
+  ;; BR LR, predicted by the indirect-branch predictor, did as well on
+  ;; ack, but took nboyer 25% more cycles.)  Out of ADR's reach from a
+  ;; return (a function of over a megabyte), the four instructions are
+  ;; NOPs.  QUASISCHEME_SELF_CALLS=0 turns it off.
+  (defvar cl-user::*quasischeme-self-calls* :unknown)
+  (pushnew (lambda () (setq cl-user::*quasischeme-self-calls* :unknown)) sb-ext:*init-hooks*)
+
+  (defun qs-self-calls-p ()
+    (when (eq cl-user::*quasischeme-self-calls* :unknown)
+      (setq cl-user::*quasischeme-self-calls*
+	    (not (equal (uiop:getenv "QUASISCHEME_SELF_CALLS") "0"))))
+    (and cl-user::*quasischeme-self-calls* (quasischeme-fast-p)))
+
+  (defun qs-tail-calls-another-p (lambda)
+    "Whether LAMBDA makes a tail call of another function, which would
+return to LAMBDA's caller by RET."
+    (let ((component (sb-c::lambda-component lambda)))
+      (loop for block = (sb-c::block-next (sb-c::component-head component))
+	      then (sb-c::block-next block)
+	    until (or (null block) (eq block (sb-c::component-tail component)))
+	      thereis (loop for ctran = (sb-c::block-start block) then (sb-c::node-next node)
+			    for node = (and ctran (sb-c::ctran-next ctran))
+			    while node
+			      thereis (and (sb-c::basic-combination-p node)
+					   (sb-c::node-tail-p node)
+					   (eq (sb-c::node-home-lambda node) lambda)
+					   (not (and (sb-c::combination-p node)
+						     (eq (sb-c::basic-combination-kind node) :local)
+						     (eq (sb-c::combination-lambda node) lambda)))
+					   (or (eq (sb-c::basic-combination-kind node) :local)
+					       (sb-c::mv-combination-p node)
+					       (and (or (eq (sb-c::basic-combination-kind node) :full)
+							(eq (sb-c::basic-combination-info node) :full))
+						    (not (qs-slow-path-call-p node)))))))))
+
+  (defun qs-slow-path-call-p (node)
+    "Whether NODE calls one of the runtime's generic arithmetic procedures,
+which inline arithmetic calls only when its operands aren't fixnums (ack's
+(+ n 1) in tail position, a bignum's)."
+    (let ((name (ignore-errors (sb-c::lvar-fun-name (sb-c::basic-combination-fun node))))
+	  (package (find-package "QS")))
+      (and name (symbolp name) package (eq (symbol-package name) package)
+	   (member (symbol-name name) '("GENERIC+" "GENERIC-" "GENERIC*" "COMPARE2")
+		   :test #'string=))))
+
+  ;; lambda -> whether QS-ONE-SELF-CALL-P
+  (defvar *qs-one-self-call* (make-hash-table :test 'eq :weakness :key :synchronized t))
+
+  (defun qs-one-self-call-p (lambda)
+    "Whether LAMBDA calls itself in exactly one place, not a tail call, and
+makes no tail call of another function (whose RET to a deep call's return
+address, not on the stack of return addresses, would mispredict, and every
+return after it)."
+    (multiple-value-bind (answer known) (gethash lambda *qs-one-self-call*)
+      (if known
+	  answer
+	  (setf (gethash lambda *qs-one-self-call*)
+		(let ((n 0))
+		  (dolist (ref (sb-c::leaf-refs lambda))
+		    (let* ((lvar (sb-c::node-lvar ref))
+			   (dest (and lvar (sb-c::lvar-dest lvar))))
+		      (when (and (sb-c::combination-p dest)
+				 (eq (sb-c::basic-combination-fun dest) lvar)
+				 (eq (sb-c::node-home-lambda dest) lambda)
+				 (not (sb-c::node-tail-p dest)))
+			(incf n))))
+		  (and (= n 1) (not (qs-tail-calls-another-p lambda))))))))
+
+  (defun qs-emit-word (segment word)
+    "Emit the instruction WORD (little-endian)."
+    (dotimes (i 4) (sb-assem:emit-byte segment (ldb (byte 8 (* 8 i)) word))))
+
+  (defun qs-current-node ()
+    (let ((vop (and (boundp 'sb-assem::*current-vop*) sb-assem::*current-vop*)))
+      (and (sb-c::vop-p vop) (sb-c::vop-node vop))))
+
+  ;; segment -> lambda -> (label . emitted): the deep-back of the
+  ;; lambda's call of itself, in the code being assembled in the segment
+  (defvar *qs-self-call-returns* (make-hash-table :test 'eq :weakness :key :synchronized t))
+
+  (defun qs-self-call-return (segment lambda)
+    (let ((table (or (gethash segment *qs-self-call-returns*)
+		     (setf (gethash segment *qs-self-call-returns*) (make-hash-table :test 'eq)))))
+      (or (gethash lambda table)
+	  (setf (gethash lambda table) (cons (sb-assem:gen-label) nil)))))
+
+  (macrolet ((adr (rd offset)		; OFFSET from this instruction
+	       `(logior #x10000000 (ash (ldb (byte 2 0) ,offset) 29) (ash (ldb (byte 19 2) ,offset) 5) ,rd))
+	     (sub (rd rn rm) `(logior #xCB000000 (ash ,rm 16) (ash ,rn 5) ,rd))
+	     (b (words) `(logior #x14000000 (ldb (byte 26 0) ,words))))
+
+    (flet ((original (name)
+	     (or (get name 'qs-original)
+		 (setf (get name 'qs-original) (gethash name sb-assem::*inst-encoder*)))))
+      (let ((bl (original 'sb-arm64-asm::bl))
+	    (ret (original 'sb-arm64-asm::ret)))
+	(setf (gethash 'sb-arm64-asm::bl sb-assem::*inst-encoder*)
+	      (lambda (segment target)
+		(let* ((node (qs-current-node))
+		       (lambda (and node (sb-c::node-home-lambda node))))
+		  (if (and (sb-assem::label-p target)
+			   (sb-c::combination-p node)
+			   (eq (sb-c::basic-combination-kind node) :local)
+			   (eq (sb-c::combination-lambda node) lambda)
+			   (qs-self-calls-p)
+			   (qs-one-self-call-p lambda))
+		      (let ((back (qs-self-call-return segment lambda)))
+			;; ADR LR, #8: the instruction after the B
+			(qs-emit-word segment (adr lr-offset 8))
+			(funcall (gethash 'sb-arm64-asm::b sb-assem::*inst-encoder*) segment target)
+			(sb-assem::%emit-label segment (and (boundp 'sb-assem::*current-vop*) sb-assem::*current-vop*)
+					       (car back))
+			(setf (cdr back) t))
+		      (funcall bl segment target)))))
+	(setf (gethash 'sb-arm64-asm::ret sb-assem::*inst-encoder*)
+	      (lambda (segment &optional (register lr-tn))
+		(let* ((node (qs-current-node))
+		       (lambda (and node (sb-c::node-home-lambda node))))
+		  (when (and lambda (qs-self-calls-p) (qs-one-self-call-p lambda))
+		    (let ((back (qs-self-call-return segment lambda))
+			  (lr (sb-arm64-asm::gpr-offset register)))
+		      (sb-assem:emit-back-patch
+		       segment 16
+		       (lambda (segment posn)
+			 (let ((offset (and (cdr back) (- (sb-assem::label-position (car back)) posn))))
+			   (dolist (word (if (and offset (typep offset '(signed-byte 21)))
+					     (list (adr tmp-offset offset)
+						   (sub tmp-offset lr tmp-offset)
+						   ;; CBNZ TMP, #8: to the RET
+						   (logior #xB5000000 (ash 2 5) tmp-offset)
+						   (b (ash (- offset 12) -2)))
+					     (make-list 4 :initial-element #xD503201F))) ; NOP
+			     (qs-emit-word segment word))))))))
+		(funcall ret segment register))))))
+
   (sb-ext:lock-package "SB-C")
   (sb-ext:lock-package "SB-VM"))

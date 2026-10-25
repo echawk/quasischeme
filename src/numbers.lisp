@@ -56,9 +56,48 @@ thread a stack longer than its memory.  So it's for the start of a
 program, as the command line calls it, not for a library."
   #+sbcl (let ((current (sb-alien:extern-alien "thread_control_stack_size" sb-alien:unsigned)))
 	   (when (< 0 bytes current)
-	     (setf (sb-alien:extern-alien "thread_control_stack_size" sb-alien:unsigned) bytes)))
+	     (setf (sb-alien:extern-alien "thread_control_stack_size" sb-alien:unsigned) bytes)
+	     (shrink-finalizer-stack)))
   #-sbcl (progn bytes)
   (values))
+
+(defparameter *finalizer-stack-size* (* 8 1024 1024)
+  "The control stack SHRINK-FINALIZER-STACK gives SBCL's finalizer thread.")
+
+(defun shrink-finalizer-stack ()
+  "Restart SBCL's finalizer thread with a stack of *FINALIZER-STACK-SIZE*.
+Every collection zeroes the unused part of each thread's control stack
+(scrub_thread_control_stack in SBCL's runtime; on arm64, all of it, from
+the stack pointer to the guard page), and the finalizer thread, started
+before a program's own code runs, has the main thread's 256 MB: 3.8 ms a
+collection, ten times what a young collection itself takes.  The thread
+stopped leaves its memory to be reused by the next thread made, which is
+this one, so a later thread of a larger size can't get the smaller
+memory (LIMIT-THREAD-STACK-SIZE); a fork restarts it too (FORK-PROCESS)."
+  #+sbcl
+  (when (and (sb-thread::thread-p sb-impl::*finalizer-thread*)
+	     (< *finalizer-stack-size*
+		(sb-alien:extern-alien "thread_control_stack_size" sb-alien:unsigned)))
+    (let ((size (sb-alien:extern-alien "thread_control_stack_size" sb-alien:unsigned)))
+      (sb-int:with-system-mutex (sb-thread::*make-thread-lock*)
+	(sb-impl::finalizer-thread-stop))
+      (setf (sb-alien:extern-alien "thread_control_stack_size" sb-alien:unsigned)
+	    *finalizer-stack-size*)
+      (unwind-protect (sb-impl::finalizer-thread-start)
+	(setf (sb-alien:extern-alien "thread_control_stack_size" sb-alien:unsigned) size))))
+  (values))
+
+(defun fork-process (fork)
+  "Call FORK, a function forking the process (sb-posix:fork), which
+stops and restarts the finalizer thread: restarted with the size it has
+(SHRINK-FINALIZER-STACK), since it may be given the memory it left."
+  #+sbcl
+  (let ((size (sb-alien:extern-alien "thread_control_stack_size" sb-alien:unsigned)))
+    (setf (sb-alien:extern-alien "thread_control_stack_size" sb-alien:unsigned)
+	  (min size *finalizer-stack-size*))
+    (unwind-protect (funcall fork)
+      (setf (sb-alien:extern-alien "thread_control_stack_size" sb-alien:unsigned) size)))
+  #-sbcl (funcall fork))
 
 ;;; ------------------------------------------------------------------
 ;;; Exactness and the numeric predicates
