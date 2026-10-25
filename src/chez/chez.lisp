@@ -408,6 +408,8 @@ calls with those are still open-coded."
 (defun install-chez-mutators ()
   (setq qsx::*canonical-empty* 'qs-r6rs::empty-like)
   (pushnew (cons "base-rtd" qs-r6rs::*base-rtd*) qs:*sharp-bang-data* :test #'equal)
+  (pushnew (cons "bwp" qs::bwp-object) qs:*sharp-bang-data* :test #'equal)
+  (qsx::register-named-photon "bwp" qs::bwp-object)
   (loop for (name position kind) in *chez-checked-mutators*
 	for old = (ignore-errors (qsx:host-ref name))
 	when old

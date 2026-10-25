@@ -55,7 +55,8 @@ windows) aren't counted in the totals. The latest run:
 
 | | pass | fail | error | unbound | unsup | crash |
 |---|---|---|---|---|---|---|
-| **counted files** | **20121** | **1651** | **539** | **142** | **2712** | **30** |
+| **counted files** | **20528** | **1253** | **531** | **141** | **2712** | **30** |
+| before the reader's and bytevectors' fixes (Oct 25) | 20121 | 1651 | 539 | 142 | 2712 | 30 |
 | before the $-names counted by what's bound (Oct 25) | 16391 | 986 | 391 | 485 | 5880 | 22 |
 | before separate-eval, object files and oop (Oct 13) | 15045 | 989 | 591 | 663 | 6848 | 20 |
 | before compiled programs and the checks below (Oct 12) | 13792 | 1006 | 786 | 1157 | 6802 | 20 |

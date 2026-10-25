@@ -685,6 +685,7 @@ chez-srfi derives its platform features (posix, darwin, ...) from it."
     (make-symbol (qs:invert-case (if counted
 				     (format nil "~A~D" name (prog1 *chez-gensym-counter* (incf *chez-gensym-counter*)))
 				     name)))))
+(defprim "chez:bwp-object?" (x) (bool (eq x qs::bwp-object)))
 (defprim "chez:gensym-unique-name" (g) (qs:gensym-unique-name g))
 (defprim "chez:uninterned-symbol?" (x) (bool (and (symbolp x) x (null (symbol-package x)))))
 (defprim "chez:string->uninterned-symbol" (s) (make-symbol (qs:invert-case s)))

@@ -450,7 +450,9 @@
                               (RETURN (ASCII->CHAR N))
                               (RETURN (READING-ERROR PORT "bad \\x escape"))))
                         (PROGN (SETQ DIGITS (CONS D DIGITS)) (GO LOOP))))))
-            (STRING-ESCAPE-CHAR C)))))
+            (IF (CHEZ-READER-P)
+                (CHEZ-READ-STRING-ESCAPE C PORT)
+                (STRING-ESCAPE-CHAR C))))))
 (SET-VALUE-FROM-FUNCTION 'READ-ESCAPE 'SCHEME::READ-ESCAPE)
 (DEFUN STRING-ESCAPE-CHAR (C)
   (IF (CHAR= C #\n)
@@ -463,8 +465,45 @@
                   (ASCII->CHAR 7)
                   (IF (CHAR= C #\b)
                       (ASCII->CHAR 8)
-                      (IF (CHAR= C #\0) (ASCII->CHAR 0) C)))))))
+                      (IF (CHAR= C #\v)
+                          (ASCII->CHAR 11)
+                          (IF (CHAR= C #\f)
+                              (ASCII->CHAR 12)
+                              (IF (CHAR= C #\0) (ASCII->CHAR 0) C)))))))))
 (SET-VALUE-FROM-FUNCTION 'STRING-ESCAPE-CHAR 'SCHEME::STRING-ESCAPE-CHAR)
+(DEFUN CHEZ-READ-STRING-ESCAPE (C PORT)
+  (IF (MEMBER C '(#\n #\t #\r #\a #\b #\v #\f))
+      (STRING-ESCAPE-CHAR C)
+      (IF (MEMBER C '(#\\ #\" #\' #\|))
+          C
+          (IF (TRUEP (OCTAL-DIGIT? C))
+              (LET ((D (.READ-CHAR PORT)))
+                (LET ((E (.READ-CHAR PORT)))
+                  (LET NIL
+                    (IF (AND (CHARACTERP D)
+                             (CHARACTERP E)
+                             (TRUEP (OCTAL-DIGIT? D))
+                             (TRUEP (OCTAL-DIGIT? E)))
+                        (LET ((N (SCHEME+ (SCHEME* 64 (OCTAL-VALUE C))
+                                          (SCHEME* 8 (OCTAL-VALUE D))
+                                          (OCTAL-VALUE E))))
+                          (IF (SCHEME< N 256)
+                              (ASCII->CHAR N)
+                              (READING-ERROR
+                               PORT
+                               "invalid string character"
+                               C
+                               D
+                               E)))
+                        (READING-ERROR PORT "invalid string character" C)))))
+              (READING-ERROR PORT "invalid string character" C)))))
+(SET-VALUE-FROM-FUNCTION
+ 'CHEZ-READ-STRING-ESCAPE
+ 'SCHEME::CHEZ-READ-STRING-ESCAPE)
+(DEFUN OCTAL-DIGIT? (C) (IF (CHAR<= #\0 C) (TRUE? (CHAR<= C #\7)) FALSE))
+(SET-VALUE-FROM-FUNCTION 'OCTAL-DIGIT? 'SCHEME::OCTAL-DIGIT?)
+(DEFUN OCTAL-VALUE (C) (SCHEME- (CHAR->ASCII C) (CHAR->ASCII #\0)))
+(SET-VALUE-FROM-FUNCTION 'OCTAL-VALUE 'SCHEME::OCTAL-VALUE)
 (DEFUN SKIP-LINE-CONTINUATION (PORT)
   (PROG NIL
     (GO SKIP-BEFORE)
@@ -642,7 +681,32 @@
                      (LET ((READER (READER-DIRECTIVE PORT NAME)))
                        (IF (TRUEP READER)
                            (CALL-ALTERNATIVE-READER READER PORT)
-                           (SUB-READ PORT)))))))))))
+                           (IF (AND (CHEZ-READER-P)
+                                    (NOT (MEMBER NAME
+                                                 '("fold-case"
+                                                   "no-fold-case"
+                                                   "r6rs"
+                                                   "chezscheme"
+                                                   "srfi-88"
+                                                   "no-srfi-88"
+                                                   "eof"
+                                                   "bwp"
+                                                   "base-rtd")
+                                                 :TEST
+                                                 #'SCHEME-EQUAL-P))
+                                    (NOT (AND (SCHEME> (LENGTH (THE-WHO SIMPLE-STRING
+                                                                        "string-length"
+                                                                        NAME))
+                                                       0)
+                                              (CHAR= (CHECKED-SCHAR
+                                                      "string-ref"
+                                                      NAME
+                                                      0)
+                                                     #\/))))
+                               (READING-ERROR
+                                PORT
+                                (STRING-APPEND "invalid syntax #!" NAME))
+                               (SUB-READ PORT))))))))))))
 (LOCALLY
   (DECLARE (SPECIAL VECTOR-LENGTH-LIMIT))
   (SETQ VECTOR-LENGTH-LIMIT (SCHEME-EXPT 2 32)))
@@ -702,8 +766,8 @@
                                                                   (GO .LAST))))))))
                                   (RETURN (PROG (I L)
                                             (PSETQ I 0 L ELEMENTS)
-                                            (GO |.loop.176|)
-                                            |.loop.176|
+                                            (GO |.loop.192|)
+                                            |.loop.192|
                                             (IF (NULL L)
                                                 (RETURN V)
                                                 (PROGN
@@ -719,31 +783,47 @@
                                                          (CDR (THE-WHO CONS
                                                                        "cdr"
                                                                        L)))
-                                                  (GO |.loop.176|))))))))
+                                                  (GO |.loop.192|))))))))
                             (IF (CHAR= D #\%)
-                                (RETURN (LIST 'SCHEME::$PRIMITIVE
-                                              N
-                                              (SUB-READ-PLAIN PORT)))
+                                (PROGN
+                                  (IF (SCHEME> N 3)
+                                      (READING-ERROR
+                                       PORT
+                                       "invalid sharp-sign prefix"
+                                       N))
+                                  (RETURN (LIST 'SCHEME::$PRIMITIVE
+                                                N
+                                                (SUB-READ-PLAIN PORT))))
                                 (IF (CHAR-EQUAL D #\r)
                                     (LET ((TOKEN (CAR (THE-WHO CONS
                                                                "car"
                                                                (SUB-READ-TOKEN
                                                                 #\#
                                                                 PORT)))))
-                                      (LET ((X (STRING->NUMBER
-                                                (SUBSEQ TOKEN
-                                                        1
-                                                        (LENGTH (THE-WHO SIMPLE-STRING
-                                                                         "string-length"
-                                                                         TOKEN)))
-                                                N)))
+                                      (LET ((X (IF (NOT (AND (SCHEME> N 18)
+                                                             (CHAR-EQUAL (CHECKED-SCHAR
+                                                                          "string-ref"
+                                                                          TOKEN
+                                                                          (SCHEME- (LENGTH (THE-WHO SIMPLE-STRING
+                                                                                                    "string-length"
+                                                                                                    TOKEN))
+                                                                                   1))
+                                                                         #\i)))
+                                                   (STRING->NUMBER
+                                                    (SUBSEQ TOKEN
+                                                            1
+                                                            (LENGTH (THE-WHO SIMPLE-STRING
+                                                                             "string-length"
+                                                                             TOKEN)))
+                                                    N)
+                                                   FALSE)))
                                         (LET NIL
                                           (LET ((TEMP X))
                                             (IF (TRUEP TEMP)
                                                 (RETURN TEMP)
                                                 (RETURN (READING-ERROR
                                                          PORT
-                                                         "bad number"
+                                                         "invalid number syntax"
                                                          TOKEN)))))))
                                     (IF (AND (CHAR= D #\v)
                                              (EQL (.PEEK-CHAR PORT) #\s))
@@ -1001,43 +1081,107 @@
          (LET ((.C.0 (.PEEK-CHAR PORT)))
            (IF (EQ .C.0 EOF-OBJECT)
                (READING-ERROR PORT "end of file after #\\")
-               (IF (ALPHA-CHAR-P .C.0)
-                   (LET ((NAME (SUB-READ-PLAIN PORT)))
+               (IF (AND (CHAR-NUMERIC-P .C.0) (CHEZ-READER-P))
+                   (LET ((TOKEN (CAR (THE-WHO CONS
+                                              "car"
+                                              (SUB-READ-TOKEN
+                                               (.READ-CHAR PORT)
+                                               PORT)))))
                      (IF (SCHEME= (LENGTH (THE-WHO SIMPLE-STRING
                                                    "string-length"
-                                                   (SYMBOL->STRING NAME)))
+                                                   TOKEN))
                                   1)
-                         .C.0
-                         (LET ((TEMP (IF (CHAR= (CHECKED-SCHAR
-                                                 "string-ref"
-                                                 (SYMBOL->STRING NAME)
-                                                 0)
-                                                #\x)
-                                         (STRING->NUMBER
-                                          (SUBSEQ (SYMBOL->STRING NAME)
-                                                  1
-                                                  (LENGTH (THE-WHO SIMPLE-STRING
-                                                                   "string-length"
-                                                                   (SYMBOL->STRING
-                                                                    NAME))))
-                                          16)
-                                         FALSE)))
-                           (IF (TRUEP TEMP)
-                               (ASCII->CHAR TEMP)
-                               (LET ((.TEMP.1 (TRUE? (ASSOC (INTERN-SCHEME-SYMBOL
-                                                             (STRING-DOWNCASE
-                                                              (SYMBOL->STRING
-                                                               NAME)))
-                                                            NAMED-CHARACTERS
-                                                            :TEST
-                                                            #'EQ))))
-                                 (IF (TRUEP .TEMP.1)
-                                     (CDR (THE-WHO CONS "cdr" .TEMP.1))
-                                     (READING-ERROR
-                                      PORT
-                                      "unknown #\\ name"
-                                      NAME)))))))
-                   (.READ-CHAR PORT))))))))
+                         (CHECKED-SCHAR "string-ref" TOKEN 0)
+                         (IF (AND (SCHEME= (LENGTH (THE-WHO SIMPLE-STRING
+                                                            "string-length"
+                                                            TOKEN))
+                                           3)
+                                  (TRUEP (OCTAL-DIGIT? (CHECKED-SCHAR
+                                                        "string-ref"
+                                                        TOKEN
+                                                        0)))
+                                  (TRUEP (OCTAL-DIGIT? (CHECKED-SCHAR
+                                                        "string-ref"
+                                                        TOKEN
+                                                        1)))
+                                  (TRUEP (OCTAL-DIGIT? (CHECKED-SCHAR
+                                                        "string-ref"
+                                                        TOKEN
+                                                        2)))
+                                  (SCHEME< (SCHEME+ (SCHEME* 64
+                                                             (OCTAL-VALUE (CHECKED-SCHAR
+                                                                           "string-ref"
+                                                                           TOKEN
+                                                                           0)))
+                                                    (SCHEME* 8
+                                                             (OCTAL-VALUE (CHECKED-SCHAR
+                                                                           "string-ref"
+                                                                           TOKEN
+                                                                           1)))
+                                                    (OCTAL-VALUE (CHECKED-SCHAR
+                                                                  "string-ref"
+                                                                  TOKEN
+                                                                  2)))
+                                           256))
+                             (ASCII->CHAR (SCHEME+ (SCHEME* 64
+                                                            (OCTAL-VALUE (CHECKED-SCHAR
+                                                                          "string-ref"
+                                                                          TOKEN
+                                                                          0)))
+                                                   (SCHEME* 8
+                                                            (OCTAL-VALUE (CHECKED-SCHAR
+                                                                          "string-ref"
+                                                                          TOKEN
+                                                                          1)))
+                                                   (OCTAL-VALUE (CHECKED-SCHAR
+                                                                 "string-ref"
+                                                                 TOKEN
+                                                                 2))))
+                             (READING-ERROR PORT "invalid character" TOKEN))))
+                   (IF (ALPHA-CHAR-P .C.0)
+                       (LET ((NAME (SUB-READ-PLAIN PORT)))
+                         (IF (SCHEME= (LENGTH (THE-WHO SIMPLE-STRING
+                                                       "string-length"
+                                                       (SYMBOL->STRING NAME)))
+                                      1)
+                             .C.0
+                             (LET ((TEMP (IF (CHAR= (CHECKED-SCHAR
+                                                     "string-ref"
+                                                     (SYMBOL->STRING NAME)
+                                                     0)
+                                                    #\x)
+                                             (STRING->NUMBER
+                                              (SUBSEQ (SYMBOL->STRING NAME)
+                                                      1
+                                                      (LENGTH (THE-WHO SIMPLE-STRING
+                                                                       "string-length"
+                                                                       (SYMBOL->STRING
+                                                                        NAME))))
+                                              16)
+                                             FALSE)))
+                               (IF (TRUEP TEMP)
+                                   (ASCII->CHAR TEMP)
+                                   (LET ((.TEMP.1 (TRUE? (ASSOC (INTERN-SCHEME-SYMBOL
+                                                                 (IF (CHEZ-READER-P)
+                                                                     (IF *FOLD-CASE*
+                                                                         (STRING-DOWNCASE
+                                                                          (SYMBOL->STRING
+                                                                           NAME))
+                                                                         (SYMBOL->STRING
+                                                                          NAME))
+                                                                     (STRING-DOWNCASE
+                                                                      (SYMBOL->STRING
+                                                                       NAME))))
+                                                                NAMED-CHARACTERS
+                                                                :TEST
+                                                                #'EQ))))
+                                     (IF (TRUEP .TEMP.1)
+                                         (CDR (THE-WHO CONS "cdr" .TEMP.1))
+                                         (READING-ERROR
+                                          PORT
+                                          "unknown #\\ name"
+                                          NAME)))))))
+                       (.READ-CHAR PORT)))))))))
 (AT-TOP-LEVEL
   (DEFINE-SHARP-MACRO
    #\(
@@ -1262,7 +1406,10 @@
                            PORT
                            "unsupported number syntax"
                            .STRING)
-                          (TOKEN-SYMBOL TOKEN PORT))))))
+                          (IF (AND (CHEZ-READER-P)
+                                   (TRUEP (ZERO-DENOMINATOR? .STRING)))
+                              (READING-ERROR PORT "cannot represent" .STRING)
+                              (TOKEN-SYMBOL TOKEN PORT)))))))
         (TOKEN-SYMBOL TOKEN PORT))))
 (SET-VALUE-FROM-FUNCTION 'PARSE-TOKEN 'SCHEME::PARSE-TOKEN)
 (DEFUN TOKEN-SYMBOL (TOKEN PORT)
@@ -1285,6 +1432,62 @@
 (DEFUN NOT-IN-R6RS (PORT WHAT)
   (READING-ERROR PORT (STRING-APPEND WHAT " syntax not allowed in #!r6rs mode")))
 (SET-VALUE-FROM-FUNCTION 'NOT-IN-R6RS 'SCHEME::NOT-IN-R6RS)
+(DEFUN ZERO-DENOMINATOR? (.STRING)
+  (LET ((N (LENGTH (THE-WHO SIMPLE-STRING "string-length" .STRING))))
+    (PROG (.I.0 .DIGITS?.1)
+      (PSETQ .I.0
+             (IF (AND (SCHEME> N 0)
+                      (MEMBER (CHECKED-SCHAR "string-ref" .STRING 0) '(#\+ #\-)))
+                 1
+                 0)
+             .DIGITS?.1
+             FALSE)
+      (GO LOOP)
+      LOOP
+      (LET ((I .I.0) (DIGITS? .DIGITS?.1))
+        (IF (SCHEME= I N)
+            (RETURN FALSE)
+            (IF (CHAR-NUMERIC-P (CHECKED-SCHAR "string-ref" .STRING I))
+                (PROGN (PSETQ .I.0 (SCHEME+ I 1) .DIGITS?.1 TRUE) (GO LOOP))
+                (IF (AND (TRUEP DIGITS?)
+                         (CHAR= (CHECKED-SCHAR "string-ref" .STRING I) #\#))
+                    (PROGN (PSETQ .I.0 (SCHEME+ I 1) .DIGITS?.1 TRUE) (GO LOOP))
+                    (IF (AND (TRUEP DIGITS?)
+                             (CHAR= (CHECKED-SCHAR "string-ref" .STRING I) #\/)
+                             (SCHEME< (SCHEME+ I 1) N))
+                        (RETURN (PROG (.J.2 .ZERO?.3)
+                                  (PSETQ .J.2 (SCHEME+ I 1) .ZERO?.3 FALSE)
+                                  (GO ZEROS)
+                                  ZEROS
+                                  (LET ((J .J.2) (ZERO? .ZERO?.3))
+                                    (IF (SCHEME= J N)
+                                        (RETURN ZERO?)
+                                        (IF (CHAR= (CHECKED-SCHAR
+                                                    "string-ref"
+                                                    .STRING
+                                                    J)
+                                                   #\0)
+                                            (PROGN
+                                              (PSETQ .J.2
+                                                     (SCHEME+ J 1)
+                                                     .ZERO?.3
+                                                     TRUE)
+                                              (GO ZEROS))
+                                            (IF (AND (TRUEP ZERO?)
+                                                     (CHAR= (CHECKED-SCHAR
+                                                             "string-ref"
+                                                             .STRING
+                                                             J)
+                                                            #\#))
+                                                (PROGN
+                                                  (PSETQ .J.2
+                                                         (SCHEME+ J 1)
+                                                         .ZERO?.3
+                                                         TRUE)
+                                                  (GO ZEROS))
+                                                (RETURN FALSE)))))))
+                        (RETURN FALSE)))))))))
+(SET-VALUE-FROM-FUNCTION 'ZERO-DENOMINATOR? 'SCHEME::ZERO-DENOMINATOR?)
 (LOCALLY
   (DECLARE (SPECIAL STRANGE-SYMBOL-NAMES))
   (SETQ STRANGE-SYMBOL-NAMES '("+" "-" "..." "1+" "-1+" "1-")))

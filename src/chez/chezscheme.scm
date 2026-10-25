@@ -136,7 +136,7 @@
 
 (define weak-cons cons)
 (define weak-pair? pair?)
-(define (bwp-object? x) #f)
+(define (bwp-object? x) (%chez:bwp-object? x))
 
 (define (iota n . rest)
   (let ((start (if (pair? rest) (car rest) 0))

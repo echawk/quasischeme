@@ -433,6 +433,8 @@ docs/interop.md): named by inverting case, like a Scheme symbol, so
 (defun letrec-unassigned (name)
   (scheme-error "variable used before its initialization:" name))
 (defvar eof-object  (make-photon "#{End-of-file}"))
+;; Chez Scheme's broken weak pointer, #!bwp
+(defvar bwp-object (make-photon "#!bwp"))
 
 ; PROCEDURE?
 
@@ -969,14 +971,19 @@ braces; or with PORT's alternative reader, if it has one."
   (setf (gethash tag *reader-ctors*) procedure)
   unspecific)
 
+(defvar *labels-being-defined* '()
+  "The datum labels whose data are being read.")
+
 (defun read-labelled-datum (port n thunk)
   "#N=<datum>: the datum THUNK reads, in which #N# refers to itself."
   (let ((placeholder (let ((old (cdr (assoc n *datum-labels*))))
-		       (if (and old (not (label-placeholder-defined old)))
-			   old
-			   (make-label-placeholder)))))
+		       ;; a label defined, or being defined, already
+		       (when (and old (or (label-placeholder-defined old) (member n *labels-being-defined*)))
+			 (scheme-reading-error port "duplicate datum label" n))
+		       (or old (make-label-placeholder)))))
     (push (cons n placeholder) *datum-labels*)
-    (let ((datum (funcall thunk)))
+    (let ((datum (let ((*labels-being-defined* (cons n *labels-being-defined*)))
+		   (funcall thunk))))
       (when (eq datum placeholder)
 	(scheme-reading-error port "datum label refers only to itself" n))
       (setf (label-placeholder-datum placeholder) datum

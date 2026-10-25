@@ -349,6 +349,7 @@
 			    (ascii->char n)
 			    (reading-error port "bad \\x escape"))))
 		     (else (loop (cons d digits)))))))
+	  ((qs:true? (qs:chez-reader-p)) (chez-read-string-escape c port))
 	  (else (string-escape-char c)))))
 
 (define (string-escape-char c)
@@ -357,8 +358,29 @@
 	((char=? c #\r) #\return)
 	((char=? c #\a) (ascii->char 7))
 	((char=? c #\b) (ascii->char 8))
+	((char=? c #\v) (ascii->char 11))
+	((char=? c #\f) (ascii->char 12))
 	((char=? c #\0) (ascii->char 0))
 	(else c)))
+
+; Chez Scheme's escapes: those of R6RS, and \ooo, three octal digits
+; of a character code below 256; any other is an error
+
+(define (chez-read-string-escape c port)
+  (cond ((memv c '(#\n #\t #\r #\a #\b #\v #\f)) (string-escape-char c))
+	((memv c '(#\\ #\" #\' #\|)) c)
+	((octal-digit? c)
+	 (let* ((d (read-char port)) (e (read-char port)))
+	   (if (and (char? d) (char? e) (octal-digit? d) (octal-digit? e))
+	       (let ((n (+ (* 64 (octal-value c)) (* 8 (octal-value d)) (octal-value e))))
+		 (if (< n 256)
+		     (ascii->char n)
+		     (reading-error port "invalid string character" c d e)))
+	       (reading-error port "invalid string character" c))))
+	(else (reading-error port "invalid string character" c))))
+
+(define (octal-digit? c) (and (char<=? #\0 c) (char<=? c #\7)))
+(define (octal-value c) (- (char->ascii c) (char->ascii #\0)))
 
 (define (skip-line-continuation port)
   (let skip-before ()
@@ -488,9 +510,14 @@
 	    datum
       ;; #!sweet and the like: the port's alternative reader reads on
       (let ((reader (qs:reader-directive port name)))
-	(if reader
-	    (qs:call-alternative-reader reader port)
-	    (sub-read port)))))))))
+	(cond (reader (qs:call-alternative-reader reader port))
+	      ;; Chez Scheme knows only its own
+	      ((and (qs:true? (qs:chez-reader-p))
+		    (not (member name '("fold-case" "no-fold-case" "r6rs" "chezscheme" "srfi-88" "no-srfi-88"
+				      "eof" "bwp" "base-rtd")))
+		    (not (and (> (string-length name) 0) (char=? (string-ref name 0) #\/))))
+	       (reading-error port (string-append "invalid syntax #!" name)))
+	      (else (sub-read port))))))))))
 
 ; Datum labels, #<n>=<datum> and #<n># (R7RS 2.4).
 
@@ -527,12 +554,14 @@
 		   (vector-set! v i (car l))))))
 	    ;; Chez Scheme's #3%car: ($primitive 3 car), at optimize level 3
 	    ((char=? d #\%)
+	     (if (> n 3) (reading-error port "invalid sharp-sign prefix" n))
 	     (list '$primitive n (sub-read-plain port)))
 	    ;; Chez Scheme's #12r-3b: a number in radix 12
 	    ((char-ci=? d #\r)
 	     (let* ((token (car (sub-read-token #\# port)))
-		    (x (string->number (substring token 1 (string-length token)) n)))
-	       (or x (reading-error port "bad number" token))))
+		    (x (and (not (and (> n 18) (char-ci=? (string-ref token (- (string-length token) 1)) #\i)))
+			    (string->number (substring token 1 (string-length token)) n))))
+	       (or x (reading-error port "invalid number syntax" token))))
 	    ;; Chez Scheme's #5vu8(1 2), #3vfx(...): filled out with the last element
 	    ;; Chez Scheme's #5vs(a b): a stencil vector of mask 5
 	    ((and (char=? d #\v) (eqv? (peek-char port) #\s))
@@ -653,6 +682,21 @@
     (let ((c (peek-char port)))
       (cond ((eof-object? c)
 	     (reading-error port "end of file after #\\"))
+	    ;; Chez Scheme's #\ooo: three octal digits, of a code below 256
+	    ((and (char-numeric? c) (qs:true? (qs:chez-reader-p)))
+	     (let ((token (car (sub-read-token (read-char port) port))))
+	       (cond ((= (string-length token) 1) (string-ref token 0))
+		     ((and (= (string-length token) 3)
+			   (octal-digit? (string-ref token 0)) (octal-digit? (string-ref token 1))
+			   (octal-digit? (string-ref token 2))
+			   (< (+ (* 64 (octal-value (string-ref token 0)))
+				 (* 8 (octal-value (string-ref token 1)))
+				 (octal-value (string-ref token 2)))
+			      256))
+		      (ascii->char (+ (* 64 (octal-value (string-ref token 0)))
+				      (* 8 (octal-value (string-ref token 1)))
+				      (octal-value (string-ref token 2)))))
+		     (else (reading-error port "invalid character" token)))))
 	    ((char-alphabetic? c)
 	     (let ((name (sub-read-plain port)))
 	       (cond ((= (string-length (symbol->string name)) 1)
@@ -666,8 +710,13 @@
 		     ;; Character names match case-insensitively (#\Space,
 		     ;; #\newline, ...); the keys of NAMED-CHARACTERS are
 		     ;; lower-case names.
+		     ;; in Chez Scheme only as written, unless folding
 		     ((assq (string->symbol
-			     (common-lisp:string-downcase (symbol->string name)))
+			     (if (qs:true? (qs:chez-reader-p))
+				 (qs-lisp:if qs:*fold-case*
+					     (common-lisp:string-downcase (symbol->string name))
+					     (symbol->string name))
+				 (common-lisp:string-downcase (symbol->string name))))
 			    named-characters)
 		      => cdr)
 		     (else
@@ -829,6 +878,9 @@
 	      ((and (char-numeric? (string-ref string 0))
 		    (not (qs:true? (qs:chez-reader-p))))
 	       (reading-error port "unsupported number syntax" string))
+	      ;; Chez Scheme: 1/0, 1#/0#: a rational it can't represent
+	      ((and (qs:true? (qs:chez-reader-p)) (zero-denominator? string))
+	       (reading-error port "cannot represent" string))
 	      (else (token-symbol token port)))
 	(token-symbol token port))))
 
@@ -845,6 +897,22 @@
 
 (define (not-in-r6rs port what)
   (reading-error port (string-append what " syntax not allowed in #!r6rs mode")))
+
+; [+-]digits#.../0...#...: a rational whose denominator is zero
+
+(define (zero-denominator? string)
+  (let ((n (string-length string)))
+    (let loop ((i (if (and (> n 0) (memv (string-ref string 0) '(#\+ #\-))) 1 0)) (digits? #f))
+      (cond ((= i n) #f)
+	    ((char-numeric? (string-ref string i)) (loop (+ i 1) #t))
+	    ((and digits? (char=? (string-ref string i) #\#)) (loop (+ i 1) #t))
+	    ((and digits? (char=? (string-ref string i) #\/) (< (+ i 1) n))
+	     (let zeros ((j (+ i 1)) (zero? #f))
+	       (cond ((= j n) zero?)
+		     ((char=? (string-ref string j) #\0) (zeros (+ j 1) #t))
+		     ((and zero? (char=? (string-ref string j) #\#)) (zeros (+ j 1) #t))
+		     (else #f))))
+	    (else #f)))))
 
 (define strange-symbol-names
   '("+" "-" "..." "1+" "-1+" "1-"))  ;1+ and -1+ for S&ICP, 1- for Chez Scheme
