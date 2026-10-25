@@ -834,6 +834,9 @@ is reported, and the program runs anyway."
       (when (and parameter file)
 	(funcall parameter (coerce file-args 'simple-vector))))
     (when (member *standard* '(:r5rs :r4rs :ieee :r3rs :r2rs :rrs)) (setf qs:*fold-case* t))
+    ;; Guile's native bytevector accessors take unaligned indexes; the
+    ;; image was saved with Guile booted, which allowed them
+    (setf qs-r6rs::*native-alignment* (not (eq *standard* :guile)))
     (when (eq *standard* :guile) (qsg::add-environment-load-path))
     (handler-bind ((serious-condition
 		     (lambda (e)

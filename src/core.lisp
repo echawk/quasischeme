@@ -271,8 +271,38 @@ made of annotated parts) replaced by their stripped data."
   contents)
 
 (defun make-gensym-from-name (name)
-  "For the reader's #{name unique}: an uninterned symbol."
+  "For the reader's #{name}: an uninterned symbol."
   (make-symbol (invert-case name)))
+
+;;; Chez's gensyms have a pretty name, their symbol name, and a unique
+;;; name, made when first asked for; #{pretty unique} reads as the
+;;; gensym of that unique name, the same one each time.
+
+(defvar *gensyms-by-unique-name* (make-hash-table :test 'equal :weakness :value :synchronized t))
+
+(defun make-gensym-with-unique-name (pretty unique)
+  "For the reader's #{pretty unique}: the gensym whose unique name is
+UNIQUE, made (named PRETTY) if there is none."
+  (or (gethash unique *gensyms-by-unique-name*)
+      (let ((symbol (make-symbol (invert-case pretty))))
+	(setf (get symbol 'gensym-unique-name) unique
+	      (gethash unique *gensyms-by-unique-name*) symbol))))
+
+(defvar *gensym-unique-counter* 0)
+
+(defun gensym-unique-name (symbol)
+  "The unique name of gensym SYMBOL, made now if it has none."
+  (or (get symbol 'gensym-unique-name)
+      (let ((unique (format nil "g~36R-~D" (random (expt 36 12) (load-time-value (make-random-state t)))
+			    (incf *gensym-unique-counter*))))
+	(setf (get symbol 'gensym-unique-name) unique
+	      (gethash unique *gensyms-by-unique-name*) symbol)
+	unique)))
+
+(defun fold-symbol-name (string)
+  "STRING case-folded, as #!fold-case folds an identifier (string-foldcase)."
+  #+sbcl (sb-unicode:casefold string)
+  #-sbcl (string-downcase string))
 
 ;;; Chez Scheme's stencil vectors, #<mask>vs(...): a mask of up to 58
 ;;; bits and an element for each bit set, in order from the lowest.
@@ -360,6 +390,11 @@ double floats)."
 (defvar *fold-case* nil
   "True when the Scheme reader folds symbols and character names to
 lower case (R5RS behavior, or after #!fold-case).")
+
+(defvar *fold-case-default* nil
+  "If set, a function of no arguments, true when a port with no case
+directive of its own is read folding case (Chez's case-sensitive
+parameter, false): read as if *FOLD-CASE* were true.")
 
 (defun intern-lisp-keyword (string)
   "The Lisp keyword that Scheme's #:STRING reads as (see
@@ -858,7 +893,9 @@ braces; or with PORT's alternative reader, if it has one."
 
 (defun call-with-reader-state-1 (port thunk)
   (let ((*fold-case* (multiple-value-bind (fold found) (gethash port *port-fold-case*)
-		       (if found fold *fold-case*)))
+		       (if found
+			   fold
+			   (or *fold-case* (and *fold-case-default* (funcall *fold-case-default*))))))
 	(*keywords* (values (gethash port *port-keywords*)))
 	(*neoteric* nil)
 	(*datum-labels* '())

@@ -67,7 +67,9 @@
 
 ;;; Symbols: gensyms and property lists
 
-(define (gensym->unique-string g) (symbol->string g))
+(define (gensym->unique-string g)
+  (unless (gensym? g) (assertion-violation 'gensym->unique-string "not a gensym" g))
+  (%chez:gensym-unique-name g))
 (define (gensym? x) (and (symbol? x) (%chez:uninterned-symbol? x)))
 (define string->uninterned-symbol %chez:string->uninterned-symbol)
 (define uninterned-symbol? gensym?)

@@ -368,20 +368,38 @@
    TRUE
    #'(LAMBDA (C PORT)
        C
-       (PROG (L I)
-         (PSETQ L 'NIL I 0)
+       (PROG (.L.0 .I.1)
+         (PSETQ .L.0 'NIL .I.1 0)
          (GO LOOP)
          LOOP
-         (LET ((.C.0 (.READ-CHAR PORT)))
-           (IF (EQ .C.0 EOF-OBJECT)
-               (RETURN (READING-ERROR PORT "end of file within |symbol|"))
-               (IF (CHAR= .C.0 #\|)
-                   (RETURN (INTERN-SCHEME-SYMBOL (REVERSE-LIST->STRING L I)))
-                   (IF (CHAR= .C.0 #\\)
-                       (PROGN
-                         (PSETQ L (CONS (READ-ESCAPE PORT) L) I (SCHEME+ I 1))
-                         (GO LOOP))
-                       (PROGN (PSETQ L (CONS .C.0 L) I (SCHEME+ I 1)) (GO LOOP))))))))))
+         (LET ((L .L.0) (I .I.1))
+           (LET ((.C.2 (.READ-CHAR PORT)))
+             (IF (EQ .C.2 EOF-OBJECT)
+                 (RETURN (READING-ERROR PORT "end of file within |symbol|"))
+                 (IF (CHAR= .C.2 #\|)
+                     (LET ((P (.PEEK-CHAR PORT)))
+                       (IF (AND (CHEZ-READER-P)
+                                (CHARACTERP P)
+                                (NOT (TRUEP (TERMINATING? P))))
+                           (LET ((REST (SUB-READ-SYMBOL-TOKEN
+                                        (.READ-CHAR PORT)
+                                        PORT)))
+                             (RETURN (INTERN-SCHEME-SYMBOL
+                                      (STRING-APPEND
+                                       (REVERSE-LIST->STRING L I)
+                                       (CAR (THE-WHO CONS "car" REST))))))
+                           (RETURN (INTERN-SCHEME-SYMBOL
+                                    (REVERSE-LIST->STRING L I)))))
+                     (IF (CHAR= .C.2 #\\)
+                         (PROGN
+                           (PSETQ .L.0
+                                  (CONS (READ-ESCAPE PORT) L)
+                                  .I.1
+                                  (SCHEME+ I 1))
+                           (GO LOOP))
+                         (PROGN
+                           (PSETQ .L.0 (CONS .C.2 L) .I.1 (SCHEME+ I 1))
+                           (GO LOOP)))))))))))
 (AT-TOP-LEVEL
   (LOCALLY
     (DECLARE (SPECIAL CLOSE-PAREN))
@@ -684,8 +702,8 @@
                                                                   (GO .LAST))))))))
                                   (RETURN (PROG (I L)
                                             (PSETQ I 0 L ELEMENTS)
-                                            (GO |.loop.173|)
-                                            |.loop.173|
+                                            (GO |.loop.176|)
+                                            |.loop.176|
                                             (IF (NULL L)
                                                 (RETURN V)
                                                 (PROGN
@@ -701,7 +719,7 @@
                                                          (CDR (THE-WHO CONS
                                                                        "cdr"
                                                                        L)))
-                                                  (GO |.loop.173|))))))))
+                                                  (GO |.loop.176|))))))))
                             (IF (CHAR= D #\%)
                                 (RETURN (LIST 'SCHEME::$PRIMITIVE
                                               N
@@ -1095,33 +1113,97 @@
               (GO LOOP)))))))
 (SET-VALUE-FROM-FUNCTION 'SUB-READ-TOKEN 'SCHEME::SUB-READ-TOKEN)
 (DEFUN SUB-READ-SYMBOL-TOKEN (C PORT)
-  (PROG (.L.0 .N.1 .C.2 .ESCAPED?.3)
-    (PSETQ .L.0 'NIL .N.1 1 .C.2 C .ESCAPED?.3 FALSE)
+  (PROG (.L.0 .N.1 .C.2 .ESCAPED?.3 .VERBATIM?.4)
+    (PSETQ .L.0 'NIL .N.1 1 .C.2 C .ESCAPED?.3 FALSE .VERBATIM?.4 FALSE)
     (GO LOOP)
     LOOP
-    (LET ((L .L.0) (N .N.1) (.C.4 .C.2) (ESCAPED? .ESCAPED?.3))
-      (LET ((ESCAPE? (TRUE? (CHAR= .C.4 #\\))))
-        (LET ((.L.5 (CONS (IF (TRUEP ESCAPE?) (READ-SYMBOL-ESCAPE PORT) .C.4) L)))
-          (LET ((.ESCAPED?.6 (LET ((TEMP ESCAPED?))
-                               (IF (TRUEP TEMP) TEMP ESCAPE?))))
-            (LET ((P (.PEEK-CHAR PORT)))
-              (LET NIL
-                (IF (OR (EQ P EOF-OBJECT) (TRUEP (TERMINATING? P)))
-                    (RETURN (CONS (REVERSE-LIST->STRING .L.5 N)
-                                  (IF (TRUEP .ESCAPED?.6)
-                                      '(SCHEME::ESCAPED)
-                                      'NIL)))
-                    (PROGN
-                      (PSETQ .L.0
-                             .L.5
-                             .N.1
-                             (SCHEME+ N 1)
-                             .C.2
-                             (.READ-CHAR PORT)
-                             .ESCAPED?.3
-                             .ESCAPED?.6)
-                      (GO LOOP)))))))))))
+    (LET ((L .L.0)
+          (N .N.1)
+          (.C.5 .C.2)
+          (ESCAPED? .ESCAPED?.3)
+          (VERBATIM? .VERBATIM?.4))
+      (LET ((ESCAPE? (TRUE? (CHAR= .C.5 #\\))))
+        (LET ((HEX? (IF (TRUEP ESCAPE?)
+                        (TRUE? (EQL (.PEEK-CHAR PORT) #\x))
+                        FALSE)))
+          (LET ((.L.6 (CONS (IF (TRUEP ESCAPE?) (READ-SYMBOL-ESCAPE PORT) .C.5)
+                            L)))
+            (LET ((.ESCAPED?.7 (LET ((TEMP ESCAPED?))
+                                 (IF (TRUEP TEMP) TEMP ESCAPE?))))
+              (LET ((.VERBATIM?.8 (LET ((TEMP VERBATIM?))
+                                    (IF (TRUEP TEMP)
+                                        TEMP
+                                        (IF (TRUEP ESCAPE?)
+                                            (TRUE? (NOT (TRUEP HEX?)))
+                                            FALSE)))))
+                (LET NIL
+                  (RETURN (PROG (.L.9 .N.10 .ESCAPED?.11 .VERBATIM?.12)
+                            (PSETQ .L.9
+                                   .L.6
+                                   .N.10
+                                   N
+                                   .ESCAPED?.11
+                                   .ESCAPED?.7
+                                   .VERBATIM?.12
+                                   .VERBATIM?.8)
+                            (GO BARS)
+                            BARS
+                            (LET ((.L.13 .L.9)
+                                  (.N.14 .N.10)
+                                  (.ESCAPED?.15 .ESCAPED?.11)
+                                  (.VERBATIM?.16 .VERBATIM?.12))
+                              (LET ((P (.PEEK-CHAR PORT)))
+                                (IF (AND (EQL P #\|) (CHEZ-READER-P))
+                                    (PROGN
+                                      (.READ-CHAR PORT)
+                                      (LET ((PART (READ-BAR-PART PORT)))
+                                        (PSETQ .L.9
+                                               (APPEND PART .L.13)
+                                               .N.10
+                                               (SCHEME+ .N.14 (LENGTH PART))
+                                               .ESCAPED?.11
+                                               TRUE
+                                               .VERBATIM?.12
+                                               TRUE)
+                                        (GO BARS)))
+                                    (IF (OR (EQ P EOF-OBJECT)
+                                            (TRUEP (TERMINATING? P)))
+                                        (RETURN (CONS (REVERSE-LIST->STRING
+                                                       .L.13
+                                                       .N.14)
+                                                      (APPEND (IF (TRUEP .ESCAPED?.15)
+                                                                  '(SCHEME::ESCAPED)
+                                                                  'NIL)
+                                                              (IF (TRUEP .VERBATIM?.16)
+                                                                  '(SCHEME::VERBATIM)
+                                                                  'NIL))))
+                                        (PROGN
+                                          (PSETQ .L.0
+                                                 .L.13
+                                                 .N.1
+                                                 (SCHEME+ .N.14 1)
+                                                 .C.2
+                                                 (.READ-CHAR PORT)
+                                                 .ESCAPED?.3
+                                                 .ESCAPED?.15
+                                                 .VERBATIM?.4
+                                                 .VERBATIM?.16)
+                                          (GO LOOP)))))))))))))))))
 (SET-VALUE-FROM-FUNCTION 'SUB-READ-SYMBOL-TOKEN 'SCHEME::SUB-READ-SYMBOL-TOKEN)
+(DEFUN READ-BAR-PART (PORT)
+  (PROG (L)
+    (SETQ L 'NIL)
+    (GO LOOP)
+    LOOP
+    (LET ((C (.READ-CHAR PORT)))
+      (IF (EQ C EOF-OBJECT)
+          (RETURN (READING-ERROR PORT "end of file within |symbol|"))
+          (IF (CHAR= C #\|)
+              (RETURN L)
+              (IF (CHAR= C #\\)
+                  (PROGN (SETQ L (CONS (READ-ESCAPE PORT) L)) (GO LOOP))
+                  (PROGN (SETQ L (CONS C L)) (GO LOOP))))))))
+(SET-VALUE-FROM-FUNCTION 'READ-BAR-PART 'SCHEME::READ-BAR-PART)
 (DEFUN READ-SYMBOL-ESCAPE (PORT)
   (IF (AND (CHEZ-READER-P)
            (NOT (EQL (.PEEK-CHAR PORT) #\x))
@@ -1192,7 +1274,11 @@
        (STRING-APPEND
         (CAR (THE-WHO CONS "car" TOKEN))
         " symbol syntax not allowed in #!r6rs mode"))
-      (INTERN-TOKEN (CAR (THE-WHO CONS "car" TOKEN)))))
+      (INTERN-TOKEN (CAR (THE-WHO CONS "car" TOKEN))
+                    (TRUE? (MEMBER 'SCHEME::VERBATIM
+                                   (CDR (THE-WHO CONS "cdr" TOKEN))
+                                   :TEST
+                                   #'EQ)))))
 (SET-VALUE-FROM-FUNCTION 'TOKEN-SYMBOL 'SCHEME::TOKEN-SYMBOL)
 (DEFUN R6RS-STRICT? (PORT) (TRUE? (PORT-R6RS-P PORT)))
 (SET-VALUE-FROM-FUNCTION 'R6RS-STRICT? 'SCHEME::R6RS-STRICT?)
@@ -1203,8 +1289,14 @@
   (DECLARE (SPECIAL STRANGE-SYMBOL-NAMES))
   (SETQ STRANGE-SYMBOL-NAMES '("+" "-" "..." "1+" "-1+" "1-")))
 (SET-FUNCTION-FROM-VALUE 'STRANGE-SYMBOL-NAMES 'SCHEME::STRANGE-SYMBOL-NAMES)
-(DEFUN INTERN-TOKEN (.STRING)
-  (LET ((.STRING.0 (IF *FOLD-CASE* (STRING-DOWNCASE .STRING) .STRING))
+(DEFUN INTERN-TOKEN (.STRING &REST VERBATIM)
+  (MAYBE-FIX-&REST-PARAMETER VERBATIM)
+  (LET ((.STRING.0 (IF *FOLD-CASE*
+                       (IF (OR (NULL VERBATIM)
+                               (NOT (TRUEP (CAR (THE-WHO CONS "car" VERBATIM)))))
+                           (FOLD-SYMBOL-NAME .STRING)
+                           .STRING)
+                       .STRING))
         (N (LENGTH (THE-WHO SIMPLE-STRING "string-length" .STRING))))
     (IF (AND (TRUEP (KEYWORDS-P))
              (SCHEME> N 1)
@@ -1324,70 +1416,86 @@
        C
        (.READ-CHAR PORT)
        (LIST 'SCHEME::$PRIMITIVE (SUB-READ-PLAIN PORT)))))
-(LOCALLY (DECLARE (SPECIAL *READ-GENSYMS*)) (SETQ *READ-GENSYMS* 'NIL))
-(SET-FORWARDING-FUNCTION '*READ-GENSYMS* 'SCHEME::*READ-GENSYMS*)
 (AT-TOP-LEVEL
-  (LOCALLY
-    (DECLARE (SPECIAL *READ-GENSYMS*))
-    (DEFINE-SHARP-MACRO
-     #\{
-     #'(LAMBDA (C PORT)
-         C
-         (.READ-CHAR PORT)
-         (PROG (.L.0)
-           (SETQ .L.0 'NIL)
-           (GO LOOP)
-           LOOP
-           (LET ((L .L.0))
-             (LET ((D (.READ-CHAR PORT)))
+  (DEFINE-SHARP-MACRO
+   #\{
+   #'(LAMBDA (C PORT)
+       C
+       (.READ-CHAR PORT)
+       (PROG (.PARTS.0 .L.1 .N.2 .VERBATIM?.3)
+         (PSETQ .PARTS.0 'NIL .L.1 'NIL .N.2 0 .VERBATIM?.3 FALSE)
+         (GO LOOP)
+         LOOP
+         (LET ((PARTS .PARTS.0) (L .L.1) (N .N.2) (VERBATIM? .VERBATIM?.3))
+           (LET ((D (.READ-CHAR PORT)))
+             (LABELS ((PART NIL
+                            (LET ((S (REVERSE-LIST->STRING L N)))
+                              (IF *FOLD-CASE*
+                                  (IF (TRUEP VERBATIM?) S (FOLD-SYMBOL-NAME S))
+                                  S))))
                (IF (EQ D EOF-OBJECT)
                    (RETURN (READING-ERROR PORT "end of file in #{"))
-                   (IF (CHAR= D #\})
-                       (LET ((TEXT (COERCE (THE LIST (REVERSE L))
-                                           'SIMPLE-STRING)))
-                         (LET ((SPACE (PROG (I)
-                                        (SETQ I 0)
-                                        (GO FIND)
-                                        FIND
-                                        (IF (SCHEME= I
-                                                     (LENGTH (THE-WHO SIMPLE-STRING
-                                                                      "string-length"
-                                                                      TEXT)))
-                                            (RETURN FALSE)
-                                            (IF (CHAR= (CHECKED-SCHAR
-                                                        "string-ref"
-                                                        TEXT
-                                                        I)
-                                                       #\Space)
-                                                (RETURN I)
-                                                (PROGN
-                                                  (SETQ I (SCHEME+ I 1))
-                                                  (GO FIND)))))))
-                           (LET NIL
-                             (IF (TRUEP SPACE)
-                                 (LET ((NAME (SUBSEQ TEXT 0 SPACE)))
-                                   (LET ((UNIQUE (SUBSEQ TEXT
-                                                         (SCHEME+ SPACE 1)
-                                                         (LENGTH (THE-WHO SIMPLE-STRING
-                                                                          "string-length"
-                                                                          TEXT)))))
-                                     (LET ((PROBE (TRUE? (ASSOC UNIQUE
-                                                                *READ-GENSYMS*
-                                                                :TEST
-                                                                #'SCHEME-EQUAL-P))))
-                                       (LET NIL
-                                         (IF (TRUEP PROBE)
-                                             (RETURN (CDR (THE-WHO CONS
-                                                                   "cdr"
-                                                                   PROBE)))
-                                             (LET ((SYMBOL (MAKE-GENSYM-FROM-NAME
-                                                            NAME)))
-                                               (SETQ *READ-GENSYMS*
-                                                     (CONS (CONS UNIQUE SYMBOL)
-                                                           *READ-GENSYMS*))
-                                               (RETURN SYMBOL)))))))
-                                 (RETURN (MAKE-GENSYM-FROM-NAME TEXT))))))
-                       (PROGN (SETQ .L.0 (CONS D L)) (GO LOOP)))))))))))
+                   (IF (OR (CHAR= D #\}) (CHAR-WHITESPACE-P D))
+                       (LET ((.PARTS.4 (IF (SCHEME> N 0)
+                                           (CONS (PART) PARTS)
+                                           PARTS)))
+                         (IF (CHAR= D #\})
+                             (IF (AND (CONSP .PARTS.4)
+                                      (CONSP (CDR (THE-WHO CONS "cdr" .PARTS.4)))
+                                      (NULL (CDR (THE-WHO CONS
+                                                          "cddr"
+                                                          (CDR (THE-WHO CONS
+                                                                        "cddr"
+                                                                        .PARTS.4))))))
+                                 (RETURN (MAKE-GENSYM-WITH-UNIQUE-NAME
+                                          (CAR (THE-WHO CONS
+                                                        "cadr"
+                                                        (CDR (THE-WHO CONS
+                                                                      "cadr"
+                                                                      .PARTS.4))))
+                                          (CAR (THE-WHO CONS "car" .PARTS.4))))
+                                 (IF (AND (CONSP .PARTS.4)
+                                          (NULL (CDR (THE-WHO CONS
+                                                              "cdr"
+                                                              .PARTS.4))))
+                                     (RETURN (MAKE-GENSYM-FROM-NAME
+                                              (CAR (THE-WHO CONS "car" .PARTS.4))))
+                                     (RETURN (READING-ERROR
+                                              PORT
+                                              "invalid #{...} gensym syntax"))))
+                             (PROGN
+                               (PSETQ .PARTS.0
+                                      .PARTS.4
+                                      .L.1
+                                      'NIL
+                                      .N.2
+                                      0
+                                      .VERBATIM?.3
+                                      FALSE)
+                               (GO LOOP))))
+                       (IF (CHAR= D #\\)
+                           (LET ((E (.READ-CHAR PORT)))
+                             (IF (EQ E EOF-OBJECT)
+                                 (READING-ERROR PORT "end of file in #{"))
+                             (PSETQ .PARTS.0
+                                    PARTS
+                                    .L.1
+                                    (CONS E L)
+                                    .N.2
+                                    (SCHEME+ N 1)
+                                    .VERBATIM?.3
+                                    TRUE)
+                             (GO LOOP))
+                           (PROGN
+                             (PSETQ .PARTS.0
+                                    PARTS
+                                    .L.1
+                                    (CONS D L)
+                                    .N.2
+                                    (SCHEME+ N 1)
+                                    .VERBATIM?.3
+                                    VERBATIM?)
+                             (GO LOOP))))))))))))
 (AT-TOP-LEVEL
   (DEFINE-SHARP-MACRO
    #\'

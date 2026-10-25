@@ -685,6 +685,7 @@ chez-srfi derives its platform features (posix, darwin, ...) from it."
     (make-symbol (qs:invert-case (if counted
 				     (format nil "~A~D" name (prog1 *chez-gensym-counter* (incf *chez-gensym-counter*)))
 				     name)))))
+(defprim "chez:gensym-unique-name" (g) (qs:gensym-unique-name g))
 (defprim "chez:uninterned-symbol?" (x) (bool (and (symbolp x) x (null (symbol-package x)))))
 (defprim "chez:string->uninterned-symbol" (s) (make-symbol (qs:invert-case s)))
 
@@ -2184,6 +2185,12 @@ same MARKS, so that eq? says whether two continuations' agree."
 
 (defvar *chez-printer-parameters* nil
   "The print-... parameters, as chez:set-printer-parameters! gave them.")
+
+(defprim "chez:install-case-sensitive!" (parameter)
+  ;; the reader folds case where no #!fold-case says otherwise when
+  ;; Chez's case-sensitive parameter is false
+  (setq qs::*fold-case-default* (lambda () (eq (funcall parameter) qs:false)))
+  qs:unspecific)
 
 (defprim "chez:set-printer-parameters!" (&rest parameters)
   (setq *chez-printer-parameters* (coerce parameters 'simple-vector))

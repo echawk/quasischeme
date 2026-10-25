@@ -285,7 +285,12 @@
 	(cond ((eof-object? c)
 	       (reading-error port "end of file within |symbol|"))
 	      ((char=? c #\|)
-	       (qs:intern-scheme-symbol (reverse-list->string l i)))
+	       (let ((p (peek-char port)))
+		 ;; Chez: the symbol goes on, |a b|c is "a bc"
+		 (if (and (qs:true? (qs:chez-reader-p)) (char? p) (not (terminating? p)))
+		     (let ((rest (sub-read-symbol-token (read-char port) port)))
+		       (qs:intern-scheme-symbol (string-append (reverse-list->string l i) (car rest))))
+		     (qs:intern-scheme-symbol (reverse-list->string l i)))))
 	      ((char=? c #\\)
 	       (loop (cons (read-escape port) l) (+ i 1)))
 	      (else (loop (cons c l) (+ i 1))))))))
@@ -751,15 +756,38 @@
 ; A token that may be a symbol: R6RS's \x<hex>; escapes in it stand for
 ; characters, and a token with one is a symbol, never a number.
 
+; In Chez Scheme a symbol may have |...| parts, taken as written, and a
+; \c escape stands for c; either keeps the symbol from being folded
+; (VERBATIM), where an \x<hex>; escape doesn't.
+
 (define (sub-read-symbol-token c port)
-  (let loop ((l '()) (n 1) (c c) (escaped? #f))
+  (let loop ((l '()) (n 1) (c c) (escaped? #f) (verbatim? #f))
     (let* ((escape? (char=? c #\\))
+	   (hex? (and escape? (eqv? (peek-char port) #\x)))
 	   (l (cons (if escape? (read-symbol-escape port) c) l))
 	   (escaped? (or escaped? escape?))
-	   (p (peek-char port)))
-      (if (or (eof-object? p) (terminating? p))
-	  (cons (reverse-list->string l n) (if escaped? '(escaped) '()))
-	  (loop l (+ n 1) (read-char port) escaped?)))))
+	   (verbatim? (or verbatim? (and escape? (not hex?)))))
+      (let bars ((l l) (n n) (escaped? escaped?) (verbatim? verbatim?))
+	(let ((p (peek-char port)))
+	  (cond ((and (eqv? p #\|) (qs:true? (qs:chez-reader-p)))
+		 (read-char port)
+		 (let ((part (read-bar-part port)))
+		   (bars (append part l) (+ n (length part)) #t #t)))
+		((or (eof-object? p) (terminating? p))
+		 (cons (reverse-list->string l n)
+		       (append (if escaped? '(escaped) '()) (if verbatim? '(verbatim) '()))))
+		(else (loop l (+ n 1) (read-char port) escaped? verbatim?))))))))
+
+; The characters of a |...| part, after its |, last first
+
+(define (read-bar-part port)
+  (let loop ((l '()))
+    (let ((c (read-char port)))
+      (cond ((eof-object? c)
+	     (reading-error port "end of file within |symbol|"))
+	    ((char=? c #\|) l)
+	    ((char=? c #\\) (loop (cons (read-escape port) l)))
+	    (else (loop (cons c l)))))))
 
 (define (read-symbol-escape port)
   ;; Chez Scheme's \c, any character but x, stands for c
@@ -811,7 +839,7 @@
 	   (r6rs-strict? port)
 	   (not (qs:true? (qs:r6rs-identifier-p (car token)))))
       (reading-error port (string-append (car token) " symbol syntax not allowed in #!r6rs mode"))
-      (intern-token (car token))))
+      (intern-token (car token) (memq 'verbatim (cdr token)))))
 
 (define (r6rs-strict? port) (qs:true? (qs:port-r6rs-p port)))
 
@@ -832,8 +860,12 @@
 ; keep using the #'-escape (below), same as read.scm's own definitions
 ; at the top of this file do.
 
-(define (intern-token string)
-  (let ((string (qs-lisp:if qs:*fold-case* (common-lisp:string-downcase string) string))
+(define (intern-token string . verbatim)
+  (let ((string (qs-lisp:if qs:*fold-case*
+			   (if (or (null? verbatim) (not (car verbatim)))
+			       (qs:fold-symbol-name string)
+			       string)
+			   string))
 	(n (string-length string)))
     (if (and (qs:keywords-p) (> n 1) (char=? (string-ref string (- n 1)) #\:))
 	(qs:intern-keyword-object (substring string 0 (- n 1)))
@@ -935,35 +967,34 @@
     (read-char port)
     (list '$primitive (sub-read-plain port))))
 
-; Chez Scheme's #{name unique}: a gensym.  The same unique name reads
-; as the same symbol.
-
-(define *read-gensyms* '())
+; Chez Scheme's #{pretty unique}: a gensym.  The same unique name reads
+; as the same symbol.  Each name folds as a symbol does, unless it has
+; a \c escape.
 
 (define-sharp-macro #\{
   (lambda (c port)
     c
     (read-char port)
-    (let loop ((l '()))
+    (let loop ((parts '()) (l '()) (n 0) (verbatim? #f))
       (let ((d (read-char port)))
+	(define (part)
+	  (let ((s (reverse-list->string l n)))
+	    (qs-lisp:if qs:*fold-case* (if verbatim? s (qs:fold-symbol-name s)) s)))
 	(cond ((eof-object? d) (reading-error port "end of file in #{"))
-	      ((char=? d #\})
-	       (let* ((text (list->string (reverse l)))
-		      (space (let find ((i 0))
-			       (cond ((= i (string-length text)) #f)
-				     ((char=? (string-ref text i) #\space) i)
-				     (else (find (+ i 1)))))))
-		 (if space
-		     (let* ((name (substring text 0 space))
-			    (unique (substring text (+ space 1) (string-length text)))
-			    (probe (assoc unique *read-gensyms*)))
-		       (if probe
-			   (cdr probe)
-			   (let ((symbol (qs:make-gensym-from-name name)))
-			     (set! *read-gensyms* (cons (cons unique symbol) *read-gensyms*))
-			     symbol)))
-		     (qs:make-gensym-from-name text))))
-	      (else (loop (cons d l))))))))
+	      ((or (char=? d #\}) (char-whitespace? d))
+	       (let ((parts (if (> n 0) (cons (part) parts) parts)))
+		 (if (char=? d #\})
+		     (cond ((and (pair? parts) (pair? (cdr parts)) (null? (cddr parts)))
+			    (qs:make-gensym-with-unique-name (cadr parts) (car parts)))
+			   ((and (pair? parts) (null? (cdr parts)))
+			    (qs:make-gensym-from-name (car parts)))
+			   (else (reading-error port "invalid #{...} gensym syntax")))
+		     (loop parts '() 0 #f))))
+	      ((char=? d #\\)
+	       (let ((e (read-char port)))
+		 (if (eof-object? e) (reading-error port "end of file in #{"))
+		 (loop parts (cons e l) (+ n 1) #t)))
+	      (else (loop parts (cons d l) (+ n 1) verbatim?)))))))
 
 ;; R6RS 4.3.5 abbreviations: #'x #`x #,x #,@x.  (These replace an older
 ;; Quasischeme-specific #'cl-function escape; see README.)

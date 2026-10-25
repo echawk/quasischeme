@@ -675,6 +675,8 @@
 (define pretty-standard-indent (make-parameter 1))
 (define pretty-maximum-lines (make-parameter #f))
 (define case-sensitive (make-parameter #t ->boolean))
+;; the reader folds case when it's false (core.lisp)
+(define case-sensitive-installed (%chez:install-case-sensitive! case-sensitive))
 
 ;;; The system
 
