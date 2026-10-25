@@ -484,11 +484,13 @@ unused part of every thread's control stack at every collection
 (`scrub_thread_control_stack`, from the stack pointer to the guard page).
 With the command line's 256 MB stack, a nursery collection took 7.9 ms,
 against 0.3 ms with a 2 MB stack. The finalizer thread, started before a
-program runs, had a 256 MB stack too. It is now restarted with 8 MB
-(`shrink-finalizer-stack`, src/numbers.lisp), which brings a collection
-to 6.1 ms. The main thread's zeroing remains: a smaller main stack would
-limit recursion depth. This is why a smaller nursery costs more, as
-"Tried and not kept" records: each collection carries a fixed 3-4 ms.
+program runs, has a 256 MB stack too. Restarting it with 8 MB brought a
+collection to 6.1 ms, but isn't kept: SBCL frees a thread's memory by
+the current stack size, so raising the size again (as `--compile` does
+before saving its image) unmapped the wrong length, a memory fault. A
+smaller main stack would limit recursion depth. This is why a smaller
+nursery costs more, as "Tried and not kept" records: each collection
+carries a fixed 6-8 ms.
 
 ## Run time against upstream Racket (October 2026)
 

@@ -847,7 +847,9 @@ is reported, and the program runs anyway."
 	(destructuring-bind (kind text) action
 	  (case kind
 	    (:lisp-system (quasischeme-interop:load-lisp-system text))
-	    (:guile-command-line (run-guile-command-line text))
+	    ;; with --compile, an empty one isn't the REPL guile would start
+	    (:guile-command-line (unless (and *compile-file* (null text))
+				   (run-guile-command-line text)))
 	    ;; a file of linklet forms (tests/racket/linklets/), with --racket
 	    (:linklets (qsr:load-file text) (finish-output) (uiop:quit 0))
 	    (:quicklisp (load-quicklisp))
