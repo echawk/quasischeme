@@ -121,11 +121,15 @@ below, with where each part stands.
     from source: srfi-1 (1,902 tests), srfi-9, 11, 19, 26, 31, 34, 35,
     37, 41, 43, 45, 60, 64, 67, 69, 171; ice-9 format, getopt-long,
     match, optargs, q, regex, vlist. `GUILE_VM_PRELOAD` in
-    tests/run-guile-test.lisp does this. `QUASISCHEME_GUILE_GO=all`
+    tests/run-guile-test.lisp does this. `QUASISCHEME_GUILE_GO=guile`
     makes any program do it: each of Guile's own modules that has an
     installed `.go` file loads from it, on the VM, rather than from its
-    source, natively (boot.lisp, `load-installed-compiled`). It isn't the
-    default, being slower (see docs/guile.md, "Native code or bytecode").
+    source, natively (boot.lisp, `load-installed-compiled`). `user` does
+    the same for any other module or script with a fresh `.go` file, in
+    `%load-compiled-path` or Guile's auto-compilation cache, as Guile
+    finds it (`load-user-compiled`); `all` is both (docs/guile-guide.md).
+    It isn't the default, being slower to load (see docs/guile.md,
+    "Native code or bytecode").
   - Bytecode from Guile's compiler running here runs on the VM:
     rtl.test and rtl-compilation.test pass.
 - **`compile`:** to `value`, how it runs is a setting,

@@ -531,6 +531,8 @@ these are (DIR/share/guile/3.0/), which (ice-9 slib) and others look in."
 
 (declaim (ftype function vm-settings-from-environment)) ; vm-jit.lisp
 
+(defvar *fallback-path* nil "GUILE-FALLBACK-PATH's answer, this process's.")
+
 ;;; GUILE_LOAD_PATH and GUILE_LOAD_COMPILED_PATH, as libguile reads them
 ;;; when it starts: their directories (colon-separated) go before
 ;;; %load-path's and %load-compiled-path's.  %load-compiled-path also has
@@ -563,7 +565,14 @@ these are (DIR/share/guile/3.0/), which (ice-9 slib) and others look in."
 		       (append dirs (remove-if (lambda (d) (member d dirs :test #'equal)) old))))))))
     (prepend "%load-path" "GUILE_LOAD_PATH")
     (prepend "%load-compiled-path" "GUILE_LOAD_COMPILED_PATH"
-	     (string-right-trim "/" (namestring (guile-cache-directory))))))
+	     (string-right-trim "/" (namestring (guile-cache-directory)))))
+  ;; QUASISCHEME_GUILE_GO=user: files Guile has auto-compiled are found
+  ;; where it put them, by boot-9's load as by modules' loading
+  (setq *fallback-path* nil)
+  (let ((v (obarray-variable (ssym "%compile-fallback-path"))))
+    (when v
+      (setf (gvariable-value v)
+	    (or (and (member :user (go-modules)) (guile-fallback-path)) qs:false)))))
 
 (defun load-path ()
   (let ((v (obarray-variable (ssym "%load-path"))))
@@ -797,11 +806,24 @@ loads from the installed Guile's .go files?"
 	 name)))
 
 (defun go-modules ()
-  "Which of Guile's own modules load from the installed Guile's .go
-files, on the VM (QUASISCHEME_GUILE_GO): :compiler, Guile's compiler
-when the :vm compiler runs it (the default); :all, any of them that has
-a .go file."
-  (if (member (uiop:getenv "QUASISCHEME_GUILE_GO") '("all" "1") :test #'equal) :all :compiler))
+  "What loads from compiled .go files, on the VM, rather than from its
+source, natively: QUASISCHEME_GUILE_GO, words separated by commas.
+`guile': Guile's own modules, from the installed Guile's .go files;
+`user': any other module or file that has a .go file at least as new as
+its source, in a directory of %load-compiled-path or in Guile's own cache
+of auto-compiled files (~/.cache/guile/ccache/...), where guile would
+find it (LOAD-USER-COMPILED); `all' (or `1'): both.  A list of :guile
+and :user.  Guile's compiler loads from the installed .go files when the
+:vm compiler runs it, whatever this says."
+  (let ((words (uiop:split-string (or (uiop:getenv "QUASISCHEME_GUILE_GO") "") :separator ",")))
+    (remove-duplicates
+     (loop for word in words
+	   append (cond ((member word '("all" "1") :test #'string-equal) (list :guile :user))
+			((string-equal word "guile") (list :guile))
+			((string-equal word "user") (list :user)))))))
+
+(defun guile-own-file-p (path)
+  (search (namestring *guile-source-directory*) (namestring path)))
 
 (defun module-file-name (name)
   (if (and (> (length name) 4) (string= ".scm" name :start2 (- (length name) 4)))
@@ -814,8 +836,8 @@ VM, if GO-MODULES says it should, there is one, and PATH (where the
 source was found) is Guile's own, not one of src/guile/modules/'s
 replacements.  True if it did."
   (let ((module (cond ((and *cache-ready*	; booted: boot-9 itself is ours
-			    (eq (go-modules) :all) (not (uiop:absolute-pathname-p name))
-			    (search (namestring *guile-source-directory*) (namestring path)))
+			    (member :guile (go-modules)) (not (uiop:absolute-pathname-p name))
+			    (guile-own-file-p path))
 		       (module-file-name name))
 		      ((eq (guile-compiler) :vm) (compiler-module-file-p name)))))
     (when (and module (not (search "src/guile/modules/" (namestring path))))
@@ -825,9 +847,54 @@ replacements.  True if it did."
 	  (funcall (funcall 'load-go-file go))
 	  t)))))
 
+(defun fresh-compiled-file (name path)
+  "A .go file of the module file NAME (\"demo/fib\"), whose source is at
+PATH, at least as new as PATH, where Guile looks: NAME.go in a directory
+of %load-compiled-path, then PATH's own in %compile-fallback-path, where
+Guile's auto-compilation writes it (the source's canonical name with
+.go after it).  NIL if there is none."
+  (let ((source-date (file-write-date path)))
+    (flet ((fresh (go)
+	     (let ((date (and (probe-file go) (file-write-date go))))
+	       (and date source-date (>= date source-date) go))))
+      (or (and (not (uiop:absolute-pathname-p name))
+	       (let ((dirs (root-value "%load-compiled-path")))
+		 (loop for dir in (if (listp dirs) dirs '())
+		       thereis (and (stringp dir)
+				    (fresh (format nil "~A/~A.go" (string-right-trim "/" dir)
+						   (module-file-name name)))))))
+	  (let ((fallback (root-value "%compile-fallback-path")))
+	    (and (stringp fallback)
+		 (fresh (concatenate 'string fallback (namestring (truename path)) ".go"))))))))
+
+(defun load-user-compiled (name path)
+  "Load the module file NAME, found at PATH, on the VM from a .go file of
+it (FRESH-COMPILED-FILE), if GO-MODULES has :user, PATH isn't Guile's own
+nor one of src/guile/modules/'s, and there is one.  True if it did."
+  (when (and *cache-ready* (member :user (go-modules))
+	     (not (guile-own-file-p path))
+	     (not (search "src/guile/modules/" (namestring path))))
+    (let ((go (fresh-compiled-file name path)))
+      (when go
+	(when *trace-loads* (format *trace-output* "~&;; loading ~A on the VM~%" go))
+	(funcall (funcall 'load-go-file go))
+	t))))
+
+(defun guile-fallback-path ()
+  "The installed Guile's %compile-fallback-path, where it auto-compiles
+files to (under XDG_CACHE_HOME, or ~/.cache), asked of it once: its name
+holds Guile's version and its bytecode's."
+  (or *fallback-path*
+      (setq *fallback-path*
+	    (let ((text (ignore-errors
+			 (uiop:run-program '("guile" "-c" "(display %compile-fallback-path)")
+					   :output :string :error-output nil :ignore-error-status t))))
+	      (and text (plusp (length text)) (char= (char text 0) #\/) text)))))
+
 (defun primitive-load-path (name &optional (exception-on-not-found qs:true))
   (let ((path (search-load-path name)))
-    (cond ((and path (load-installed-compiled name path)) *unspecified*)
+    (cond ((and path (or (load-installed-compiled name path) (load-user-compiled name path)))
+	   *unspecified*)
 	  (path (let ((*cacheable-load* t)) (primitive-load path)))
 	  ;; a thunk to call instead of the error
 	  ((functionp exception-on-not-found) (funcall exception-on-not-found))

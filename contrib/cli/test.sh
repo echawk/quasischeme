@@ -194,5 +194,20 @@ cached=$(find $tmp/ccache -name '*.fasl' | wc -l | tr -d ' ')
 check "chez: macro-made library, from the cache" "42 $cached" sh -c "QUASISCHEME_LIBRARY_CACHE_DIRECTORY=$tmp/ccache $PS --chez --libdirs $tmp/clib --script $tmp/cl.ss | tr '\\n' ' '; find $tmp/ccache -name '*.fasl' | wc -l | tr -d ' '"
 check "chez: all three libraries cached" "3" echo $cached
 
+# QUASISCHEME_GUILE_GO=user: a module's fresh .go file, compiled by the
+# installed guild, loads on the VM; its source (older, and different)
+# doesn't, and without the setting the source is compiled
+if command -v guild >/dev/null 2>&1; then
+  mkdir -p $tmp/gsrc/gdemo $tmp/gsrc0/gdemo $tmp/ggo/gdemo
+  printf '(define-module (gdemo which) #:export (which))\n(define (which) "go")\n' > $tmp/gsrc0/gdemo/which.scm
+  guild compile -o $tmp/ggo/gdemo/which.go $tmp/gsrc0/gdemo/which.scm >/dev/null 2>&1
+  printf '(define-module (gdemo which) #:export (which))\n(define (which) "source")\n' > $tmp/gsrc/gdemo/which.scm
+  touch -t 202001010000 $tmp/gsrc/gdemo/which.scm
+  check "guile: GO=user loads a fresh .go" "go" env GUILE_LOAD_COMPILED_PATH=$tmp/ggo QUASISCHEME_GUILE_GO=user $PS --guile -L $tmp/gsrc -c '(use-modules (gdemo which)) (display (which))'
+  check "guile: by default, the source" "source" env GUILE_LOAD_COMPILED_PATH=$tmp/ggo $PS --guile -L $tmp/gsrc -c '(use-modules (gdemo which)) (display (which))'
+  touch -t 203001010000 $tmp/gsrc/gdemo/which.scm
+  check "guile: GO=user skips a stale .go" "source" env GUILE_LOAD_COMPILED_PATH=$tmp/ggo QUASISCHEME_GUILE_GO=user $PS --guile -L $tmp/gsrc -c '(use-modules (gdemo which)) (display (which))'
+fi
+
 echo "$((n-fail)) of $n CLI tests passed"
 [ $fail = 0 ]

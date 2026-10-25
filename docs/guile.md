@@ -1,5 +1,8 @@
 # Guile on Quasischeme: `--guile`
 
+*Using it: docs/guile-guide.md (running, the REPL, your existing `.go`
+bytecode, speed, settings). Every setting: docs/configuration.md.*
+
 Status: **running.** `quasischeme --guile prog.scm` loads GNU Guile 3.0's
 own `ice-9/boot-9.scm` and `ice-9/psyntax-pp.scm`, unmodified, from the
 Guile installation on the machine. They run on libguile's primitives
@@ -686,7 +689,7 @@ to another image or to Lisp leaves the translation.
 Loading, with nothing to compile (19 modules, SRFI 1, 9, 19, 26, 41, 43,
 64, 69, `(ice-9 match)`, `format`, `regex`, `peg` and the rest):
 
-| | from the cache's fasls, native | from the installed `.go` files, on the VM (`QUASISCHEME_GUILE_GO=all`) |
+| | from the cache's fasls, native | from the installed `.go` files, on the VM (`QUASISCHEME_GUILE_GO=guile`) |
 |---|---|---|
 | all 19 | 57 ms | 400 to 530 ms |
 | `(srfi srfi-19)` alone | 19 ms | 454 ms |

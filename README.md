@@ -27,15 +27,15 @@ make -C contrib/cli                 # builds bin/quasischeme
 bin/quasischeme                    # R7RS REPL: ,help, ,language chez, ,q (docs/repl.md)
 bin/quasischeme --r6rs prog.sps a b
 bin/quasischeme --chez --script script.ss   # a Chez Scheme script (docs/chez.md)
-bin/quasischeme --guile prog.scm     # GNU Guile, its own boot-9 and modules (docs/guile.md)
-bin/quasischeme --racket prog.rkt    # Racket, on Racket's own expander (docs/racket.md)
+bin/quasischeme --guile prog.scm     # GNU Guile, its own boot-9 and modules (docs/guile-guide.md)
+bin/quasischeme --racket prog.rkt    # Racket, on Racket's own expander (docs/racket-guide.md)
 bin/quasischeme --racket -I typed/racket   # after --chez, --guile or --racket: that language's
 bin/quasischeme --guile -c '(display 1)'   # own command line (scheme --help, guile --help, racket -h)
 bin/quasischeme --r4rs prog.scm     # or --ieee, --r3rs, --r2rs, --rrs: the older reports (docs/reports.md)
-bin/quasischeme --guile --compile prog.scm -o prog   # a standalone executable, in any mode (docs/executables.md)
+bin/quasischeme --compile prog.scm -o prog --guile   # a standalone executable, in any mode, its flag last (docs/executables.md)
 bin/quasischeme -p '(exact-integer-sqrt 17)'
 bin/quasischeme --lisp               # a Lisp REPL with all of it, for SLY/SLIME (docs/emacs.md)
-bin/quasischeme --help
+bin/quasischeme --help            # environment settings: docs/configuration.md
 ```
 
 Threads a program makes get 32 MB control stacks (the main thread has

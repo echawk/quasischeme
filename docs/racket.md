@@ -1,5 +1,8 @@
 # Racket on Quasischeme: a `--racket` mode
 
+*Using it: docs/racket-guide.md (setup, running, the caches, speed,
+settings). Every setting: docs/configuration.md.*
+
 Status: **running, on strategy B** (October 2026).
 `quasischeme --racket prog.rkt` runs `#lang racket/base` and
 `#lang racket` programs on Racket's own expander. Strategy A, Racket
