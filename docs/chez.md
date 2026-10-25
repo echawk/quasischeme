@@ -534,8 +534,9 @@ turns off.
 
 ## The editor itself (2026-10-22)
 
-e starts and edits under `--chez`. Its base starts in about 16 s on a
-warm cache, and a client attaches to it, draws the screen, visits a file,
+e starts and edits under `--chez`. Its base starts in about 1 s once
+its libraries are in the library cache (about 20 s the first time, which
+compiles them), and a client attaches to it, draws the screen, visits a file,
 takes typing, and detaches on `C-x C-c`. To run it, put
 `bin/scheme-script` first on the PATH (e's loader is a `scheme-script`
 script, and it runs itself again for the base). On macOS, give it a
@@ -563,6 +564,14 @@ it took:
 - **Imported libraries are checked once per process**, as Chez checks
   a library when it first loads it. Before, each import re-read every
   importer's sources to find their imports.
+- **e's libraries are in the library cache** (2026-10-25). Its base
+  started in 16 s on every run, all of it SBCL compiling libraries
+  expanded again. A library file whose library a macro makes (e's
+  `elibrary`) is cached by its text and the ids of the libraries it
+  imports. A library with `meta define` (e's `edoc`) can be cached: its
+  visit code makes the meta definitions again. Chez mode's annotated
+  source reads back from a fasl. A big library body (`(sys sys)`, 2539
+  functions, past SBCL's 2047 to a code object) is compiled in chunks.
 
 ## What e still needs
 

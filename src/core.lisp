@@ -219,10 +219,14 @@ reader annotates (Chez annotates the literal, not its bytes)."
 ;;; stands for without annotations.  psyntax looks through them; the
 ;;; reader makes them while *ANNOTATING-SFD* is a descriptor.
 
-(defstruct (annotation (:constructor make-annotation (expression source stripped options)))
+;;; Each has a keyword constructor too, so that #S reads it back: the
+;;; library cache prints compiled code readably (src/library-cache.lisp).
+(defstruct (annotation (:constructor make-annotation (expression source stripped options))
+		       (:constructor %make-annotation))
   expression source stripped options)
-(defstruct (sfd (:constructor make-sfd (path checksum))) path checksum)
-(defstruct (source-object (:constructor make-source-object (sfd bfp efp &optional line column)))
+(defstruct (sfd (:constructor make-sfd (path checksum)) (:constructor %make-sfd)) path checksum)
+(defstruct (source-object (:constructor make-source-object (sfd bfp efp &optional line column))
+			  (:constructor %make-source-object))
   sfd bfp efp line column)
 (defmethod make-load-form ((x annotation) &optional env) (make-load-form-saving-slots x :environment env))
 (defmethod make-load-form ((x sfd) &optional env) (make-load-form-saving-slots x :environment env))

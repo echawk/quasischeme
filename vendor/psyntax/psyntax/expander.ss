@@ -3000,9 +3000,10 @@
              (bind! id lab)
              (let ((r (add-lexical lab loc r))
                    (mr (add-lexical lab loc mr)))
-               (set-symbol-value! loc
-                 (eval-core (expanded->core (expand-transformer expr mr))))
-               (mark-library-uncacheable!)
+               (let* ((expanded (expand-transformer expr mr))
+                      (value (eval-core (expanded->core expanded))))
+                 (set-symbol-value! loc value)
+                 (note-meta-definition! loc value expanded))
                (values r mr))))))
       (_ (stx-error e "malformed meta"))))
 
@@ -3013,6 +3014,16 @@
   (define (mark-library-uncacheable!)
     (let ((flag (library-uncacheable)))
       (when flag (vector-set! flag 0 #t))))
+
+  ;;; QUASISCHEME: the meta definitions made while a library is expanded,
+  ;;; as (loc value . expanded-expr), latest first: its visit code makes
+  ;;; them again before its macros, which may refer to them, so that a
+  ;;; library that has them can be compiled into the cache too.
+  (define library-meta-definitions (make-parameter #f))
+  (define (note-meta-definition! loc value expanded)
+    (let ((box (library-meta-definitions)))
+      (when box
+        (vector-set! box 0 (cons (cons* loc value expanded) (vector-ref box 0))))))
 
   (define chi-body*
     (lambda (e* r mr lex* rhs* mod** kwd* rib top?)
@@ -3646,7 +3657,9 @@
              (unless (pred (library-version lib))
                (error 'import 
                   "library does not satisfy version specification"
-                  lib
+                  ;; QUASISCHEME: its name and version: the library
+                  ;; record prints all it depends on (megabytes)
+                  (append (library-name lib) (list (library-version lib)))
                   spec*))
              (imp-collector lib)
              (library-subst lib))))
@@ -3963,11 +3976,13 @@
                   (let ((loc (car x)) (proc (cadr x)))
                     (set-symbol-value! loc proc)))
                 macro*))
-    (let ((uncacheable (vector #f)))
+    (let ((uncacheable (vector #f)) (metas (vector '())))
      (let-values (((name ver imp* inv* vis* invoke-code macro* export-subst export-env)
-                   (parameterize ((library-uncacheable uncacheable))
+                   (parameterize ((library-uncacheable uncacheable)
+                                  (library-meta-definitions metas))
                      (expand-library))))
       (let ((id (gensym))
+            (macro* (append (reverse (vector-ref metas 0)) macro*))
             (name name)
             (ver ver)  ;;; FIXME
             (imp* (map library-spec imp*))
@@ -4032,14 +4047,24 @@
          (let ((x (car r)))
            (let ((label (car x)) (b (cdr x)))
              (case (binding-type b)
+               ;; QUASISCHEME: a meta definition's location is its own
+               ;; global, which the library's visit code makes: its
+               ;; invoke code mustn't read it (a library from the
+               ;; compiled-library cache is invoked before it's visited)
                ((lexical)
+                (if (let ((box (library-meta-definitions)))
+                      (and box (assq (binding-value b) (vector-ref box 0))))
+                    (f (cdr r)
+                       (cons (cons* label 'global (binding-value b)) env)
+                       global*
+                       macro*)
                 (let ((loc (cond
                              ((assq (binding-value b) (library-export-locs)) => cdr)
                              (else (gen-global (binding-value b))))))
                   (f (cdr r)
                      (cons (cons* label 'global loc) env)
                      (cons (cons (binding-value b) loc) global*)
-                     macro*)))
+                     macro*))))
                ((local-macro)
                 (let ((loc (gensym)))
                   (f (cdr r)

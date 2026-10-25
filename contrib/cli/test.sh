@@ -168,5 +168,31 @@ printf '(import (chezscheme) (my lib))\n(define (f n) (if (= n 0) 1 (* n (f (- n
 check "chez: compile-program" "# FASL" sh -c "echo '(compile-program \"$tmp/p.ss\")' | QUASISCHEME_LIBRARY_CACHE_DIRECTORY=$tmp/cache $tmp/ib/chez -q --libdirs $tmp/lib >/dev/null && sed -n 1p $tmp/p.so | cut -c1-6"
 check "chez: a compiled program runs" "2432902008176640000 8 (a b)" env QUASISCHEME_LIBRARY_CACHE_DIRECTORY=$tmp/cache $tmp/ib/chez --libdirs $tmp/lib --program $tmp/p.so a b
 
+# The library cache keeps a library with a meta definition, and one a
+# macro makes at its file's top level (as e's elibrary does)
+mkdir -p $tmp/clib/mac $tmp/ccache
+cat > $tmp/clib/mac/def.ss <<'EOF'
+(library (mac def) (export defconst) (import (chezscheme))
+  (meta define (twice-datum x) (* 2 x))
+  (define-syntax defconst
+    (lambda (x)
+      (syntax-case x ()
+        [(_ n v) (with-syntax ([w (datum->syntax #'n (twice-datum (syntax->datum #'v)))])
+                   #'(define n w))]))))
+EOF
+cat > $tmp/clib/mac/maker.ss <<'EOF'
+(library (mac maker) (export mylibrary) (import (chezscheme))
+  (define-syntax mylibrary
+    (syntax-rules ()
+      [(_ name (e ...) body ...)
+       (library name (export e ...) (import (chezscheme) (mac def)) body ...)])))
+EOF
+printf '(import (mac maker))\n(mylibrary (mac made) (k) (defconst k 21))\n' > $tmp/clib/mac/made.ss
+printf '(import (chezscheme) (mac made))\n(printf "~a\\n" k)\n' > $tmp/cl.ss
+check "chez: macro-made library, cold cache" "42" env QUASISCHEME_LIBRARY_CACHE_DIRECTORY=$tmp/ccache $PS --chez --libdirs $tmp/clib --script $tmp/cl.ss
+cached=$(find $tmp/ccache -name '*.fasl' | wc -l | tr -d ' ')
+check "chez: macro-made library, from the cache" "42 $cached" sh -c "QUASISCHEME_LIBRARY_CACHE_DIRECTORY=$tmp/ccache $PS --chez --libdirs $tmp/clib --script $tmp/cl.ss | tr '\\n' ' '; find $tmp/ccache -name '*.fasl' | wc -l | tr -d ' '"
+check "chez: all three libraries cached" "3" echo $cached
+
 echo "$((n-fail)) of $n CLI tests passed"
 [ $fail = 0 ]

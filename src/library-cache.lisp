@@ -98,14 +98,15 @@ compiled code depends on too."
     (if (= level 2) *build-signature* (format nil "~A-O~D" *build-signature* level))))
 
 (defun form-text (form)
-  "FORM printed readably, or NIL if it can't be (it holds a Lisp
-object, such as the (cl <package>) bridge's functions)."
+  "FORM printed readably, without its source annotations, or NIL if it
+can't be (it holds a Lisp object, such as the (cl <package>) bridge's
+functions)."
   (handler-case
       (with-standard-io-syntax
 	(let ((*package* (find-package "SCHEME"))
 	      (*print-circle* t)
 	      (*print-readably* t))
-	  (prin1-to-string form)))
+	  (prin1-to-string (strip-annotations form))))
     (error () nil)))
 
 (defun library-key (text)
@@ -239,22 +240,58 @@ return #t, or return #f for psyntax to expand it from source."
       (let* ((key (library-key text))
 	     (fasl (library-fasl key)))
 	(push (list name key text form) *pending-libraries*)
-	(let ((compiled (and (probe-file fasl)
-			     (let ((*compiled-library* nil))
-			       (handler-case
-				   (handler-bind ((warning #'muffle-warning))
-				     (load fasl)
-				     *compiled-library*)
-				 (error () nil))))))
-	  (if (and compiled (equal (car compiled) text) (dependencies-current-p (cdr compiled)))
-	      (destructuring-bind (id name version imp* vis* inv* subst env visit invoke)
-		  (cdr compiled)
-		(mark-library-locations env)
-		(funcall (entry "psyntax:install-library")
-			 id name version imp* vis* inv* subst env visit invoke t)
-		(setf *pending-libraries* (remove name *pending-libraries* :key #'car :test #'equal))
-		t)
-	      qs:false))))))
+	(if (install-cached-library fasl text)
+	    (progn (setf *pending-libraries* (remove name *pending-libraries* :key #'car :test #'equal))
+		   t)
+	    qs:false)))))
+
+(defun install-cached-library (fasl text)
+  "Install the library compiled into FASL, if there is one, it was
+compiled from TEXT, and every library it was expanded against is still
+the one it was; true if it was installed."
+  (let ((compiled (and (probe-file fasl)
+		       (let ((*compiled-library* nil))
+			 (handler-case
+			     (handler-bind ((warning #'muffle-warning))
+			       (load fasl)
+			       *compiled-library*)
+			   (error () nil))))))
+    (when (and compiled (equal (car compiled) text) (dependencies-current-p (cdr compiled)))
+      (destructuring-bind (id name version imp* vis* inv* subst env visit invoke)
+	  (cdr compiled)
+	(mark-library-locations env)
+	(funcall (entry "psyntax:install-library")
+		 id name version imp* vis* inv* subst env visit invoke t)
+	t))))
+
+;;; A library file whose library a macro makes at its top level, as Chez
+;;; allows (src/chez/chez.lisp), is cached by its forms' text and the ids
+;;; of the libraries its imports named, the macro's among them.
+
+(defun file-library-text (forms imported)
+  "The text that keys a library file of FORMS, which import the libraries
+named IMPORTED (now installed), or NIL if it can't be cached."
+  (let ((ids (mapcar (lambda (name)
+		       (car (handler-case (funcall (entry "psyntax:library-spec-by-name") name)
+			      (error () nil))))
+		     imported)))
+    (and (every #'identity ids)
+	 (every #'stable-id-p ids)
+	 (form-text (list forms ids)))))
+
+(defun call-with-cached-file-library (name text thunk)
+  "Install library NAME from the cache entry for TEXT (FILE-LIBRARY-TEXT)
+if it is current; else call THUNK, which defines it, and cache what it
+defined.  True if it was installed from the cache."
+  (if (and text (library-cache-p))
+      (let* ((key (library-key text))
+	     (fasl (library-fasl key)))
+	(or (install-cached-library fasl text)
+	    (progn
+	      (push (list name key text nil) *pending-libraries*)
+	      (unwind-protect (progn (funcall thunk) nil)
+		(setf *pending-libraries* (remove name *pending-libraries* :key #'car :test #'equal))))))
+      (progn (funcall thunk) nil)))
 
 (defun dependencies-current-p (install-arguments)
   "Whether each library a compiled library was expanded against is
@@ -291,13 +328,18 @@ expanded against is the same from session to session."
 	(destructuring-bind (key text form) (cdr pending)
 	  (declare (ignore form))
 	  (let* ((data (list id name version imp* vis* inv* subst env))
-		 (visit (thunk-form (definitions (funcall visit-thunk))))
+		 (visit-core (definitions (funcall visit-thunk)))
+		 (visit (thunk-form visit-core))
 		 (*noted-safe-locations* '())
-		 (invoke (thunk-form (funcall invoke-thunk)))
+		 (invoke-core (funcall invoke-thunk))
+		 (invoke (thunk-form invoke-core))
 		 (compiled (write-compiled-library key text data visit invoke *noted-safe-locations*)))
 	    (if compiled
 		(setf (gethash id *cached-ids*) t)
-		(setq compiled (list* text (append data (list (eval visit) (eval invoke))))))
+		;; evaluated as psyntax would, whatever SBCL can't compile
+		;; interpreted
+		(setq compiled (list* text (append data (list (lambda () (host-eval-1 visit-core))
+							      (lambda () (host-eval-1 invoke-core)))))))
 	    (apply (entry "psyntax:install-library") (append (cdr compiled) (list t)))))))
     qs:unspecific))
 
@@ -312,11 +354,56 @@ undefined variables."
 	 (cons (sym "define") (cdr visit-code)))
 	(t visit-code)))
 
+(defparameter *thunk-chunk-size* 200
+  "The most forms of a compiled library's body compiled as one function.")
+
+(defparameter *thunk-chunk-conses* 20000
+  "The most conses of a compiled library's body compiled as one function
+(one form may be more): arm64's conditional branches reach 1 MB.")
+
+(defun body-chunks (forms)
+  "FORMS in runs of at most *THUNK-CHUNK-SIZE* forms and, but for a run
+of one, *THUNK-CHUNK-CONSES* conses."
+  (let ((chunks '()) (chunk '()) (n 0) (size 0))
+    (dolist (form forms)
+      (let ((s (tree-size form)))
+	(when (and chunk (or (>= n *thunk-chunk-size*) (> (+ size s) *thunk-chunk-conses*)))
+	  (push (nreverse chunk) chunks)
+	  (setq chunk '() n 0 size 0))
+	(push form chunk)
+	(incf n)
+	(incf size s)))
+    (when chunk (push (nreverse chunk) chunks))
+    (nreverse chunks)))
+
+(defun chunked-body (body &optional declarations)
+  "BODY, a translated library body: if a long PROGN (in a LOCALLY, maybe),
+its forms in chunks, each a function compiled on its own.  SBCL's code
+object holds at most 2047 functions, and the body of e's (sys sys) is
+2539 of them.  The forms are definitions of globals, closed, so a chunk
+is too; each has the LOCALLY's DECLARATIONS."
+  (cond ((and (consp body) (eq (car body) 'locally)
+	      (let ((forms (member-if-not (lambda (x) (and (consp x) (eq (car x) 'declare))) (cdr body))))
+		(and forms (null (cdr forms)))))
+	 (let ((decls (remove-if-not (lambda (x) (and (consp x) (eq (car x) 'declare))) (cdr body))))
+	   `(locally ,@decls ,(chunked-body (car (last body)) (append declarations decls)))))
+	((and (consp body) (eq (car body) 'progn) (cddr body)
+	      (or (> (length (cdr body)) *thunk-chunk-size*) (> (tree-size body) *thunk-chunk-conses*)))
+	 `(progn
+	    ,@(loop for chunk in (body-chunks (cdr body))
+		    collect `(funcall (load-time-value (lambda () (locally ,@declarations ,@chunk)) t)))))
+	(t body)))
+
 (defun thunk-form (core)
   "A Lisp lambda expression running CORE, a psyntax core form."
-  (let* ((form (open-primitives core))
-	 (body (handler-bind ((warning #'muffle-warning))
-		 (translate-core (if *full-continuations* (cc-transform form) form)))))
+  (let* ((form (open-top-level core))	; a big body's definitions hoisted
+	 (body (chunked-body
+		(handler-bind ((warning #'muffle-warning))
+		  (translate-core (if *full-continuations* (cc-transform form) form) t))))
+	 ;; the session that compiles a library defines its meta
+	 ;; definitions as it expands, and then its visit code again
+	 (body #+sbcl `(handler-bind ((sb-kernel:redefinition-warning #'muffle-warning)) ,body)
+	       #-sbcl body))
     (if *full-continuations*
 	`(lambda () (call-with-continuation-base (lambda () ,body)))
 	`(lambda () ,body))))
@@ -351,12 +438,18 @@ that hold procedures that can't capture (see FIND-SAFE-LOCATIONS)."
 			;; a failure still shows as FAILURE-P
 			(*error-output* (make-broadcast-stream))
 			(*standard-output* (make-broadcast-stream)))
-		    (multiple-value-bind (output warnings-p failure-p)
-			(if *full-continuations*
-			    (call-with-full-policy (lambda () (compile-file lisp :output-file temp-fasl :verbose nil :print nil)))
-			    (compile-file lisp :output-file temp-fasl :verbose nil :print nil))
-		      (declare (ignore warnings-p))
-		      (when (or failure-p (null output))
+		    (flet ((compiled-p ()
+			     (multiple-value-bind (output warnings-p failure-p)
+				 ;; with constraint propagation, whatever
+				 ;; CALL-WITH-SIZE-POLICY is loading this in: SBCL
+				 ;; can fail without it (src/psyntax.lisp)
+				 (let (#+sbcl (sb-c::*constraint-propagate* t))
+				   (if *full-continuations*
+				       (call-with-full-policy (lambda () (compile-file lisp :output-file temp-fasl :verbose nil :print nil)))
+				       (compile-file lisp :output-file temp-fasl :verbose nil :print nil)))
+			       (declare (ignore warnings-p))
+			       (and output (not failure-p)))))
+		      (unless (or (compiled-p) (call-without-jump-tables #'compiled-p))
 			(error "compiling ~A failed" lisp))))))
 	      (uiop:rename-file-overwriting-target temp-fasl fasl)
 	      (let ((*compiled-library* nil))

@@ -932,6 +932,13 @@ The code is as correct, its types less well known."
 	     (funcall thunk))
   #-sbcl (progn size (funcall thunk)))
 
+(defun call-without-jump-tables (thunk)
+  "Call THUNK, which compiles code, with SBCL's jump tables off: a CASE
+of more than 2047 keys (e's errno table) fails in its assembler."
+  #+sbcl (let ((sb-c::*policy* (sb-c::process-optimize-decl '(optimize (sb-c:jump-table 0)) sb-c::*policy*)))
+	   (funcall thunk))
+  #-sbcl (funcall thunk))
+
 (defun eval-compiled-or-interpreted (form)
   "EVAL FORM, or, if SBCL's compiler fails on it (a procedure too big for
 one code object, past arm64's branch and constant reach), evaluate it
@@ -959,8 +966,9 @@ form bigger than *INTERPRET-LIMIT* is interpreted, and so is one
 	    ;; compiled again with constraint propagation, whatever its size:
 	    ;; without it, SBCL 2.6.9 can fail ("full call to DATA-VECTOR-REF",
 	    ;; a bug) on code it compiles with it (e's libraries had their
-	    ;; bodies interpreted so)
-	    ((let ((f (compiled-or-nil form)))
+	    ;; bodies interpreted so); then without jump tables too
+	    ((let ((f (or (compiled-or-nil form)
+			  (call-without-jump-tables (lambda () (compiled-or-nil form))))))
 	       (and f (return-from eval-compiled-or-interpreted (funcall f)))))
 	    (t (let ((sb-ext:*evaluator-mode* :interpret))
 		 (eval form))))))

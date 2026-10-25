@@ -719,11 +719,41 @@ return true if that installed the library."
 	    (let ((library (list "quasischeme" "chez" "file"
 				 (princ-to-string (incf *chez-file-libraries*)))))
 	      (install-interaction-library library)
-	      (load-file-at-chez-top-level path library)
+	      (if (qsx::compiled-file-p path)
+		  (load-file-at-chez-top-level path library)
+		  (load-file-library-at-top-level path library name))
 	      (return-from load-library-file-at-top-level
 		(qs:truep (funcall (qsx:host-ref "psyntax:library-exists?") name)))))
 	  ;; the first file found is the library's, whatever it holds
 	  (return-from load-library-file-at-top-level nil))))))
+
+(defun import-set-library-name (set)
+  "The name of the library import set SET imports from."
+  (cond ((and (consp set) (member (sname* (car set)) '("only" "except" "prefix" "rename") :test #'equal))
+	 (import-set-library-name (cadr set)))
+	((and (consp set) (equal (sname* (car set)) "library") (consp (cdr set)))
+	 (import-set-library-name (cadr set)))
+	((and (consp set) (listp (car (last set)))) (butlast set))
+	(t set)))
+
+(defun load-file-library-at-top-level (path library name)
+  "Load PATH, which defines library NAME at top level, at the top level
+LIBRARY.  A file of imports and then the one form that makes the
+library (e's files, an elibrary form) has that library compiled into
+the library cache, as a file that begins with its library form does."
+  (let* ((forms (read-forms path))
+	 (plain (mapcar (lambda (f) (if (qs::annotation-p f) (qs::annotation-stripped f) f)) forms)))
+    (if (and (consp plain) (every (lambda (f) (head-is f "import")) (butlast plain)))
+	(let ((*include-directory* (make-pathname :name nil :type nil :defaults (pathname path)))
+	      (forms (if qs:*chez-reader* (read-annotated-forms path (namestring path)) forms)))
+	  (dolist (form (butlast forms))
+	    (eval-at-chez-top-level form library))
+	  (qsx::call-with-cached-file-library
+	   name
+	   (qsx::file-library-text plain (mapcar #'import-set-library-name
+						 (mapcan (lambda (f) (copy-list (cdr f))) (butlast plain))))
+	   (lambda () (eval-at-chez-top-level (car (last forms)) library))))
+	(load-file-at-chez-top-level path library))))
 
 ;;; ------------------------------------------------------------------
 ;;; The top level's host procedures
