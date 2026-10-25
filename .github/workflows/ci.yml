@@ -102,7 +102,7 @@ jobs:
 
       - name: The R7RS export table against the report
         run: |
-          sudo apt-get install -y -qq poppler-utils
+          sudo apt-get update -qq && sudo apt-get install -y -qq poppler-utils
           curl -fsSLo /tmp/r7rs.pdf https://small.r7rs.org/attachment/r7rs.pdf
           python3 tests/check-r7rs-exports.py /tmp/r7rs.pdf
 
