@@ -21,19 +21,12 @@
 	    (qs:set-value-from-function ',new-name)
 	    ',name)))
 
-; Definitions for CAR and CDR for when they are *not* open-coded.
-; There really ought to be definitions for CDADDR and friends, but the
-; programmer is too lazy to produce them.
+; Definitions for CAR and CDR for when they are *not* open-coded: the
+; same check as builtin.scm's inline one, which names its procedure.
 
-(defune car (pair)
-  (if (not (consp pair))
-      (error "Argument to CAR isn't a pair -- ~S" pair)
-      (car pair)))
+(defune car (pair) (car (qs:the-who cons "car" pair)))
 
-(defune cdr (pair)
-  (if (not (consp pair))
-      (error "Argument to CDR isn't a pair -- ~S" pair)
-      (cdr pair)))
+(defune cdr (pair) (cdr (qs:the-who cons "cdr" pair)))
 
 ; Non-open-coded standard Scheme procedures, in alphabetical order (almost)
 

@@ -48,7 +48,9 @@
 	 (let ((yow (map (lambda (z) (substitute-and-peep alist z)) cl-form)))
 	   (case (car yow)
 	     ((qs-lisp:funcall) (funcallify (cadr yow) (cddr yow)))
-	     (else yow))))))
+	     (else yow))))
+	;; a string, number or character in the body: itself
+	(else cl-form)))
 
 
 ; Dinky utilities

@@ -40,7 +40,10 @@
   (DECLARE (SPECIAL ALPHATIZERS))
   (MULTIPLE-VALUE-CALL
    #'(LAMBDA (CLASS .FORM.0 .S-ENV.1)
-       (FUNCALL (SVREF ALPHATIZERS CLASS) .FORM.0 .S-ENV.1 CONTEXT))
+       (FUNCALL (CHECKED-SVREF "vector-ref" ALPHATIZERS CLASS)
+                .FORM.0
+                .S-ENV.1
+                CONTEXT))
    (CLASSIFY FORM S-ENV)))
 (SET-VALUE-FROM-FUNCTION 'ALPHA 'SCHEME::ALPHA)
 (AT-TOP-LEVEL
@@ -54,7 +57,7 @@
 (SET-FUNCTION-FROM-VALUE 'ALPHATIZERS 'SCHEME::ALPHATIZERS)
 (DEFUN DEFINE-ALPHATIZER (CLASS PROC)
   (DECLARE (SPECIAL ALPHATIZERS))
-  (SETF (SVREF ALPHATIZERS CLASS) PROC)
+  (CHECKED-SVSET "vector-set!" ALPHATIZERS CLASS PROC)
   UNSPECIFIC)
 (SET-VALUE-FROM-FUNCTION 'DEFINE-ALPHATIZER 'SCHEME::DEFINE-ALPHATIZER)
 (AT-TOP-LEVEL
@@ -89,9 +92,11 @@
      CLASS/APPLICATION
      #'(LAMBDA (.EXP S-ENV CONTEXT)
          CONTEXT
-         (MAKE-CALL (ALPHA (CAR (THE CONS .EXP)) S-ENV PROCEDURE-CONTEXT)
+         (MAKE-CALL (ALPHA (CAR (THE-WHO CONS "car" .EXP))
+                           S-ENV
+                           PROCEDURE-CONTEXT)
                     (MAPCAR #'(LAMBDA (ARG) (ALPHA ARG S-ENV VALUE-CONTEXT))
-                            (CDR (THE CONS .EXP))))))))
+                            (CDR (THE-WHO CONS "cdr" .EXP))))))))
 (AT-TOP-LEVEL
   (LOCALLY
     (DECLARE (SPECIAL CLASS/QUOTE))
@@ -100,7 +105,9 @@
      #'(LAMBDA (.EXP S-ENV CONTEXT)
          S-ENV
          CONTEXT
-         (MAKE-CONSTANT (STRIP (CAR (THE CONS (CDR (THE CONS .EXP))))) TRUE)))))
+         (MAKE-CONSTANT
+          (STRIP (CAR (THE-WHO CONS "cadr" (CDR (THE-WHO CONS "cadr" .EXP)))))
+          TRUE)))))
 (AT-TOP-LEVEL
   (LOCALLY
     (DECLARE (SPECIAL VALUE-CONTEXT
@@ -113,11 +120,21 @@
          (IF (NOT (EQ CONTEXT PROCEDURE-CONTEXT))
              (FOR-EACH-LOCAL SET-CLOSED-OVER! S-ENV))
          (LET ((.S-ENV.0 (RENAME-VARS (PROPER-LISTIFY
-                                       (CAR (THE CONS (CDR (THE CONS .EXP)))))
+                                       (CAR (THE-WHO CONS
+                                                     "cadr"
+                                                     (CDR (THE-WHO CONS
+                                                                   "cadr"
+                                                                   .EXP)))))
                                       S-ENV)))
-           (MAKE-LAMBDA (NEW-NAMES (CAR (THE CONS (CDR (THE CONS .EXP))))
+           (MAKE-LAMBDA (NEW-NAMES (CAR (THE-WHO CONS
+                                                 "cadr"
+                                                 (CDR (THE-WHO CONS "cadr" .EXP))))
                                    .S-ENV.0)
-                        (ALPHA-BODY (CDR (THE CONS (CDR (THE CONS .EXP))))
+                        (ALPHA-BODY (CDR (THE-WHO CONS
+                                                  "cddr"
+                                                  (CDR (THE-WHO CONS
+                                                                "cddr"
+                                                                .EXP))))
                                     .S-ENV.0
                                     VALUE-CONTEXT)))))))
 (AT-TOP-LEVEL
@@ -126,21 +143,28 @@
     (DEFINE-ALPHATIZER
      CLASS/LETREC
      #'(LAMBDA (.EXP S-ENV CONTEXT)
-         (LET ((SPECS (CAR (THE CONS (CDR (THE CONS .EXP))))))
+         (LET ((SPECS (CAR (THE-WHO CONS
+                                    "cadr"
+                                    (CDR (THE-WHO CONS "cadr" .EXP))))))
            (LET ((VARS (MAPCAR .CAR SPECS)))
              (LET ((.S-ENV.0 (RENAME-VARS VARS S-ENV)))
                (LET ((NEW-VARS (NEW-NAMES VARS .S-ENV.0)))
                  (LET NIL
                    (MAKE-LETREC NEW-VARS
                                 (MAPCAR #'(LAMBDA (SPEC)
-                                            (ALPHA (CAR (THE CONS
-                                                             (CDR (THE CONS
-                                                                       SPEC))))
+                                            (ALPHA (CAR (THE-WHO CONS
+                                                                 "cadr"
+                                                                 (CDR (THE-WHO CONS
+                                                                               "cadr"
+                                                                               SPEC))))
                                                    .S-ENV.0
                                                    VALUE-CONTEXT))
                                         SPECS)
-                                (ALPHA-BODY (CDR (THE CONS
-                                                      (CDR (THE CONS .EXP))))
+                                (ALPHA-BODY (CDR (THE-WHO CONS
+                                                          "cddr"
+                                                          (CDR (THE-WHO CONS
+                                                                        "cddr"
+                                                                        .EXP))))
                                             .S-ENV.0
                                             (LOSE CONTEXT))))))))))))
 (DEFUN ALPHA-BODY (FORMS S-ENV CONTEXT)
@@ -151,20 +175,26 @@
            (ALPHA-BEGINIFY EXPS .S-ENV.0 CONTEXT)
            (LET ((NEW-VARS (MAPCAR #'(LAMBDA (SPEC)
                                        (MAKE-LOCAL-VARIABLE
-                                        (CAR (THE CONS SPEC))))
+                                        (CAR (THE-WHO CONS "car" SPEC))))
                                    SPECS)))
              (MAPC #'(LAMBDA (SPEC VAR)
-                       (DEFINE! .S-ENV.0 (CAR (THE CONS SPEC)) VAR))
+                       (DEFINE! .S-ENV.0 (CAR (THE-WHO CONS "car" SPEC)) VAR))
                    SPECS
                    NEW-VARS)
              (MAKE-LETREC NEW-VARS
                           (MAPCAR #'(LAMBDA (SPEC)
-                                      (ALPHA (CAR (THE CONS
-                                                       (CDR (THE CONS SPEC))))
-                                             (CAR (THE CONS
-                                                       (CDR (THE CONS
-                                                                 (CDR (THE CONS
-                                                                           SPEC))))))
+                                      (ALPHA (CAR (THE-WHO CONS
+                                                           "cadr"
+                                                           (CDR (THE-WHO CONS
+                                                                         "cadr"
+                                                                         SPEC))))
+                                             (CAR (THE-WHO CONS
+                                                           "caddr"
+                                                           (CDR (THE-WHO CONS
+                                                                         "caddr"
+                                                                         (CDR (THE-WHO CONS
+                                                                                       "caddr"
+                                                                                       SPEC))))))
                                              VALUE-CONTEXT))
                                   SPECS)
                           (ALPHA-BEGINIFY EXPS .S-ENV.0 (LOSE CONTEXT))))))
@@ -176,17 +206,30 @@
     (DEFINE-ALPHATIZER
      CLASS/IF
      #'(LAMBDA (.EXP S-ENV CONTEXT)
-         (LET ((TEST (ALPHA (CAR (THE CONS (CDR (THE CONS .EXP))))
+         (LET ((TEST (ALPHA (CAR (THE-WHO CONS
+                                          "cadr"
+                                          (CDR (THE-WHO CONS "cadr" .EXP))))
                             S-ENV
                             VALUE-CONTEXT))
-               (CON (ALPHA (CAR (THE CONS
-                                     (CDR (THE CONS (CDR (THE CONS .EXP))))))
+               (CON (ALPHA (CAR (THE-WHO CONS
+                                         "caddr"
+                                         (CDR (THE-WHO CONS
+                                                       "caddr"
+                                                       (CDR (THE-WHO CONS
+                                                                     "caddr"
+                                                                     .EXP))))))
                            S-ENV
                            (LOSE CONTEXT)))
-               (ALT (ALPHA (LET ((TAIL (CDR (THE CONS
-                                                 (CDR (THE CONS
-                                                           (CDR (THE CONS .EXP))))))))
-                             (IF (NULL TAIL) 'UNSPECIFIC (CAR (THE CONS TAIL))))
+               (ALT (ALPHA (LET ((TAIL (CDR (THE-WHO CONS
+                                                     "cdddr"
+                                                     (CDR (THE-WHO CONS
+                                                                   "cdddr"
+                                                                   (CDR (THE-WHO CONS
+                                                                                 "cdddr"
+                                                                                 .EXP))))))))
+                             (IF (NULL TAIL)
+                                 'UNSPECIFIC
+                                 (CAR (THE-WHO CONS "car" TAIL))))
                            S-ENV
                            (LOSE CONTEXT))))
            (MAKE-IF TEST CON ALT))))))
@@ -197,13 +240,20 @@
      CLASS/SET!
      #'(LAMBDA (.EXP S-ENV CONTEXT)
          CONTEXT
-         (LET ((LHS (ALPHA (CAR (THE CONS (CDR (THE CONS .EXP))))
+         (LET ((LHS (ALPHA (CAR (THE-WHO CONS
+                                         "cadr"
+                                         (CDR (THE-WHO CONS "cadr" .EXP))))
                            S-ENV
                            LVALUE-CONTEXT)))
            (IF (TRUEP (VARIABLE? LHS))
                (MAKE-SET! LHS
-                          (ALPHA (CAR (THE CONS
-                                           (CDR (THE CONS (CDR (THE CONS .EXP))))))
+                          (ALPHA (CAR (THE-WHO CONS
+                                               "caddr"
+                                               (CDR (THE-WHO CONS
+                                                             "caddr"
+                                                             (CDR (THE-WHO CONS
+                                                                           "caddr"
+                                                                           .EXP))))))
                                  S-ENV
                                  VALUE-CONTEXT))
                (ALPHA (SYNTAX-ERROR "invalid SET!" .EXP) S-ENV CONTEXT)))))))
@@ -213,23 +263,23 @@
     (DEFINE-ALPHATIZER
      CLASS/BEGIN
      #'(LAMBDA (.EXP S-ENV CONTEXT)
-         (IF (NULL (CDR (THE CONS .EXP)))
+         (IF (NULL (CDR (THE-WHO CONS "cdr" .EXP)))
              (PROGN
                (IF (NOT (EQ CONTEXT TOP-LEVEL-CONTEXT))
                    (NOTE "(begin) disallowed in this context" .EXP))
                (ALPHA 'UNSPECIFIC S-ENV CONTEXT))
-             (ALPHA-BEGINIFY (CDR (THE CONS .EXP)) S-ENV CONTEXT))))))
+             (ALPHA-BEGINIFY (CDR (THE-WHO CONS "cdr" .EXP)) S-ENV CONTEXT))))))
 (DEFUN ALPHA-BEGINIFY (EXP-LIST S-ENV CONTEXT)
   (DECLARE (SPECIAL VALUE-CONTEXT TOP-LEVEL-CONTEXT))
-  (IF (NULL (CDR (THE CONS EXP-LIST)))
-      (ALPHA (CAR (THE CONS EXP-LIST)) S-ENV CONTEXT)
-      (MAKE-BEGIN (ALPHA (CAR (THE CONS EXP-LIST))
+  (IF (NULL (CDR (THE-WHO CONS "cdr" EXP-LIST)))
+      (ALPHA (CAR (THE-WHO CONS "car" EXP-LIST)) S-ENV CONTEXT)
+      (MAKE-BEGIN (ALPHA (CAR (THE-WHO CONS "car" EXP-LIST))
                          S-ENV
                          (IF (EQ CONTEXT TOP-LEVEL-CONTEXT)
                              CONTEXT
                              VALUE-CONTEXT))
                   (ALPHA-BEGINIFY
-                   (CDR (THE CONS EXP-LIST))
+                   (CDR (THE-WHO CONS "cdr" EXP-LIST))
                    S-ENV
                    (IF (EQ CONTEXT TOP-LEVEL-CONTEXT) CONTEXT (LOSE CONTEXT))))))
 (SET-VALUE-FROM-FUNCTION 'ALPHA-BEGINIFY 'SCHEME::ALPHA-BEGINIFY)
@@ -262,7 +312,9 @@
              (PROGN
                (PROCESS-DEFINE-SYNTAX FORM S-ENV)
                (MAKE-CALL (ALPHA '%DEFINE-SYNTAX! S-ENV VALUE-CONTEXT)
-                          (LIST (MAKE-CONSTANT (CDR (THE CONS FORM)) TRUE))))
+                          (LIST (MAKE-CONSTANT
+                                 (CDR (THE-WHO CONS "cdr" FORM))
+                                 TRUE))))
              (ALPHA (SYNTAX-ERROR "(define-syntax ...) disallowed in this context"
                                   FORM)
                     S-ENV
@@ -378,5 +430,5 @@
 (DEFUN NEW-NAMES (BVL ENV) (MAP-BVL #'(LAMBDA (VAR) (LOOKUP ENV VAR)) BVL))
 (SET-VALUE-FROM-FUNCTION 'NEW-NAMES 'SCHEME::NEW-NAMES)
 (DEFUN CAR-IS? (THING X)
-  (IF (CONSP THING) (TRUE? (EQ (CAR (THE CONS THING)) X)) FALSE))
+  (IF (CONSP THING) (TRUE? (EQ (CAR (THE-WHO CONS "car" THING)) X)) FALSE))
 (SET-VALUE-FROM-FUNCTION 'CAR-IS? 'SCHEME::CAR-IS?)

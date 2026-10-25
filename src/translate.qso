@@ -21,15 +21,17 @@
                                            (LET-FLUID @FREE-VARIABLES
                                                       'NIL
                                                       #'(LAMBDA NIL
-                                                          (LET ((NODE (ALPHA-TOP (CAR (THE CONS
-                                                                                           .FORMS.0))
+                                                          (LET ((NODE (ALPHA-TOP (CAR (THE-WHO CONS
+                                                                                               "car"
+                                                                                               .FORMS.0))
                                                                                  ENV)))
                                                             (GENERATE-TOP NODE
                                                                           (GENERATION-ENV
                                                                            (FLUID @FREE-VARIABLES))
-                                                                          (TRUE? (NOT (NULL (CDR (THE CONS
-                                                                                                      .FORMS.0)))))))))))
-                                      (RECUR (CDR (THE CONS .FORMS.0)))))))
+                                                                          (TRUE? (NOT (NULL (CDR (THE-WHO CONS
+                                                                                                          "cdr"
+                                                                                                          .FORMS.0)))))))))))
+                                      (RECUR (CDR (THE-WHO CONS "cdr" .FORMS.0)))))))
               (RECUR FORMS))))
 (SET-VALUE-FROM-FUNCTION
  'TRANSLATE-TO-COMMON-LISP
@@ -80,7 +82,7 @@
                         (LET NIL
                           (IF (TRUEP INFO)
                               (LET ((SYM (PROGRAM-VARIABLE-LOCATION DEN)))
-                                (CASE (CAR (THE CONS INFO))
+                                (CASE (CAR (THE-WHO CONS "car" INFO))
                                   ((SCHEME::VAL)
                                    (WRITE-FORM (CONS 'LOCALLY
                                                      (CONS (CONS 'DECLARE
@@ -88,9 +90,11 @@
                                                                              (LIST SYM))))
                                                            (LIST (CONS 'SETQ
                                                                        (CONS SYM
-                                                                             (LIST (CAR (THE CONS
-                                                                                             (CDR (THE CONS
-                                                                                                       INFO))))))))))
+                                                                             (LIST (CAR (THE-WHO CONS
+                                                                                                 "cadr"
+                                                                                                 (CDR (THE-WHO CONS
+                                                                                                               "cadr"
+                                                                                                               INFO))))))))))
                                                PORT)
                                    (WRITE-FORM (CONS 'SET-FUNCTION-FROM-VALUE
                                                      (LIST (CONS 'QUOTE
@@ -104,37 +108,48 @@
                                        (PROGN
                                          (SETQ FUNS
                                                (CONS (LIST SYM
-                                                           (CAR (THE CONS
-                                                                     (CDR (THE CONS
-                                                                               INFO)))))
+                                                           (CAR (THE-WHO CONS
+                                                                         "cadr"
+                                                                         (CDR (THE-WHO CONS
+                                                                                       "cadr"
+                                                                                       INFO)))))
                                                      FUNS))
                                          UNSPECIFIC)))
                                   ((SCHEME::PRED)
-                                   (WRITE-FORM (CASE (IF (NULL (CDR (THE CONS
-                                                                         (CDR (THE CONS
-                                                                                   INFO)))))
+                                   (WRITE-FORM (CASE (IF (NULL (CDR (THE-WHO CONS
+                                                                             "cddr"
+                                                                             (CDR (THE-WHO CONS
+                                                                                           "cddr"
+                                                                                           INFO)))))
                                                          'SCHEME::N
-                                                         (CAR (THE CONS
-                                                                   (CDR (THE CONS
-                                                                             (CDR (THE CONS
-                                                                                       INFO)))))))
+                                                         (CAR (THE-WHO CONS
+                                                                       "caddr"
+                                                                       (CDR (THE-WHO CONS
+                                                                                     "caddr"
+                                                                                     (CDR (THE-WHO CONS
+                                                                                                   "caddr"
+                                                                                                   INFO)))))))
                                                  ((1)
                                                   (CONS 'DEFUN
                                                         (CONS SYM
                                                               (CONS '(SCHEME::X)
                                                                     (LIST (CONS 'TRUE?
-                                                                                (LIST (CONS (CAR (THE CONS
-                                                                                                      (CDR (THE CONS
-                                                                                                                INFO))))
+                                                                                (LIST (CONS (CAR (THE-WHO CONS
+                                                                                                          "cadr"
+                                                                                                          (CDR (THE-WHO CONS
+                                                                                                                        "cadr"
+                                                                                                                        INFO))))
                                                                                             '(SCHEME::X)))))))))
                                                  ((2)
                                                   (CONS 'DEFUN
                                                         (CONS SYM
                                                               (CONS '(SCHEME::X SCHEME::Y)
                                                                     (LIST (CONS 'TRUE?
-                                                                                (LIST (CONS (CAR (THE CONS
-                                                                                                      (CDR (THE CONS
-                                                                                                                INFO))))
+                                                                                (LIST (CONS (CAR (THE-WHO CONS
+                                                                                                          "cadr"
+                                                                                                          (CDR (THE-WHO CONS
+                                                                                                                        "cadr"
+                                                                                                                        INFO))))
                                                                                             '(SCHEME::X SCHEME::Y)))))))))
                                                  (OTHERWISE (CONS 'DEFUN
                                                                   (CONS SYM
@@ -142,9 +157,11 @@
                                                                               (LIST (CONS 'TRUE?
                                                                                           (LIST (CONS 'APPLY
                                                                                                       (CONS (CONS 'FUNCTION
-                                                                                                                  (LIST (CAR (THE CONS
-                                                                                                                                  (CDR (THE CONS
-                                                                                                                                            INFO))))))
+                                                                                                                  (LIST (CAR (THE-WHO CONS
+                                                                                                                                      "cadr"
+                                                                                                                                      (CDR (THE-WHO CONS
+                                                                                                                                                    "cadr"
+                                                                                                                                                    INFO))))))
                                                                                                             '(SCHEME::X)))))))))))
                                                PORT)
                                    (SETQ DEFS (CONS SYM DEFS))
@@ -152,7 +169,9 @@
                                   ((SCHEME::SUBST SCHEME::LAMBDA)
                                    (WRITE-FORM (CONS 'DEFUN
                                                      (CONS SYM
-                                                           (CDR (THE CONS INFO))))
+                                                           (CDR (THE-WHO CONS
+                                                                         "cdr"
+                                                                         INFO))))
                                                PORT)
                                    (SETQ DEFS (CONS SYM DEFS))
                                    UNSPECIFIC)
@@ -239,10 +258,10 @@
                    (SIMPLE-STRING-P FORM)
                    (CHARACTERP FORM)))
           (WRITE-FORM FORM PORT))
-      (OR (EQ (CAR (THE CONS FORM)) 'QUOTE)
-          (IF (EQ (CAR (THE CONS FORM)) 'PROGN)
+      (OR (EQ (CAR (THE-WHO CONS "car" FORM)) 'QUOTE)
+          (IF (EQ (CAR (THE-WHO CONS "car" FORM)) 'PROGN)
               (MAPC #'(LAMBDA (.FORM.0) (WRITE-FLATTENED .FORM.0 PORT))
-                    (CDR (THE CONS FORM)))
+                    (CDR (THE-WHO CONS "cdr" FORM)))
               (WRITE-FORM FORM PORT)))))
 (SET-VALUE-FROM-FUNCTION 'WRITE-FLATTENED 'SCHEME::WRITE-FLATTENED)
 (DEFUN WRITE-FORM (FORM PORT)

@@ -11,7 +11,8 @@
   (PROGRAM-ENV-DEFINE!
    REVISED^4-SCHEME-ENV
    NAME
-   (MAKE-MACRO #'(LAMBDA (FORM R C) (APPLY EXPANDER R C (CDR (THE CONS FORM))))
+   (MAKE-MACRO #'(LAMBDA (FORM R C)
+                   (APPLY EXPANDER R C (CDR (THE-WHO CONS "cdr" FORM))))
                REVISED^4-SCHEME-ENV)))
 (SET-VALUE-FROM-FUNCTION 'DEFINE-USUAL-SYNTAX 'SCHEME::DEFINE-USUAL-SYNTAX)
 (LOCALLY
@@ -36,11 +37,14 @@
                                            (LIST (CONS (FUNCALL R
                                                                 'SCHEME::LAMBDA)
                                                        (CONS 'NIL
-                                                             (LIST (RECUR (CAR (THE CONS
-                                                                                    REST))
-                                                                          (CDR (THE CONS
-                                                                                    REST))))))))))))
-             (RECUR (CAR (THE CONS CONJUNCTS)) (CDR (THE CONS CONJUNCTS))))))))
+                                                             (LIST (RECUR (CAR (THE-WHO CONS
+                                                                                        "car"
+                                                                                        REST))
+                                                                          (CDR (THE-WHO CONS
+                                                                                        "cdr"
+                                                                                        REST))))))))))))
+             (RECUR (CAR (THE-WHO CONS "car" CONJUNCTS))
+                    (CDR (THE-WHO CONS "cdr" CONJUNCTS))))))))
 (AT-TOP-LEVEL
   (DEFINE-USUAL-SYNTAX
    'SCHEME::OR
@@ -57,11 +61,14 @@
                                            (LIST (CONS (FUNCALL R
                                                                 'SCHEME::LAMBDA)
                                                        (CONS 'NIL
-                                                             (LIST (RECUR (CAR (THE CONS
-                                                                                    REST))
-                                                                          (CDR (THE CONS
-                                                                                    REST))))))))))))
-             (RECUR (CAR (THE CONS DISJUNCTS)) (CDR (THE CONS DISJUNCTS))))))))
+                                                             (LIST (RECUR (CAR (THE-WHO CONS
+                                                                                        "car"
+                                                                                        REST))
+                                                                          (CDR (THE-WHO CONS
+                                                                                        "cdr"
+                                                                                        REST))))))))))))
+             (RECUR (CAR (THE-WHO CONS "car" DISJUNCTS))
+                    (CDR (THE-WHO CONS "cdr" DISJUNCTS))))))))
 (AT-TOP-LEVEL
   (DEFINE-USUAL-SYNTAX
    'SCHEME::CASE
@@ -84,9 +91,9 @@
                                                                'SCHEME::UNSPECIFIC))))
                                     THUNKS
                                     KEY-LISTS))
-               (LET ((CLAUSE (CAR (THE CONS CS))))
-                 (LET ((KEY-LIST (CAR (THE CONS CLAUSE))))
-                   (LET ((BODY (CDR (THE CONS CLAUSE))))
+               (LET ((CLAUSE (CAR (THE-WHO CONS "car" CS))))
+                 (LET ((KEY-LIST (CAR (THE-WHO CONS "car" CLAUSE))))
+                   (LET ((BODY (CDR (THE-WHO CONS "cdr" CLAUSE))))
                      (LET NIL
                        (IF (TRUEP (FUNCALL C KEY-LIST (FUNCALL R 'SCHEME::ELSE)))
                            (RETURN (FORM-RESULT (CONS (FUNCALL R
@@ -96,7 +103,7 @@
                                                 KEY-LISTS))
                            (PROGN
                              (PSETQ CS
-                                    (CDR (THE CONS CS))
+                                    (CDR (THE-WHO CONS "cdr" CS))
                                     THUNKS
                                     (CONS (CONS (FUNCALL R 'SCHEME::LAMBDA)
                                                 (CONS 'NIL BODY))
@@ -115,34 +122,41 @@
                            (PROCESS-COND-CLAUSE
                             R
                             C
-                            (CAR (THE CONS .CLAUSES.0))
-                            (RECUR (CDR (THE CONS .CLAUSES.0)))))))
+                            (CAR (THE-WHO CONS "car" .CLAUSES.0))
+                            (RECUR (CDR (THE-WHO CONS "cdr" .CLAUSES.0)))))))
          (RECUR CLAUSES)))))
 (DEFUN PROCESS-COND-CLAUSE (R C CLAUSE REST)
-  (IF (NULL (CDR (THE CONS CLAUSE)))
+  (IF (NULL (CDR (THE-WHO CONS "cdr" CLAUSE)))
       (CONS (FUNCALL R 'SCHEME::OR-AUX)
-            (CONS (CAR (THE CONS CLAUSE))
+            (CONS (CAR (THE-WHO CONS "car" CLAUSE))
                   (LIST (CONS (FUNCALL R 'SCHEME::LAMBDA)
                               (CONS 'NIL (LIST REST))))))
-      (IF (TRUEP (FUNCALL C (CAR (THE CONS CLAUSE)) (FUNCALL R 'SCHEME::ELSE)))
-          (CONS (FUNCALL R 'SCHEME::BEGIN) (CDR (THE CONS CLAUSE)))
+      (IF (TRUEP (FUNCALL C
+                          (CAR (THE-WHO CONS "car" CLAUSE))
+                          (FUNCALL R 'SCHEME::ELSE)))
+          (CONS (FUNCALL R 'SCHEME::BEGIN) (CDR (THE-WHO CONS "cdr" CLAUSE)))
           (IF (TRUEP (FUNCALL C
-                              (CAR (THE CONS (CDR (THE CONS CLAUSE))))
+                              (CAR (THE-WHO CONS
+                                            "cadr"
+                                            (CDR (THE-WHO CONS "cadr" CLAUSE))))
                               (FUNCALL R 'SCHEME::=>)))
               (CONS (FUNCALL R 'SCHEME::=>-AUX)
-                    (CONS (CAR (THE CONS CLAUSE))
+                    (CONS (CAR (THE-WHO CONS "car" CLAUSE))
                           (CONS (CONS (FUNCALL R 'SCHEME::LAMBDA)
                                       (CONS 'NIL
-                                            (LIST (CAR (THE CONS
-                                                            (CDR (THE CONS
-                                                                      (CDR (THE CONS
-                                                                                CLAUSE)))))))))
+                                            (LIST (CAR (THE-WHO CONS
+                                                                "caddr"
+                                                                (CDR (THE-WHO CONS
+                                                                              "caddr"
+                                                                              (CDR (THE-WHO CONS
+                                                                                            "caddr"
+                                                                                            CLAUSE)))))))))
                                 (LIST (CONS (FUNCALL R 'SCHEME::LAMBDA)
                                             (CONS 'NIL (LIST REST)))))))
               (CONS (FUNCALL R 'SCHEME::IF)
-                    (CONS (CAR (THE CONS CLAUSE))
+                    (CONS (CAR (THE-WHO CONS "car" CLAUSE))
                           (CONS (CONS (FUNCALL R 'SCHEME::BEGIN)
-                                      (CDR (THE CONS CLAUSE)))
+                                      (CDR (THE-WHO CONS "cdr" CLAUSE)))
                                 (LIST REST))))))))
 (SET-VALUE-FROM-FUNCTION 'PROCESS-COND-CLAUSE 'SCHEME::PROCESS-COND-CLAUSE)
 (AT-TOP-LEVEL
@@ -174,15 +188,21 @@
                                                                   (APPEND BODY
                                                                           (LIST (CONS LOOP
                                                                                       (MAPCAR #'(LAMBDA (Y)
-                                                                                                  (IF (NULL (CDR (THE CONS
-                                                                                                                      (CDR (THE CONS
-                                                                                                                                Y)))))
-                                                                                                      (CAR (THE CONS
-                                                                                                                Y))
-                                                                                                      (CAR (THE CONS
-                                                                                                                (CDR (THE CONS
-                                                                                                                          (CDR (THE CONS
-                                                                                                                                    Y))))))))
+                                                                                                  (IF (NULL (CDR (THE-WHO CONS
+                                                                                                                          "cddr"
+                                                                                                                          (CDR (THE-WHO CONS
+                                                                                                                                        "cddr"
+                                                                                                                                        Y)))))
+                                                                                                      (CAR (THE-WHO CONS
+                                                                                                                    "car"
+                                                                                                                    Y))
+                                                                                                      (CAR (THE-WHO CONS
+                                                                                                                    "caddr"
+                                                                                                                    (CDR (THE-WHO CONS
+                                                                                                                                  "caddr"
+                                                                                                                                  (CDR (THE-WHO CONS
+                                                                                                                                                "caddr"
+                                                                                                                                                Y))))))))
                                                                                               SPECS))))))))))))
                        (LIST (CONS LOOP (MAPCAR .CADR SPECS))))))))))
 (AT-TOP-LEVEL
@@ -195,8 +215,8 @@
          C
          (IF (TRUEP (NAME? SPECS))
              (LET ((TAG SPECS)
-                   (.SPECS.0 (CAR (THE CONS BODY)))
-                   (.BODY.1 (CDR (THE CONS BODY))))
+                   (.SPECS.0 (CAR (THE-WHO CONS "car" BODY)))
+                   (.BODY.1 (CDR (THE-WHO CONS "cdr" BODY))))
                (CONS (FUNCALL R 'SCHEME::LETREC)
                      (CONS (LIST (CONS TAG
                                        (LIST (CONS (FUNCALL R 'SCHEME::LAMBDA)
@@ -215,14 +235,23 @@
        (LABELS ((RECUR (.SPECS.0)
                        (IF (NULL .SPECS.0)
                            (CONS (FUNCALL R 'SCHEME::LET) (CONS 'NIL BODY))
-                           (LET ((NAME (CAR (THE CONS (CAR (THE CONS .SPECS.0)))))
-                                 (VAL-EXP (CAR (THE CONS
-                                                    (CDR (THE CONS
-                                                              (CAR (THE CONS
-                                                                        .SPECS.0))))))))
+                           (LET ((NAME (CAR (THE-WHO CONS
+                                                     "car"
+                                                     (CAR (THE-WHO CONS
+                                                                   "car"
+                                                                   .SPECS.0)))))
+                                 (VAL-EXP (CAR (THE-WHO CONS
+                                                        "cadr"
+                                                        (CDR (THE-WHO CONS
+                                                                      "cadr"
+                                                                      (CAR (THE-WHO CONS
+                                                                                    "car"
+                                                                                    .SPECS.0))))))))
                              (CONS (FUNCALL R 'SCHEME::LET)
                                    (CONS (LIST (CONS NAME (LIST VAL-EXP)))
-                                         (LIST (RECUR (CDR (THE CONS .SPECS.0))))))))))
+                                         (LIST (RECUR (CDR (THE-WHO CONS
+                                                                    "cdr"
+                                                                    .SPECS.0))))))))))
          (RECUR SPECS)))))
 (AT-TOP-LEVEL
   (DEFINE-USUAL-SYNTAX
@@ -237,7 +266,7 @@
               (QQ-DESCEND-PAIR X (SCHEME+ LEVEL 1) R)
               (IF (TRUEP (QQ-INTERESTING? X 'SCHEME::UNQUOTE))
                   (IF (SCHEME= LEVEL 1)
-                      (CAR (THE CONS (CDR (THE CONS X))))
+                      (CAR (THE-WHO CONS "cadr" (CDR (THE-WHO CONS "cadr" X))))
                       (QQ-DESCEND-PAIR X (SCHEME- LEVEL 1) R))
                   (IF (TRUEP (QQ-INTERESTING? X 'SCHEME::UNQUOTE-SPLICING))
                       (IF (SCHEME= LEVEL 1)
@@ -246,16 +275,20 @@
                       (QQ-DESCEND-PAIR X LEVEL R)))))))
 (SET-VALUE-FROM-FUNCTION 'QQ-DESCEND 'SCHEME::QQ-DESCEND)
 (DEFUN QQ-DESCEND-PAIR (X LEVEL R)
-  (LET ((D-EXP (QQ-DESCEND (CDR (THE CONS X)) LEVEL R)))
+  (LET ((D-EXP (QQ-DESCEND (CDR (THE-WHO CONS "cdr" X)) LEVEL R)))
     (IF (AND (TRUEP (QQ-INTERESTING?
-                     (CAR (THE CONS X))
+                     (CAR (THE-WHO CONS "car" X))
                      'SCHEME::UNQUOTE-SPLICING))
              (SCHEME= LEVEL 1))
-        (LET ((SC (CAR (THE CONS (CDR (THE CONS (CAR (THE CONS X))))))))
+        (LET ((SC (CAR (THE-WHO CONS
+                                "cadr"
+                                (CDR (THE-WHO CONS
+                                              "cadr"
+                                              (CAR (THE-WHO CONS "car" X))))))))
           (IF (AND (TRUEP (QUOTATION? D-EXP R)) (NULL (QUOTATION-VALUE D-EXP)))
               SC
               (CONS (FUNCALL R 'SCHEME::APPEND) (CONS SC (LIST D-EXP)))))
-        (LET ((A-EXP (QQ-DESCEND (CAR (THE CONS X)) LEVEL R)))
+        (LET ((A-EXP (QQ-DESCEND (CAR (THE-WHO CONS "car" X)) LEVEL R)))
           (IF (AND (TRUEP (QUOTATION? A-EXP R)) (TRUEP (QUOTATION? D-EXP R)))
               (MAKE-QUOTATION X R)
               (IF (AND (TRUEP (QUOTATION? D-EXP R))
@@ -263,7 +296,7 @@
                   (CONS (FUNCALL R 'SCHEME::LIST) (LIST A-EXP))
                   (IF (TRUEP (QQ-INTERESTING? D-EXP 'SCHEME::LIST))
                       (CONS (FUNCALL R 'SCHEME::LIST)
-                            (CONS A-EXP (CDR (THE CONS D-EXP))))
+                            (CONS A-EXP (CDR (THE-WHO CONS "cdr" D-EXP))))
                       (CONS (FUNCALL R 'SCHEME::CONS) (CONS A-EXP (LIST D-EXP))))))))))
 (SET-VALUE-FROM-FUNCTION 'QQ-DESCEND-PAIR 'SCHEME::QQ-DESCEND-PAIR)
 (DEFUN QQ-DESCEND-VECTOR (X LEVEL R)
@@ -274,9 +307,11 @@
 (SET-VALUE-FROM-FUNCTION 'QQ-DESCEND-VECTOR 'SCHEME::QQ-DESCEND-VECTOR)
 (DEFUN QQ-INTERESTING? (X MARKER)
   (IF (CONSP X)
-      (IF (EQ (CAR (THE CONS X)) MARKER)
-          (IF (CONSP (CDR (THE CONS X)))
-              (TRUE? (NULL (CDR (THE CONS (CDR (THE CONS X))))))
+      (IF (EQ (CAR (THE-WHO CONS "car" X)) MARKER)
+          (IF (CONSP (CDR (THE-WHO CONS "cdr" X)))
+              (TRUE? (NULL (CDR (THE-WHO CONS
+                                         "cddr"
+                                         (CDR (THE-WHO CONS "cddr" X))))))
               FALSE)
           FALSE)
       FALSE))

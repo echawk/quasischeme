@@ -1136,3 +1136,63 @@ what is on a cycle; 2, whatever is shared."
 		      (if (and vals (eq (car vals) :quasischeme-continuation-query))
 			  (cons tag nil)	; its identity (src/continuations.lisp)
 			  (throw tag (values-list vals))))))))
+
+;;; Checks that name their procedure, for the error: builtin.scm's car,
+;;; vector-ref and the others, inline, check their arguments with these,
+;;; and a mode's error conversion asks CONDITION-WHO who failed, as
+;;; Chez's "car: ..." and Racket's "vector-ref: ..." say.
+
+(define-condition who-type-error (type-error)
+  ((who :initarg :who :reader who-type-error-who))
+  (:documentation "A value of the wrong type, and the name of the procedure that checked it."))
+
+(defun signal-who-type-error (who type value)
+  (error 'who-type-error :who who :datum value :expected-type type))
+
+(defmacro the-who (type who form &environment env)
+  "FORM's value, if it is of TYPE, else a type error that names WHO.
+Compiled, it is SBCL's own check, which carries WHO in its context at
+no cost; under SBCL's interpreter (a top-level form run once), which
+keeps no contexts, an explicit test signals a WHO-TYPE-ERROR."
+  #+sbcl (if (typep env 'sb-kernel:lexenv)
+	     `(sb-c::the* (,type :context (:who . ,who)) ,form)
+	     (let ((v (gensym "V")))
+	       `(let ((,v ,form))
+		  (if (typep ,v ',type) ,v (signal-who-type-error ,who ',type ,v)))))
+  #-sbcl (let ((v (gensym "V")))
+	   `(let ((,v ,form))
+	      (if (typep ,v ',type) ,v (signal-who-type-error ,who ',type ,v)))))
+
+(defmacro checked-svref (who vector index)
+  "VECTOR's element INDEX, VECTOR's type checked by THE-WHO; the index
+by SBCL's own bounds check, which names no procedure (an explicit one
+cost puzzle a third more instructions)."
+  `(svref (the-who simple-vector ,who ,vector) ,index))
+
+(defmacro checked-svset (who vector index value)
+  `(setf (svref (the-who simple-vector ,who ,vector) ,index) ,value))
+
+(defmacro checked-schar (who string index)
+  `(char (the-who simple-string ,who ,string) ,index))
+
+(defun condition-who (c)
+  "The name (a string) of the procedure whose check signalled Lisp
+condition C, if a check that names it did, else NIL."
+  (typecase c
+    (who-type-error (who-type-error-who c))
+    #+sbcl
+    (type-error (let ((context (ignore-errors (sb-kernel::type-error-context c))))
+		  (and (consp context) (eq (car context) :who) (cdr context))))))
+
+;;; A check SBCL knows will fail ((car 5), once cp0 has inlined a
+;;; procedure) is compiled as a call of SB-C::%COMPILE-TIME-TYPE-ERROR,
+;;; whose condition doesn't keep the context: given THE-WHO's, it
+;;; signals a WHO-TYPE-ERROR instead.
+#+sbcl
+(sb-int:encapsulate
+ 'sb-c::%compile-time-type-error 'who
+ (lambda (f &rest args)
+   (let ((context (car (last args))))
+     (if (and (consp context) (eq (car context) :who) (consp (first args)))
+	 (signal-who-type-error (cdr context) (second args) (car (first args)))
+	 (apply f args)))))

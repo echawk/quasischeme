@@ -52,8 +52,9 @@
                                                                 LISP-PACKAGE)
                    SYM
                    (TRUE? (EQ STATUS :EXTERNAL))))
-          (AND (SCHEME> (LENGTH (THE SIMPLE-STRING .STRING)) 0)
-               (CHAR= (CHAR (THE SIMPLE-STRING .STRING) 0) #\&)))
+          (AND (SCHEME> (LENGTH (THE-WHO SIMPLE-STRING "string-length" .STRING))
+                        0)
+               (CHAR= (CHECKED-SCHAR "string-ref" .STRING 0) #\&)))
       (STRING-APPEND "." .STRING)
       .STRING))
 (SET-VALUE-FROM-FUNCTION 'PERHAPS-RENAME 'SCHEME::PERHAPS-RENAME)

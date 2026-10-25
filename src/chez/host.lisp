@@ -2779,10 +2779,10 @@ writer of that kind, for what this doesn't know."
 ;;; bytevector-compress: LZ4's block format, after the uncompressed
 ;;; length (8 bytes, little-endian); gzip, the other compress-format,
 ;;; isn't here
-(deftype octets () '(simple-array (unsigned-byte 8) (*)))
+(deftype simple-octets () '(simple-array (unsigned-byte 8) (*)))
 
 (defun lz4-compress (in)
-  (declare (type octets in) (optimize speed))
+  (declare (type simple-octets in) (optimize speed))
   (let* ((n (length in))
 	 (out (make-array (+ 16 n (floor n 255)) :element-type '(unsigned-byte 8)))
 	 (o 0) (anchor 0) (i 0)
@@ -2820,7 +2820,7 @@ writer of that kind, for what this doesn't know."
       (subseq out 0 o))))
 
 (defun lz4-uncompress (in start size)
-  (declare (type octets in))
+  (declare (type simple-octets in))
   (let ((out (make-array size :element-type '(unsigned-byte 8))) (i start) (o 0))
     (flet ((next () (prog1 (aref in i) (incf i)))
 	   (more (k) (when (= k 15) (loop for b = (aref in i) do (incf i) (incf k b) while (= b 255))) k))
@@ -2837,14 +2837,14 @@ writer of that kind, for what this doesn't know."
     out))
 
 (defprim "chez:bytevector-compress" (bv)
-  (unless (typep bv 'octets) (r6rs-assertion-violation "bytevector-compress" "not a bytevector" bv))
+  (unless (typep bv 'simple-octets) (r6rs-assertion-violation "bytevector-compress" "not a bytevector" bv))
   (let* ((body (lz4-compress bv))
 	 (out (make-array (+ 8 (length body)) :element-type '(unsigned-byte 8))))
     (loop for k below 8 do (setf (aref out k) (ldb (byte 8 (* 8 k)) (length bv))))
     (replace out body :start1 8)
     out))
 (defprim "chez:bytevector-uncompress" (bv)
-  (unless (and (typep bv 'octets) (>= (length bv) 8))
+  (unless (and (typep bv 'simple-octets) (>= (length bv) 8))
     (r6rs-assertion-violation "bytevector-uncompress" "not a compressed bytevector" bv))
   (let ((size (loop for k below 8 sum (ash (aref bv k) (* 8 k)))))
     (handler-case (lz4-uncompress bv 8 size)
@@ -2873,7 +2873,7 @@ writer of that kind, for what this doesn't know."
   (let ((bv (make-array n :element-type '(unsigned-byte 8) :initial-element 0)))
     (setf (gethash bv *reference-bytevectors*) (make-hash-table))
     bv))
-(defprim "chez:reference-bytevector?" (x) (bool (and (typep x 'octets) (gethash x *reference-bytevectors*))))
+(defprim "chez:reference-bytevector?" (x) (bool (and (typep x 'simple-octets) (gethash x *reference-bytevectors*))))
 (defprim "chez:object->reference-address" (x) (reference-address x))
 (defprim "chez:reference-address->object" (a)
   (if (eql a 0) qs:false (gethash a *reference-objects* qs:false)))

@@ -53,10 +53,11 @@
                              (CONS 'PROGN
                                    (CONS (CONS 'DEFUN
                                                (CONS CL-SYM
-                                                     (CDR (THE CONS
-                                                               (GENERATE-LAMBDA-TOP
-                                                                RHS
-                                                                ENV)))))
+                                                     (CDR (THE-WHO CONS
+                                                                   "cdr"
+                                                                   (GENERATE-LAMBDA-TOP
+                                                                    RHS
+                                                                    ENV)))))
                                          (LIST (CONS 'SET-VALUE-FROM-FUNCTION
                                                      (CONS (CONS 'QUOTE
                                                                  (LIST CL-SYM))
@@ -95,17 +96,23 @@
                   #'(LAMBDA NIL
                       (LET ((BVL+BODY (GENERATE-LAMBDA-AUX NODE ENV CONT/VALUE)))
                         (LET ((BODY (LOCALLY-SPECIALIZE
-                                     (CDR (THE CONS BVL+BODY)))))
+                                     (CDR (THE-WHO CONS "cdr" BVL+BODY)))))
                           (LET NIL
                             (CONS 'LAMBDA
-                                  (CONS (CAR (THE CONS BVL+BODY))
+                                  (CONS (CAR (THE-WHO CONS "car" BVL+BODY))
                                         (IF (AND (CONSP BODY)
-                                                 (NULL (CDR (THE CONS BODY)))
-                                                 (TRUEP (CAR-IS? (CAR (THE CONS
-                                                                           BODY))
+                                                 (NULL (CDR (THE-WHO CONS
+                                                                     "cdr"
+                                                                     BODY)))
+                                                 (TRUEP (CAR-IS? (CAR (THE-WHO CONS
+                                                                               "car"
+                                                                               BODY))
                                                                  'LOCALLY)))
-                                            (CDR (THE CONS
-                                                      (CAR (THE CONS BODY))))
+                                            (CDR (THE-WHO CONS
+                                                          "cdr"
+                                                          (CAR (THE-WHO CONS
+                                                                        "car"
+                                                                        BODY))))
                                             BODY)))))))))))
 (SET-VALUE-FROM-FUNCTION 'GENERATE-LAMBDA-TOP 'SCHEME::GENERATE-LAMBDA-TOP)
 (DEFUN GENERATE-SETQ-TOP (LHS RHS ENV)
@@ -161,10 +168,14 @@
   (LET ((SUB (VARIABLE-SUBSTITUTION VAR)))
     (DELIVER-VALUE-TO-CONT
      (IF (CONSP SUB)
-         (CASE (CAR (THE CONS SUB))
-           ((SCHEME::VAL) (CAR (THE CONS (CDR (THE CONS SUB)))))
+         (CASE (CAR (THE-WHO CONS "car" SUB))
+           ((SCHEME::VAL)
+            (CAR (THE-WHO CONS "cadr" (CDR (THE-WHO CONS "cadr" SUB)))))
            ((SCHEME::FUN)
-            (CONS 'FUNCTION (LIST (CAR (THE CONS (CDR (THE CONS SUB)))))))
+            (CONS 'FUNCTION
+                  (LIST (CAR (THE-WHO CONS
+                                      "cadr"
+                                      (CDR (THE-WHO CONS "cadr" SUB)))))))
            (OTHERWISE (.ERROR "lossage in generate-local-variable" SUB)))
          (IF (MEMBER VAR (FLUID @UNASSIGNED-LETREC-VARS) :TEST #'EQ)
              (CONS 'LETREC-VALUE
@@ -180,10 +191,14 @@
   (LET ((SUB (GET-INTEGRATION VAR)))
     (DELIVER-VALUE-TO-CONT
      (IF (CONSP SUB)
-         (CASE (CAR (THE CONS SUB))
-           ((SCHEME::VAL) (CAR (THE CONS (CDR (THE CONS SUB)))))
+         (CASE (CAR (THE-WHO CONS "car" SUB))
+           ((SCHEME::VAL)
+            (CAR (THE-WHO CONS "cadr" (CDR (THE-WHO CONS "cadr" SUB)))))
            ((SCHEME::FUN)
-            (CONS 'FUNCTION (LIST (CAR (THE CONS (CDR (THE CONS SUB)))))))
+            (CONS 'FUNCTION
+                  (LIST (CAR (THE-WHO CONS
+                                      "cadr"
+                                      (CDR (THE-WHO CONS "cadr" SUB)))))))
            (OTHERWISE (NOTE-VARIABLE-REFERENCE! VAR)
                       (PROGRAM-VARIABLE-CL-SYMBOL VAR)))
          (PROGN (NOTE-VARIABLE-REFERENCE! VAR) (PROGRAM-VARIABLE-CL-SYMBOL VAR)))
@@ -222,10 +237,13 @@
            (GENERATE-CALL-TO-PROGRAM-VARIABLE PROC ARGS ENV CONT)))
       ((SCHEME::LOCAL-VARIABLE)
        (IF (AND (CONSP (VARIABLE-SUBSTITUTION PROC))
-                (EQ (CAR (THE CONS (VARIABLE-SUBSTITUTION PROC)))
+                (EQ (CAR (THE-WHO CONS "car" (VARIABLE-SUBSTITUTION PROC)))
                     'SCHEME::--GENERATE-CALL--))
-           (FUNCALL (CAR (THE CONS
-                              (CDR (THE CONS (VARIABLE-SUBSTITUTION PROC)))))
+           (FUNCALL (CAR (THE-WHO CONS
+                                  "cadr"
+                                  (CDR (THE-WHO CONS
+                                                "cadr"
+                                                (VARIABLE-SUBSTITUTION PROC)))))
                     (GENERATE-LIST ARGS ENV)
                     CONT)
            (GENERATE-GENERAL-CALL PROC ARGS ENV CONT)))
@@ -247,10 +265,14 @@
   (LET ((SUB (GET-INTEGRATION PVAR)))
     (IF (NOT (CONSP SUB))
         (GENERATE-CALL-TO-UNKNOWN PVAR ARGS ENV CONT)
-        (CASE (CAR (THE CONS SUB))
+        (CASE (CAR (THE-WHO CONS "car" SUB))
           ((SCHEME::SUBST)
-           (LET ((PARAMS (CAR (THE CONS (CDR (THE CONS SUB)))))
-                 (BODY (PROGNIFY (CDR (THE CONS (CDR (THE CONS SUB)))))))
+           (LET ((PARAMS (CAR (THE-WHO CONS
+                                       "cadr"
+                                       (CDR (THE-WHO CONS "cadr" SUB)))))
+                 (BODY (PROGNIFY (CDR (THE-WHO CONS
+                                               "cddr"
+                                               (CDR (THE-WHO CONS "cddr" SUB)))))))
              (IF (SCHEME= (LENGTH ARGS) (LENGTH PARAMS))
                  (SUBSTITUTE-AND-PEEP
                   (MAPCAR #'CONS PARAMS (GENERATE-LIST ARGS ENV))
@@ -260,29 +282,38 @@
                    (GENERATE-CALL-TO-UNKNOWN PVAR ARGS ENV CONT)))))
           ((SCHEME::LAMBDA)
            (IF (SCHEME= (LENGTH ARGS)
-                        (LENGTH (CAR (THE CONS (CDR (THE CONS SUB))))))
+                        (LENGTH (CAR (THE-WHO CONS
+                                              "cadr"
+                                              (CDR (THE-WHO CONS "cadr" SUB))))))
                (CONS 'LET
                      (CONS (MAPCAR #'LIST
-                                   (CAR (THE CONS (CDR (THE CONS SUB))))
+                                   (CAR (THE-WHO CONS
+                                                 "cadr"
+                                                 (CDR (THE-WHO CONS "cadr" SUB))))
                                    (GENERATE-LIST ARGS ENV))
                            (DEPROGNIFY (DELIVER-VALUE-TO-CONT
-                                        (PROGNIFY (CDR (THE CONS
-                                                            (CDR (THE CONS SUB)))))
+                                        (PROGNIFY (CDR (THE-WHO CONS
+                                                                "cddr"
+                                                                (CDR (THE-WHO CONS
+                                                                              "cddr"
+                                                                              SUB)))))
                                         CONT))))
                (GENERATE-CALL-TO-UNKNOWN PVAR ARGS ENV CONT)))
           ((SCHEME::FUN)
            (DELIVER-VALUE-TO-CONT
-            (CONS (CAR (THE CONS (CDR (THE CONS SUB))))
+            (CONS (CAR (THE-WHO CONS "cadr" (CDR (THE-WHO CONS "cadr" SUB))))
                   (GENERATE-LIST ARGS ENV))
             CONT))
           ((SCHEME::PRED)
            (DELIVER-TEST-TO-CONT
-            (CONS (CAR (THE CONS (CDR (THE CONS SUB))))
+            (CONS (CAR (THE-WHO CONS "cadr" (CDR (THE-WHO CONS "cadr" SUB))))
                   (GENERATE-LIST ARGS ENV))
             CONT))
           ((SCHEME::VAL)
            (DELIVER-VALUE-TO-CONT
-            (FUNCALLIFY (CAR (THE CONS (CDR (THE CONS SUB))))
+            (FUNCALLIFY (CAR (THE-WHO CONS
+                                      "cadr"
+                                      (CDR (THE-WHO CONS "cadr" SUB))))
                         (GENERATE-LIST ARGS ENV))
             CONT))
           ((SCHEME::SPECIAL)
@@ -291,60 +322,102 @@
               (IF (SCHEME= (LENGTH ARGS) 1)
                   (DELIVER-TEST-TO-CONT
                    (CONS 'NOT
-                         (LIST (GENERATE (CAR (THE CONS ARGS)) ENV CONT/TEST)))
+                         (LIST (GENERATE (CAR (THE-WHO CONS "car" ARGS))
+                                         ENV
+                                         CONT/TEST)))
                    CONT)
                   (GENERATE-CALL-TO-UNKNOWN PVAR ARGS ENV CONT)))
              ((SCHEME::AND-AUX)
-              (GENERATE-AND (CAR (THE CONS ARGS))
-                            (IF (TRUEP (LAMBDA? (CAR (THE CONS
-                                                          (CDR (THE CONS ARGS))))))
-                                (LAMBDA-BODY (CAR (THE CONS
-                                                       (CDR (THE CONS ARGS)))))
-                                (MAKE-CALL (CAR (THE CONS (CDR (THE CONS ARGS))))
+              (GENERATE-AND (CAR (THE-WHO CONS "car" ARGS))
+                            (IF (TRUEP (LAMBDA? (CAR (THE-WHO CONS
+                                                              "cadr"
+                                                              (CDR (THE-WHO CONS
+                                                                            "cadr"
+                                                                            ARGS))))))
+                                (LAMBDA-BODY (CAR (THE-WHO CONS
+                                                           "cadr"
+                                                           (CDR (THE-WHO CONS
+                                                                         "cadr"
+                                                                         ARGS)))))
+                                (MAKE-CALL (CAR (THE-WHO CONS
+                                                         "cadr"
+                                                         (CDR (THE-WHO CONS
+                                                                       "cadr"
+                                                                       ARGS))))
                                            'NIL))
                             ENV
                             CONT))
              ((SCHEME::OR-AUX)
-              (GENERATE-OR (CAR (THE CONS ARGS))
-                           (IF (TRUEP (LAMBDA? (CAR (THE CONS
-                                                         (CDR (THE CONS ARGS))))))
-                               (LAMBDA-BODY (CAR (THE CONS
-                                                      (CDR (THE CONS ARGS)))))
-                               (MAKE-CALL (CAR (THE CONS (CDR (THE CONS ARGS))))
+              (GENERATE-OR (CAR (THE-WHO CONS "car" ARGS))
+                           (IF (TRUEP (LAMBDA? (CAR (THE-WHO CONS
+                                                             "cadr"
+                                                             (CDR (THE-WHO CONS
+                                                                           "cadr"
+                                                                           ARGS))))))
+                               (LAMBDA-BODY (CAR (THE-WHO CONS
+                                                          "cadr"
+                                                          (CDR (THE-WHO CONS
+                                                                        "cadr"
+                                                                        ARGS)))))
+                               (MAKE-CALL (CAR (THE-WHO CONS
+                                                        "cadr"
+                                                        (CDR (THE-WHO CONS
+                                                                      "cadr"
+                                                                      ARGS))))
                                           'NIL))
                            ENV
                            CONT))
              ((SCHEME::CASE-AUX)
               (GENERATE-CASE
-               (CAR (THE CONS ARGS))
-               (CAR (THE CONS (CDR (THE CONS ARGS))))
-               (CAR (THE CONS (CDR (THE CONS (CDR (THE CONS ARGS))))))
-               (CDR (THE CONS (CDR (THE CONS (CDR (THE CONS ARGS))))))
+               (CAR (THE-WHO CONS "car" ARGS))
+               (CAR (THE-WHO CONS "cadr" (CDR (THE-WHO CONS "cadr" ARGS))))
+               (CAR (THE-WHO CONS
+                             "caddr"
+                             (CDR (THE-WHO CONS
+                                           "caddr"
+                                           (CDR (THE-WHO CONS "caddr" ARGS))))))
+               (CDR (THE-WHO CONS
+                             "cdddr"
+                             (CDR (THE-WHO CONS
+                                           "cdddr"
+                                           (CDR (THE-WHO CONS "cdddr" ARGS))))))
                ENV
                CONT))
              ((SCHEME::=>-AUX)
-              (LET ((PROC-THUNK (CAR (THE CONS (CDR (THE CONS ARGS))))))
+              (LET ((PROC-THUNK (CAR (THE-WHO CONS
+                                              "cadr"
+                                              (CDR (THE-WHO CONS "cadr" ARGS))))))
                 (LET ((PROC (IF (TRUEP (LAMBDA? PROC-THUNK))
                                 (LAMBDA-BODY PROC-THUNK)
                                 (MAKE-CALL PROC-THUNK 'NIL))))
                   (LET NIL
                     (IF (AND (TRUEP (LAMBDA? PROC))
                              (SCHEME= (LENGTH (LAMBDA-VARS PROC)) 1))
-                        (GENERATE-=> (CAR (THE CONS ARGS))
-                                     (CAR (THE CONS (LAMBDA-VARS PROC)))
+                        (GENERATE-=> (CAR (THE-WHO CONS "car" ARGS))
+                                     (CAR (THE-WHO CONS
+                                                   "car"
+                                                   (LAMBDA-VARS PROC)))
                                      (LAMBDA-BODY PROC)
-                                     (CAR (THE CONS
-                                               (CDR (THE CONS
-                                                         (CDR (THE CONS ARGS))))))
+                                     (CAR (THE-WHO CONS
+                                                   "caddr"
+                                                   (CDR (THE-WHO CONS
+                                                                 "caddr"
+                                                                 (CDR (THE-WHO CONS
+                                                                               "caddr"
+                                                                               ARGS))))))
                                      ENV
                                      CONT)
                         (LET ((VAR (MAKE-LOCAL-VARIABLE 'SCHEME::TEMP)))
-                          (GENERATE-=> (CAR (THE CONS ARGS))
+                          (GENERATE-=> (CAR (THE-WHO CONS "car" ARGS))
                                        VAR
                                        (MAKE-CALL PROC (LIST VAR))
-                                       (CAR (THE CONS
-                                                 (CDR (THE CONS
-                                                           (CDR (THE CONS ARGS))))))
+                                       (CAR (THE-WHO CONS
+                                                     "caddr"
+                                                     (CDR (THE-WHO CONS
+                                                                   "caddr"
+                                                                   (CDR (THE-WHO CONS
+                                                                                 "caddr"
+                                                                                 ARGS))))))
                                        ENV
                                        CONT)))))))
              (OTHERWISE (.ERROR "losing built-in" PVAR))))
@@ -374,7 +447,11 @@
     (OTHERWISE (LET ((FIRST-CODE (GENERATE FIRST ENV CONT/VALUE)))
                  (IF (TRUEP (CAR-IS? FIRST-CODE 'TRUE?))
                      (CONS 'OR
-                           (CONS (CAR (THE CONS (CDR (THE CONS FIRST-CODE))))
+                           (CONS (CAR (THE-WHO CONS
+                                               "cadr"
+                                               (CDR (THE-WHO CONS
+                                                             "cadr"
+                                                             FIRST-CODE))))
                                  (DEORIFY (GENERATE SECOND ENV CONT))))
                      (LET ((VAR (MAKE-LOCAL-VARIABLE 'SCHEME::TEMP)))
                        (LET ((NEW-NAME (CL-EXTERNALIZE-LOCAL 'SCHEME::TEMP ENV)))
@@ -469,7 +546,7 @@
             (LET NIL
               (IF (TRUEP (N-ARY? NODE))
                   (LET ((.BVL.0 (INSERT-&REST NEW-NAMES)))
-                    (LET ((REST-VAR (CAR (THE CONS (LAST-PAIR .BVL.0)))))
+                    (LET ((REST-VAR (CAR (THE-WHO CONS "car" (LAST-PAIR .BVL.0)))))
                       (LET NIL
                         (CONS .BVL.0
                               (CONS (CONS 'MAYBE-FIX-&REST-PARAMETER
@@ -497,9 +574,9 @@
         (LET ((BVL+BODY (GENERATE-LAMBDA-AUX PROC ENV CONT)))
           (CONS 'LET
                 (CONS (MAPCAR #'LIST
-                              (CAR (THE CONS BVL+BODY))
+                              (CAR (THE-WHO CONS "car" BVL+BODY))
                               (GENERATE-LIST ARGS ENV))
-                      (CDR (THE CONS BVL+BODY))))))))
+                      (CDR (THE-WHO CONS "cdr" BVL+BODY))))))))
 (SET-VALUE-FROM-FUNCTION 'GENERATE-LET 'SCHEME::GENERATE-LET)
 (DEFUN GENERATE-IF (NODE ENV CONT)
   (DECLARE (SPECIAL CONT/TEST @TRANSLATING-TO-FILE?))
@@ -677,7 +754,7 @@
              (IF (NULL ARGS)
                  (CONS 'GO (LIST NEW-NAME))
                  (CONS 'PROGN
-                       (CONS (CONS (IF (NULL (CDR (THE CONS ARGS)))
+                       (CONS (CONS (IF (NULL (CDR (THE-WHO CONS "cdr" ARGS)))
                                        'SETQ
                                        'PSETQ)
                                    (APPLY #'APPEND

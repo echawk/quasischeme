@@ -117,12 +117,13 @@
                       (LET ((MODS .MODS.0))
                         (IF (NOT (NULL MODS))
                             (LET ((TEMP (STRUCTURE-REF
-                                         (CAR (THE CONS MODS))
+                                         (CAR (THE-WHO CONS "car" MODS))
                                          NAME)))
                               (IF (TRUEP TEMP)
                                   (RETURN TEMP)
                                   (PROGN
-                                    (SETQ .MODS.0 (CDR (THE CONS MODS)))
+                                    (SETQ .MODS.0
+                                          (CDR (THE-WHO CONS "cdr" MODS)))
                                     (GO LOOP))))
                             (RETURN FALSE))))
                     FALSE)))

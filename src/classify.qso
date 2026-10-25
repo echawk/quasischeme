@@ -11,8 +11,8 @@
   (IF (TRUEP (NAME? FORM))
       (VALUES CLASS/NAME FORM ENV)
       (IF (CONSP FORM)
-          (IF (TRUEP (NAME? (CAR (THE CONS FORM))))
-              (LET ((DEN (LOOKUP ENV (CAR (THE CONS FORM)))))
+          (IF (TRUEP (NAME? (CAR (THE-WHO CONS "car" FORM))))
+              (LET ((DEN (LOOKUP ENV (CAR (THE-WHO CONS "car" FORM)))))
                 (IF (TRUEP (SPECIAL-OPERATOR? DEN))
                     (CLASSIFY-SPECIAL DEN FORM ENV)
                     (IF (TRUEP (MACRO? DEN))
@@ -56,7 +56,7 @@
  'SCHEME::CLASSIFY-MACRO-APPLICATION)
 (DEFUN PROCESS-SYNTAX-SPEC (SSPEC ENV)
   (LET ((FROB (EVAL-FOR-SYNTAX SSPEC (GET-ENVIRONMENT-FOR-SYNTAX ENV))))
-    (LET ((PROC (IF (CONSP FROB) (CAR (THE CONS FROB)) FROB)))
+    (LET ((PROC (IF (CONSP FROB) (CAR (THE-WHO CONS "car" FROB)) FROB)))
       (LET NIL
         (IF (PROCEDUREP PROC)
             (MAKE-MACRO PROC ENV)
@@ -72,9 +72,13 @@
 (SET-VALUE-FROM-FUNCTION 'PROCESS-SYNTAX-SPEC 'SCHEME::PROCESS-SYNTAX-SPEC)
 (DEFUN PROCESS-DEFINE-SYNTAX (FORM ENV)
   (DEFINE! ENV
-           (CAR (THE CONS (CDR (THE CONS FORM))))
+           (CAR (THE-WHO CONS "cadr" (CDR (THE-WHO CONS "cadr" FORM))))
            (PROCESS-SYNTAX-SPEC
-            (CAR (THE CONS (CDR (THE CONS (CDR (THE CONS FORM))))))
+            (CAR (THE-WHO CONS
+                          "caddr"
+                          (CDR (THE-WHO CONS
+                                        "caddr"
+                                        (CDR (THE-WHO CONS "caddr" FORM))))))
             ENV)))
 (SET-VALUE-FROM-FUNCTION 'PROCESS-DEFINE-SYNTAX 'SCHEME::PROCESS-DEFINE-SYNTAX)
 (DEFUN CLASSIFY-LET-SYNTAX (FORM ENV)
@@ -107,7 +111,7 @@
                                  :TEST
                                  #'EQ))))
         (IF (TRUEP PROBE)
-            (CDR (THE CONS PROBE))
+            (CDR (THE-WHO CONS "cdr" PROBE))
             (LOOKUP (LOCAL-ENVIRONMENT-PARENT ENV) NAME)))
       (IF (TRUEP (DIVERTED-ENVIRONMENT? ENV))
           (IF (AND (TRUEP (GENERATED? NAME))
@@ -139,7 +143,7 @@
         (LET ((PROBE (TRUE? (ASSOC NAME BS :TEST #'EQ))))
           (LET NIL
             (IF (TRUEP PROBE)
-                (CDR (THE CONS PROBE))
+                (CDR (THE-WHO CONS "cdr" PROBE))
                 (PROGN
                   (SET-LOCAL-ENVIRONMENT-BINDINGS!
                    ENV
@@ -240,7 +244,7 @@
 (SET-VALUE-FROM-FUNCTION 'NEW-ENVIRONMENT 'SCHEME::NEW-ENVIRONMENT)
 (DEFUN FOR-EACH-LOCAL (PROC ENV)
   (FLET ((DOIT (NAME+DEN)
-               (LET ((DEN (CDR (THE CONS NAME+DEN))))
+               (LET ((DEN (CDR (THE-WHO CONS "cdr" NAME+DEN))))
                  (IF (AND (NOT (TRUEP (MACRO? DEN)))
                           (NOT (TRUEP (SPECIAL-OPERATOR? DEN))))
                      (FUNCALL PROC DEN)))))
@@ -367,31 +371,44 @@
           (IF (CONSP THING)
               (PROGN
                 (TABLE-SET! SEEN THING TRUE)
-                (LET ((X (STRIP-DATUM (CAR (THE CONS THING)) SEEN))
-                      (Y (STRIP-DATUM (CDR (THE CONS THING)) SEEN)))
-                  (IF (AND (EQ X (CAR (THE CONS THING)))
-                           (EQ Y (CDR (THE CONS THING))))
+                (LET ((X (STRIP-DATUM (CAR (THE-WHO CONS "car" THING)) SEEN))
+                      (Y (STRIP-DATUM (CDR (THE-WHO CONS "cdr" THING)) SEEN)))
+                  (IF (AND (EQ X (CAR (THE-WHO CONS "car" THING)))
+                           (EQ Y (CDR (THE-WHO CONS "cdr" THING))))
                       THING
                       (CONS X Y))))
               (IF (TRUEP (VECTOR? THING))
                   (PROGN
                     (TABLE-SET! SEEN THING TRUE)
-                    (LET ((NEW (MAKE-VECTOR (LENGTH (THE SIMPLE-VECTOR THING)))))
+                    (LET ((NEW (MAKE-VECTOR (LENGTH (THE-WHO SIMPLE-VECTOR
+                                                             "vector-length"
+                                                             THING)))))
                       (PROG (.I.0 .SAME?.1)
                         (PSETQ .I.0 0 .SAME?.1 TRUE)
                         (GO LOOP)
                         LOOP
                         (LET ((I .I.0) (SAME? .SAME?.1))
-                          (IF (SCHEME>= I (LENGTH (THE SIMPLE-VECTOR THING)))
+                          (IF (SCHEME>= I
+                                        (LENGTH (THE-WHO SIMPLE-VECTOR
+                                                         "vector-length"
+                                                         THING)))
                               (IF (TRUEP SAME?) (RETURN THING) (RETURN NEW))
-                              (LET ((X (STRIP-DATUM (SVREF THING I) SEEN)))
-                                (SETF (SVREF NEW I) X)
+                              (LET ((X (STRIP-DATUM (CHECKED-SVREF
+                                                     "vector-ref"
+                                                     THING
+                                                     I)
+                                                    SEEN)))
+                                (CHECKED-SVSET "vector-set!" NEW I X)
                                 UNSPECIFIC
                                 (PSETQ .I.0
                                        (SCHEME+ I 1)
                                        .SAME?.1
                                        (IF (TRUEP SAME?)
-                                           (TRUE? (EQ X (SVREF THING I)))
+                                           (TRUE? (EQ X
+                                                      (CHECKED-SVREF
+                                                       "vector-ref"
+                                                       THING
+                                                       I)))
                                            FALSE))
                                 (GO LOOP)))))))
                   THING)))))
@@ -410,7 +427,7 @@
     (VALUES #'(LAMBDA (NAME)
                 (LET ((PROBE (TRUE? (ASSOC NAME ALIST :TEST #'EQ))))
                   (IF (TRUEP PROBE)
-                      (CDR (THE CONS PROBE))
+                      (CDR (THE-WHO CONS "cdr" PROBE))
                       (LET ((NEW-NAME (MAKE-GENERATED NAME GENERATION)))
                         (SETQ ALIST (CONS (CONS NAME NEW-NAME) ALIST))
                         NEW-NAME))))
@@ -434,7 +451,9 @@
                              (IF (NULL STMTS)
                                  'NIL
                                  (LET ((FIRST (FUNCALL SCAN-FORM
-                                                       (CAR (THE CONS STMTS))
+                                                       (CAR (THE-WHO CONS
+                                                                     "car"
+                                                                     STMTS))
                                                        .FORM-ENV.1)))
                                    (IF (TRUEP FIRST)
                                        (APPLY #'APPEND
@@ -447,7 +466,9 @@
                                                                 TEMP
                                                                 (LIST (SYNTAX-ERROR "definitions and expressions are intermixed"
                                                                                     FORMS)))))
-                                                      (CDR (THE CONS STMTS))))
+                                                      (CDR (THE-WHO CONS
+                                                                    "cdr"
+                                                                    STMTS))))
                                        FALSE))))
                            FALSE)))
                (CLASSIFY FORM FORM-ENV))))
@@ -458,11 +479,13 @@
       LOOP
       (IF (NULL .FORMS.3)
           (RETURN (VALUES SPECS (LIST (SYNTAX-ERROR "null body" .FORMS.3)) ENV))
-          (LET ((PROBE (FUNCALL SCAN-FORM (CAR (THE CONS .FORMS.3)) ENV)))
+          (LET ((PROBE (FUNCALL SCAN-FORM
+                                (CAR (THE-WHO CONS "car" .FORMS.3))
+                                ENV)))
             (IF (TRUEP PROBE)
                 (PROGN
                   (PSETQ .FORMS.3
-                         (CDR (THE CONS .FORMS.3))
+                         (CDR (THE-WHO CONS "cdr" .FORMS.3))
                          SPECS
                          (APPEND PROBE SPECS))
                   (GO LOOP))

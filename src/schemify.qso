@@ -14,7 +14,9 @@
         ((SCHEME::PROGRAM-VARIABLE) (PROGRAM-VARIABLE-NAME NODE))
         ((SCHEME::LOCAL-VARIABLE)
          (LET ((PROBE (TRUE? (ASSOC NODE ENV :TEST #'EQ))))
-           (IF (TRUEP PROBE) (CDR (THE CONS PROBE)) (LOCAL-VARIABLE-NAME NODE))))
+           (IF (TRUEP PROBE)
+               (CDR (THE-WHO CONS "cdr" PROBE))
+               (LOCAL-VARIABLE-NAME NODE))))
         ((SCHEME::CALL) (SCHEMIFY-CALL NODE ENV))
         ((SCHEME::CONSTANT)
          (LET ((VAL (CONSTANT-VALUE NODE)))
@@ -87,50 +89,70 @@
                (CONS 'SCHEME::LET
                      (CONS (MAPCAR #'(LAMBDA (VAR ARG)
                                        (CONS VAR (LIST (SCHEMIFY ARG ENV))))
-                                   (CAR (THE CONS (CDR (THE CONS PROC-EXP))))
+                                   (CAR (THE-WHO CONS
+                                                 "cadr"
+                                                 (CDR (THE-WHO CONS
+                                                               "cadr"
+                                                               PROC-EXP))))
                                    ARGS)
-                           (CDR (THE CONS (CDR (THE CONS PROC-EXP))))))))
+                           (CDR (THE-WHO CONS
+                                         "cddr"
+                                         (CDR (THE-WHO CONS "cddr" PROC-EXP))))))))
             ((SCHEME::PROGRAM-VARIABLE)
              (IF (EQ (PROGRAM-VARIABLE-LOCATION PROC)
                      (PROGRAM-ENV-LOOKUP REVISED^4-SCHEME-ENV 'SCHEME::AND-AUX))
                  (CONS 'SCHEME::AND
-                       (CONS (SCHEMIFY (CAR (THE CONS ARGS)) ENV)
-                             (LIST (DETHUNKIFY (CAR (THE CONS
-                                                         (CDR (THE CONS ARGS))))
+                       (CONS (SCHEMIFY (CAR (THE-WHO CONS "car" ARGS)) ENV)
+                             (LIST (DETHUNKIFY (CAR (THE-WHO CONS
+                                                             "cadr"
+                                                             (CDR (THE-WHO CONS
+                                                                           "cadr"
+                                                                           ARGS))))
                                                ENV))))
                  (IF (EQ (PROGRAM-VARIABLE-LOCATION PROC)
                          (PROGRAM-ENV-LOOKUP
                           REVISED^4-SCHEME-ENV
                           'SCHEME::OR-AUX))
                      (CONS 'SCHEME::OR
-                           (CONS (SCHEMIFY (CAR (THE CONS ARGS)) ENV)
-                                 (LIST (DETHUNKIFY (CAR (THE CONS
-                                                             (CDR (THE CONS
-                                                                       ARGS))))
+                           (CONS (SCHEMIFY (CAR (THE-WHO CONS "car" ARGS)) ENV)
+                                 (LIST (DETHUNKIFY (CAR (THE-WHO CONS
+                                                                 "cadr"
+                                                                 (CDR (THE-WHO CONS
+                                                                               "cadr"
+                                                                               ARGS))))
                                                    ENV))))
                      (IF (EQ (PROGRAM-VARIABLE-LOCATION PROC)
                              (PROGRAM-ENV-LOOKUP
                               REVISED^4-SCHEME-ENV
                               'SCHEME::CASE-AUX))
                          (CONS 'SCHEME::CASE
-                               (CONS (SCHEMIFY (CAR (THE CONS ARGS)) ENV)
+                               (CONS (SCHEMIFY (CAR (THE-WHO CONS "car" ARGS))
+                                               ENV)
                                      (APPEND (MAPCAR #'(LAMBDA (KEYS ARG)
                                                          (CONS KEYS
                                                                (UNBEGINIFY (DETHUNKIFY ARG
                                                                                        ENV))))
                                                      (CONSTANT-VALUE
-                                                      (CAR (THE CONS
-                                                                (CDR (THE CONS
-                                                                          ARGS)))))
-                                                     (CDR (THE CONS
-                                                               (CDR (THE CONS
-                                                                         (CDR (THE CONS
-                                                                                   ARGS)))))))
+                                                      (CAR (THE-WHO CONS
+                                                                    "cadr"
+                                                                    (CDR (THE-WHO CONS
+                                                                                  "cadr"
+                                                                                  ARGS)))))
+                                                     (CDR (THE-WHO CONS
+                                                                   "cdddr"
+                                                                   (CDR (THE-WHO CONS
+                                                                                 "cdddr"
+                                                                                 (CDR (THE-WHO CONS
+                                                                                               "cdddr"
+                                                                                               ARGS)))))))
                                              (LIST (CONS 'SCHEME::ELSE
-                                                         (LIST (DETHUNKIFY (CAR (THE CONS
-                                                                                     (CDR (THE CONS
-                                                                                               (CDR (THE CONS
-                                                                                                         ARGS))))))
+                                                         (LIST (DETHUNKIFY (CAR (THE-WHO CONS
+                                                                                         "caddr"
+                                                                                         (CDR (THE-WHO CONS
+                                                                                                       "caddr"
+                                                                                                       (CDR (THE-WHO CONS
+                                                                                                                     "caddr"
+                                                                                                                     ARGS))))))
                                                                            ENV)))))))
                          (PUNT)))))
             (OTHERWISE (PUNT))))))))
@@ -143,7 +165,9 @@
 (DEFUN SCHEMIFY-BODY (NODE ENV) (UNBEGINIFY (SCHEMIFY NODE ENV)))
 (SET-VALUE-FROM-FUNCTION 'SCHEMIFY-BODY 'SCHEME::SCHEMIFY-BODY)
 (DEFUN UNBEGINIFY (.EXP)
-  (IF (TRUEP (CAR-IS? .EXP 'SCHEME::BEGIN)) (CDR (THE CONS .EXP)) (LIST .EXP)))
+  (IF (TRUEP (CAR-IS? .EXP 'SCHEME::BEGIN))
+      (CDR (THE-WHO CONS "cdr" .EXP))
+      (LIST .EXP)))
 (SET-VALUE-FROM-FUNCTION 'UNBEGINIFY 'SCHEME::UNBEGINIFY)
 (DEFUN EXTERNALIZE-VARIABLE (VAR ENV)
   (LET ((NAME (LOCAL-VARIABLE-NAME VAR)))

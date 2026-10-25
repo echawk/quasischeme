@@ -218,6 +218,9 @@ Scheme see something CONDITION? and MESSAGE-CONDITION? are true of."
 			   (list (funcall (prim "make-undefined-violation")))
 			   (list (funcall (prim "make-assertion-violation")))))
 		      (t (list (funcall (prim "make-assertion-violation")))))
+		    ;; car's, vector-ref's, ...: who checked (qs:condition-who)
+		    (let ((who (qs:condition-who c)))
+		      (and who (list (funcall (prim "make-who-condition") (qs:intern-scheme-symbol who)))))
 		    (list (funcall (prim "make-message-condition") message)
 			  (funcall (prim "make-irritants-condition") irritants))))))
       (setf (gethash condition *foreign-originals*) c)
@@ -251,6 +254,10 @@ function (#f is a symbol) or as a type error expecting a function."
 	     ;; car/cdr of a non-pair (builtin.scm checks with (the cons x))
 	     ((member (type-error-expected-type c) '(cons list))
 	      (values "not a pair" (list (type-error-datum c))))
+	     ((eq (type-error-expected-type c) 'simple-vector)
+	      (values "not a vector" (list (type-error-datum c))))
+	     ((eq (type-error-expected-type c) 'simple-string)
+	      (values "not a string" (list (type-error-datum c))))
 	     (t (plain))))
       ;; THROW to a dead tag: see QS:CALL-WITH-ESCAPE
       (control-error

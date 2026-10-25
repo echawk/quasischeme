@@ -26,20 +26,26 @@
 (DEFUN SUBSTITUTE-AND-PEEP (ALIST CL-FORM)
   (IF (SCHEME-SYMBOL-P CL-FORM)
       (LET ((PROBE (TRUE? (ASSOC CL-FORM ALIST :TEST #'EQ))))
-        (IF (TRUEP PROBE) (CDR (THE CONS PROBE)) CL-FORM))
+        (IF (TRUEP PROBE) (CDR (THE-WHO CONS "cdr" PROBE)) CL-FORM))
       (IF (CONSP CL-FORM)
           (LET ((YOW (MAPCAR #'(LAMBDA (Z) (SUBSTITUTE-AND-PEEP ALIST Z))
                              CL-FORM)))
-            (CASE (CAR (THE CONS YOW))
+            (CASE (CAR (THE-WHO CONS "car" YOW))
               ((FUNCALL)
-               (FUNCALLIFY (CAR (THE CONS (CDR (THE CONS YOW))))
-                           (CDR (THE CONS (CDR (THE CONS YOW))))))
-              (OTHERWISE YOW))))))
+               (FUNCALLIFY (CAR (THE-WHO CONS
+                                         "cadr"
+                                         (CDR (THE-WHO CONS "cadr" YOW))))
+                           (CDR (THE-WHO CONS
+                                         "cddr"
+                                         (CDR (THE-WHO CONS "cddr" YOW))))))
+              (OTHERWISE YOW)))
+          CL-FORM)))
 (SET-VALUE-FROM-FUNCTION 'SUBSTITUTE-AND-PEEP 'SCHEME::SUBSTITUTE-AND-PEEP)
 (DEFUN INSERT-&REST (L)
-  (IF (NULL (CDR (THE CONS L)))
+  (IF (NULL (CDR (THE-WHO CONS "cdr" L)))
       (CONS '&REST L)
-      (CONS (CAR (THE CONS L)) (INSERT-&REST (CDR (THE CONS L))))))
+      (CONS (CAR (THE-WHO CONS "car" L))
+            (INSERT-&REST (CDR (THE-WHO CONS "cdr" L))))))
 (SET-VALUE-FROM-FUNCTION 'INSERT-&REST 'SCHEME::INSERT-&REST)
 (DEFUN CL-EXTERNALIZE-LOCALS (VARS ENV)
   (MAPCAR #'(LAMBDA (VAR) (CL-EXTERNALIZE-LOCAL (LOCAL-VARIABLE-NAME VAR) ENV))
@@ -79,11 +85,11 @@
   (LET ((NAME (PROGRAM-VARIABLE-NAME VAR)))
     (IF (NOT (TRUEP (QUALIFIED-SYMBOL? NAME)))
         (LET ((S (SYMBOL-NAME NAME)))
-          (LET ((N (LENGTH (THE SIMPLE-STRING S))))
+          (LET ((N (LENGTH (THE-WHO SIMPLE-STRING "string-length" S))))
             (LET NIL
               (IF (SCHEME>= N 3)
-                  (IF (CHAR= (CHAR (THE SIMPLE-STRING S) 0) #\*)
-                      (TRUE? (CHAR= (CHAR (THE SIMPLE-STRING S) (SCHEME- N 1))
+                  (IF (CHAR= (CHECKED-SCHAR "string-ref" S 0) #\*)
+                      (TRUE? (CHAR= (CHECKED-SCHAR "string-ref" S (SCHEME- N 1))
                                     #\*))
                       FALSE)
                   FALSE))))
@@ -103,33 +109,49 @@
       SYM))
 (SET-VALUE-FROM-FUNCTION 'CHANGE-PACKAGE 'SCHEME::CHANGE-PACKAGE)
 (DEFUN PROGNIFY (FORM-LIST)
-  (IF (NULL (CDR (THE CONS FORM-LIST)))
-      (CAR (THE CONS FORM-LIST))
+  (IF (NULL (CDR (THE-WHO CONS "cdr" FORM-LIST)))
+      (CAR (THE-WHO CONS "car" FORM-LIST))
       (CONS 'PROGN FORM-LIST)))
 (SET-VALUE-FROM-FUNCTION 'PROGNIFY 'SCHEME::PROGNIFY)
 (DEFUN DEPROGNIFY (CL-FORM)
-  (IF (TRUEP (CAR-IS? CL-FORM 'PROGN)) (CDR (THE CONS CL-FORM)) (LIST CL-FORM)))
+  (IF (TRUEP (CAR-IS? CL-FORM 'PROGN))
+      (CDR (THE-WHO CONS "cdr" CL-FORM))
+      (LIST CL-FORM)))
 (SET-VALUE-FROM-FUNCTION 'DEPROGNIFY 'SCHEME::DEPROGNIFY)
 (DEFUN DEANDIFY (CL-FORM)
-  (IF (TRUEP (CAR-IS? CL-FORM 'AND)) (CDR (THE CONS CL-FORM)) (LIST CL-FORM)))
+  (IF (TRUEP (CAR-IS? CL-FORM 'AND))
+      (CDR (THE-WHO CONS "cdr" CL-FORM))
+      (LIST CL-FORM)))
 (SET-VALUE-FROM-FUNCTION 'DEANDIFY 'SCHEME::DEANDIFY)
 (DEFUN DEORIFY (CL-FORM)
-  (IF (TRUEP (CAR-IS? CL-FORM 'OR)) (CDR (THE CONS CL-FORM)) (LIST CL-FORM)))
+  (IF (TRUEP (CAR-IS? CL-FORM 'OR))
+      (CDR (THE-WHO CONS "cdr" CL-FORM))
+      (LIST CL-FORM)))
 (SET-VALUE-FROM-FUNCTION 'DEORIFY 'SCHEME::DEORIFY)
 (DEFUN FUNCALLIFY (FUN ARGS)
   (IF (TRUEP (CAR-IS? FUN 'FUNCTION))
-      (LET ((.FUN.0 (CAR (THE CONS (CDR (THE CONS FUN))))))
+      (LET ((.FUN.0 (CAR (THE-WHO CONS "cadr" (CDR (THE-WHO CONS "cadr" FUN))))))
         (IF (AND (TRUEP (CAR-IS? .FUN.0 'LAMBDA))
                  (NOT (MEMBER '&REST
-                              (CAR (THE CONS (CDR (THE CONS .FUN.0))))
+                              (CAR (THE-WHO CONS
+                                            "cadr"
+                                            (CDR (THE-WHO CONS "cadr" .FUN.0))))
                               :TEST
                               #'EQ))
-                 (SCHEME= (LENGTH (CAR (THE CONS (CDR (THE CONS .FUN.0)))))
+                 (SCHEME= (LENGTH (CAR (THE-WHO CONS
+                                                "cadr"
+                                                (CDR (THE-WHO CONS
+                                                              "cadr"
+                                                              .FUN.0)))))
                           (LENGTH ARGS)))
             (LETIFY (MAPCAR #'LIST
-                            (CAR (THE CONS (CDR (THE CONS .FUN.0))))
+                            (CAR (THE-WHO CONS
+                                          "cadr"
+                                          (CDR (THE-WHO CONS "cadr" .FUN.0))))
                             ARGS)
-                    (PROGNIFY (CDR (THE CONS (CDR (THE CONS .FUN.0))))))
+                    (PROGNIFY (CDR (THE-WHO CONS
+                                            "cddr"
+                                            (CDR (THE-WHO CONS "cddr" .FUN.0))))))
             (CONS .FUN.0 ARGS)))
       (CONS 'FUNCALL (CONS FUN ARGS))))
 (SET-VALUE-FROM-FUNCTION 'FUNCALLIFY 'SCHEME::FUNCALLIFY)
@@ -138,7 +160,8 @@
 (SET-VALUE-FROM-FUNCTION 'LETIFY 'SCHEME::LETIFY)
 (DEFUN SHARP-QUOTE-LAMBDA? (.EXP)
   (IF (TRUEP (CAR-IS? .EXP 'FUNCTION))
-      (CAR-IS? (CAR (THE CONS (CDR (THE CONS .EXP)))) 'LAMBDA)
+      (CAR-IS? (CAR (THE-WHO CONS "cadr" (CDR (THE-WHO CONS "cadr" .EXP))))
+               'LAMBDA)
       FALSE))
 (SET-VALUE-FROM-FUNCTION 'SHARP-QUOTE-LAMBDA? 'SCHEME::SHARP-QUOTE-LAMBDA?)
 (LOCALLY
@@ -158,8 +181,10 @@
   (LET ((VARS (FLUID @CL-VARIABLE-REFERENCES)))
     (IF (OR (NULL VARS)
             (AND (CONSP FORM-LIST)
-                 (CONSP (CAR (THE CONS FORM-LIST)))
-                 (MEMBER (CAR (THE CONS (CAR (THE CONS FORM-LIST))))
+                 (CONSP (CAR (THE-WHO CONS "car" FORM-LIST)))
+                 (MEMBER (CAR (THE-WHO CONS
+                                       "caar"
+                                       (CAR (THE-WHO CONS "caar" FORM-LIST))))
                          '(DEFUN DEFSTRUCT DEFTYPE)
                          :TEST
                          #'EQ)))
@@ -212,6 +237,6 @@
 (SET-VALUE-FROM-FUNCTION 'TEST-FORM->VALUE-FORM 'SCHEME::TEST-FORM->VALUE-FORM)
 (DEFUN VALUE-FORM->TEST-FORM (CL-FORM)
   (IF (TRUEP (CAR-IS? CL-FORM 'TRUE?))
-      (CAR (THE CONS (CDR (THE CONS CL-FORM))))
+      (CAR (THE-WHO CONS "cadr" (CDR (THE-WHO CONS "cadr" CL-FORM))))
       (CONS 'TRUEP (LIST CL-FORM))))
 (SET-VALUE-FROM-FUNCTION 'VALUE-FORM->TEST-FORM 'SCHEME::VALUE-FORM->TEST-FORM)

@@ -814,7 +814,14 @@ car: ...\", \"Exception occurred with non-condition value 42\"."
 		    (cond ((null irritants))
 			  ((null (cdr irritants)) (format s " with irritant ~A" (written (car irritants))))
 			  (t (format s " with irritants ~A" (written irritants)))))))))
-	(format nil "Exception: ~A" (quasischeme-api-error-message e)))))
+	(let ((who (qs:condition-who e)))
+	  (cond ((and who (typep e 'type-error))
+		 ;; Chez's: "Exception in car: 5 is not a pair"
+		 (format nil "Exception in ~A: ~A is not ~A" who (written (type-error-datum e))
+			 (case (type-error-expected-type e)
+			   (cons "a pair") (simple-vector "a vector") (simple-string "a string")
+			   (t (format nil "of type ~(~A~)" (type-error-expected-type e))))))
+		(t (format nil "Exception: ~A" (quasischeme-api-error-message e))))))))
 
 (defun quasischeme-api-error-message (e)
   ;; quasischeme-api is loaded after this system

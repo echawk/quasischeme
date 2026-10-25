@@ -252,6 +252,13 @@ checks of the pattern string and of the number of arguments first."
     (or name (string-downcase (princ-to-string type)))))
 
 (defun lisp-error-exn (e)
+  ;; "car: ...": the procedure whose inline check failed (qs:condition-who)
+  (let ((exn (lisp-error-exn-1 e)) (who (qs:condition-who e)))
+    (when who
+      (setf (struct-field exn 0) (concatenate 'string who ": " (exn-message exn))))
+    exn))
+
+(defun lisp-error-exn-1 (e)
   (typecase e
     (racket-error (make-exn (or (racket-error-type e) "exn:fail:contract") (princ-to-string e)))
     ;; SBCL's: a function called with the wrong number of arguments
@@ -275,8 +282,8 @@ checks of the pattern string and of the number of arguments first."
     (type-error (make-exn "exn:fail:contract"
 			  (format nil "contract violation~%  expected: ~A~%  given: ~A"
 				  (racket-type-name (type-error-expected-type e))
-				  (with-output-to-string (s)
-				    (funcall (qsx:host-ref "write") (type-error-datum e) s)))))
+				  ;; as Racket prints it: 'a, "s"
+				  (error-value->string (type-error-datum e)))))
     (t (make-exn "exn:fail" (princ-to-string e)))))
 
 (defun note-lisp-error (e)

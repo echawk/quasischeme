@@ -420,6 +420,19 @@ Lisp's message TEXT about keyword arguments."
        (message "wrong-type-arg" qs:false "Wrong type to apply: ~S" (list (cell-error-name c))))
       ((and type-error (satisfies apply-type-error-p))
        (message "wrong-type-arg" qs:false "Wrong type to apply: ~S" (list (type-error-datum c))))
+      ;; the inline checks that name their procedure (qs:the-who), as libguile words them
+      ((and type-error (satisfies qs:condition-who))
+       (let* ((who (qs:condition-who c)) (v (type-error-datum c))
+	      (what (case (type-error-expected-type c)
+		      (cons "pair") (simple-vector "vector") (simple-string "string") (t "object"))))
+	 (values (ssym "wrong-type-arg")
+		 (if (member who '("car" "cdr" "vector-ref" "vector-set!" "vector-length"
+				   "string-ref" "string-length")
+			     :test #'string=)
+		     (list who (format nil "Wrong type argument in position 1 (expecting ~A): ~~S" what)
+			   (list v) (list v))
+		     ;; cadr and the other compositions
+		     (list who "Wrong type (expecting ~A): ~S" (list what v) (list v))))))
       (type-error
        (if (index-type-p (type-error-expected-type c))
 	   ;; a negative or huge index: Guile's arguments are the bounds and the index

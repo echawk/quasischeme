@@ -74,14 +74,14 @@
                                                (CALL-WILL-LOSE? ARG VARS K))
                                            A))
                              (LET ((TEMP (CONTAINS-LOSER?
-                                          (CAR (THE CONS A))
+                                          (CAR (THE-WHO CONS "car" A))
                                           VARS
                                           'SCHEME::LOSE)))
                                (IF (TRUEP TEMP)
                                    (RETURN TEMP)
                                    (PROGN
                                      (PSETQ .A.1
-                                            (CDR (THE CONS A))
+                                            (CDR (THE-WHO CONS "cdr" A))
                                             .I.2
                                             (SCHEME+ I 1))
                                      (GO LOOP)))))))

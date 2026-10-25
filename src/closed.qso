@@ -11,8 +11,8 @@
 (DEFUN .> (&REST SCHEME::X) (TRUE? (APPLY #'SCHEME> SCHEME::X)))
 (DEFUN .>= (&REST SCHEME::X) (TRUE? (APPLY #'SCHEME>= SCHEME::X)))
 (DEFUN BOOLEAN? (SCHEME::X) (TRUE? (BOOLEANP SCHEME::X)))
-(DEFUN .CAR (SCHEME::X) (CAR (THE CONS SCHEME::X)))
-(DEFUN .CDR (SCHEME::X) (CDR (THE CONS SCHEME::X)))
+(DEFUN .CAR (SCHEME::X) (CAR (THE-WHO CONS "car" SCHEME::X)))
+(DEFUN .CDR (SCHEME::X) (CDR (THE-WHO CONS "cdr" SCHEME::X)))
 (DEFUN CHAR-READY? (&REST SCHEME::X) (TRUE? (APPLY #'LISTEN SCHEME::X)))
 (DEFUN COMPLEX? (SCHEME::X) (TRUE? (NUMBERP SCHEME::X)))
 (DEFUN CURRENT-INPUT-PORT NIL *STANDARD-INPUT*)
@@ -42,9 +42,10 @@
   (SETF (CDR SCHEME::PAIR) SCHEME::OBJ)
   UNSPECIFIC)
 (DEFUN STRING->SYMBOL (SCHEME::STRING) (INTERN-SCHEME-SYMBOL SCHEME::STRING))
-(DEFUN STRING-LENGTH (SCHEME::S) (LENGTH (THE SIMPLE-STRING SCHEME::S)))
+(DEFUN STRING-LENGTH (SCHEME::S)
+  (LENGTH (THE-WHO SIMPLE-STRING "string-length" SCHEME::S)))
 (DEFUN STRING-REF (SCHEME::S SCHEME::K)
-  (CHAR (THE SIMPLE-STRING SCHEME::S) SCHEME::K))
+  (CHECKED-SCHAR "string-ref" SCHEME::S SCHEME::K))
 (DEFUN STRING-SET! (SCHEME::S SCHEME::K SCHEME::OBJ)
   (SETF (CHAR (THE SIMPLE-STRING SCHEME::S) SCHEME::K) SCHEME::OBJ)
   UNSPECIFIC)
@@ -52,9 +53,12 @@
 (DEFUN SYMBOL? (SCHEME::X) (TRUE? (SCHEME-SYMBOL-P SCHEME::X)))
 (DEFUN TRANSCRIPT-ON (SCHEME::FILESPEC) (DRIBBLE SCHEME::FILESPEC) UNSPECIFIC)
 (DEFUN TRANSCRIPT-OFF NIL (DRIBBLE) UNSPECIFIC)
-(DEFUN VECTOR-LENGTH (SCHEME::VEC) (LENGTH (THE SIMPLE-VECTOR SCHEME::VEC)))
+(DEFUN VECTOR-LENGTH (SCHEME::VEC)
+  (LENGTH (THE-WHO SIMPLE-VECTOR "vector-length" SCHEME::VEC)))
+(DEFUN VECTOR-REF (SCHEME::VEC SCHEME::K)
+  (CHECKED-SVREF "vector-ref" SCHEME::VEC SCHEME::K))
 (DEFUN VECTOR-SET! (SCHEME::VEC SCHEME::K SCHEME::OBJ)
-  (SETF (SVREF SCHEME::VEC SCHEME::K) SCHEME::OBJ)
+  (CHECKED-SVSET "vector-set!" SCHEME::VEC SCHEME::K SCHEME::OBJ)
   UNSPECIFIC)
 (DEFUN .ASSOC (SCHEME::OBJ SCHEME::LIST)
   (TRUE? (ASSOC SCHEME::OBJ SCHEME::LIST :TEST #'SCHEME-EQUAL-P)))
@@ -62,31 +66,113 @@
   (TRUE? (ASSOC SCHEME::OBJ SCHEME::LIST :TEST #'EQ)))
 (DEFUN ASSV (SCHEME::X SCHEME::Y) (TRUE? (ASSOC SCHEME::X SCHEME::Y)))
 (DEFUN .CAAAAR (SCHEME::X)
-  (CAR (THE CONS (CAR (THE CONS (CAR (THE CONS (CAR (THE CONS SCHEME::X)))))))))
+  (CAR (THE-WHO CONS
+                "caaaar"
+                (CAR (THE-WHO CONS
+                              "caaaar"
+                              (CAR (THE-WHO CONS
+                                            "caaaar"
+                                            (CAR (THE-WHO CONS
+                                                          "caaaar"
+                                                          SCHEME::X)))))))))
 (DEFUN .CAAADR (SCHEME::X)
-  (CAR (THE CONS (CAR (THE CONS (CAR (THE CONS (CDR (THE CONS SCHEME::X)))))))))
+  (CAR (THE-WHO CONS
+                "caaadr"
+                (CAR (THE-WHO CONS
+                              "caaadr"
+                              (CAR (THE-WHO CONS
+                                            "caaadr"
+                                            (CDR (THE-WHO CONS
+                                                          "caaadr"
+                                                          SCHEME::X)))))))))
 (DEFUN .CAADAR (SCHEME::X)
-  (CAR (THE CONS (CAR (THE CONS (CDR (THE CONS (CAR (THE CONS SCHEME::X)))))))))
+  (CAR (THE-WHO CONS
+                "caadar"
+                (CAR (THE-WHO CONS
+                              "caadar"
+                              (CDR (THE-WHO CONS
+                                            "caadar"
+                                            (CAR (THE-WHO CONS
+                                                          "caadar"
+                                                          SCHEME::X)))))))))
 (DEFUN .CAADDR (SCHEME::X)
-  (CAR (THE CONS (CAR (THE CONS (CDR (THE CONS (CDR (THE CONS SCHEME::X)))))))))
+  (CAR (THE-WHO CONS
+                "caaddr"
+                (CAR (THE-WHO CONS
+                              "caaddr"
+                              (CDR (THE-WHO CONS
+                                            "caaddr"
+                                            (CDR (THE-WHO CONS
+                                                          "caaddr"
+                                                          SCHEME::X)))))))))
 (DEFUN .CAAAR (SCHEME::X)
-  (CAR (THE CONS (CAR (THE CONS (CAR (THE CONS SCHEME::X)))))))
+  (CAR (THE-WHO CONS
+                "caaar"
+                (CAR (THE-WHO CONS
+                              "caaar"
+                              (CAR (THE-WHO CONS "caaar" SCHEME::X)))))))
 (DEFUN .CAADR (SCHEME::X)
-  (CAR (THE CONS (CAR (THE CONS (CDR (THE CONS SCHEME::X)))))))
-(DEFUN .CAAR (SCHEME::X) (CAR (THE CONS (CAR (THE CONS SCHEME::X)))))
+  (CAR (THE-WHO CONS
+                "caadr"
+                (CAR (THE-WHO CONS
+                              "caadr"
+                              (CDR (THE-WHO CONS "caadr" SCHEME::X)))))))
+(DEFUN .CAAR (SCHEME::X)
+  (CAR (THE-WHO CONS "caar" (CAR (THE-WHO CONS "caar" SCHEME::X)))))
 (DEFUN .CADAAR (SCHEME::X)
-  (CAR (THE CONS (CDR (THE CONS (CAR (THE CONS (CAR (THE CONS SCHEME::X)))))))))
+  (CAR (THE-WHO CONS
+                "cadaar"
+                (CDR (THE-WHO CONS
+                              "cadaar"
+                              (CAR (THE-WHO CONS
+                                            "cadaar"
+                                            (CAR (THE-WHO CONS
+                                                          "cadaar"
+                                                          SCHEME::X)))))))))
 (DEFUN .CADADR (SCHEME::X)
-  (CAR (THE CONS (CDR (THE CONS (CAR (THE CONS (CDR (THE CONS SCHEME::X)))))))))
+  (CAR (THE-WHO CONS
+                "cadadr"
+                (CDR (THE-WHO CONS
+                              "cadadr"
+                              (CAR (THE-WHO CONS
+                                            "cadadr"
+                                            (CDR (THE-WHO CONS
+                                                          "cadadr"
+                                                          SCHEME::X)))))))))
 (DEFUN .CADDAR (SCHEME::X)
-  (CAR (THE CONS (CDR (THE CONS (CDR (THE CONS (CAR (THE CONS SCHEME::X)))))))))
+  (CAR (THE-WHO CONS
+                "caddar"
+                (CDR (THE-WHO CONS
+                              "caddar"
+                              (CDR (THE-WHO CONS
+                                            "caddar"
+                                            (CAR (THE-WHO CONS
+                                                          "caddar"
+                                                          SCHEME::X)))))))))
 (DEFUN .CADDDR (SCHEME::X)
-  (CAR (THE CONS (CDR (THE CONS (CDR (THE CONS (CDR (THE CONS SCHEME::X)))))))))
+  (CAR (THE-WHO CONS
+                "cadddr"
+                (CDR (THE-WHO CONS
+                              "cadddr"
+                              (CDR (THE-WHO CONS
+                                            "cadddr"
+                                            (CDR (THE-WHO CONS
+                                                          "cadddr"
+                                                          SCHEME::X)))))))))
 (DEFUN .CADAR (SCHEME::X)
-  (CAR (THE CONS (CDR (THE CONS (CAR (THE CONS SCHEME::X)))))))
+  (CAR (THE-WHO CONS
+                "cadar"
+                (CDR (THE-WHO CONS
+                              "cadar"
+                              (CAR (THE-WHO CONS "cadar" SCHEME::X)))))))
 (DEFUN .CADDR (SCHEME::X)
-  (CAR (THE CONS (CDR (THE CONS (CDR (THE CONS SCHEME::X)))))))
-(DEFUN .CADR (SCHEME::X) (CAR (THE CONS (CDR (THE CONS SCHEME::X)))))
+  (CAR (THE-WHO CONS
+                "caddr"
+                (CDR (THE-WHO CONS
+                              "caddr"
+                              (CDR (THE-WHO CONS "caddr" SCHEME::X)))))))
+(DEFUN .CADR (SCHEME::X)
+  (CAR (THE-WHO CONS "cadr" (CDR (THE-WHO CONS "cadr" SCHEME::X)))))
 (DEFUN CALL-WITH-INPUT-FILE (SCHEME::STRING SCHEME::PROC)
   (WITH-OPEN-FILE (SCHEME::PORT (MERGE-PATHNAMES SCHEME::STRING)
                                 :DIRECTION
@@ -100,31 +186,113 @@
                                 :SUPERSEDE)
     (FUNCALL SCHEME::PROC SCHEME::PORT)))
 (DEFUN .CDAAAR (SCHEME::X)
-  (CDR (THE CONS (CAR (THE CONS (CAR (THE CONS (CAR (THE CONS SCHEME::X)))))))))
+  (CDR (THE-WHO CONS
+                "cdaaar"
+                (CAR (THE-WHO CONS
+                              "cdaaar"
+                              (CAR (THE-WHO CONS
+                                            "cdaaar"
+                                            (CAR (THE-WHO CONS
+                                                          "cdaaar"
+                                                          SCHEME::X)))))))))
 (DEFUN .CDAADR (SCHEME::X)
-  (CDR (THE CONS (CAR (THE CONS (CAR (THE CONS (CDR (THE CONS SCHEME::X)))))))))
+  (CDR (THE-WHO CONS
+                "cdaadr"
+                (CAR (THE-WHO CONS
+                              "cdaadr"
+                              (CAR (THE-WHO CONS
+                                            "cdaadr"
+                                            (CDR (THE-WHO CONS
+                                                          "cdaadr"
+                                                          SCHEME::X)))))))))
 (DEFUN .CDADAR (SCHEME::X)
-  (CDR (THE CONS (CAR (THE CONS (CDR (THE CONS (CAR (THE CONS SCHEME::X)))))))))
+  (CDR (THE-WHO CONS
+                "cdadar"
+                (CAR (THE-WHO CONS
+                              "cdadar"
+                              (CDR (THE-WHO CONS
+                                            "cdadar"
+                                            (CAR (THE-WHO CONS
+                                                          "cdadar"
+                                                          SCHEME::X)))))))))
 (DEFUN .CDADDR (SCHEME::X)
-  (CDR (THE CONS (CAR (THE CONS (CDR (THE CONS (CDR (THE CONS SCHEME::X)))))))))
+  (CDR (THE-WHO CONS
+                "cdaddr"
+                (CAR (THE-WHO CONS
+                              "cdaddr"
+                              (CDR (THE-WHO CONS
+                                            "cdaddr"
+                                            (CDR (THE-WHO CONS
+                                                          "cdaddr"
+                                                          SCHEME::X)))))))))
 (DEFUN .CDAAR (SCHEME::X)
-  (CDR (THE CONS (CAR (THE CONS (CAR (THE CONS SCHEME::X)))))))
+  (CDR (THE-WHO CONS
+                "cdaar"
+                (CAR (THE-WHO CONS
+                              "cdaar"
+                              (CAR (THE-WHO CONS "cdaar" SCHEME::X)))))))
 (DEFUN .CDADR (SCHEME::X)
-  (CDR (THE CONS (CAR (THE CONS (CDR (THE CONS SCHEME::X)))))))
-(DEFUN .CDAR (SCHEME::X) (CDR (THE CONS (CAR (THE CONS SCHEME::X)))))
+  (CDR (THE-WHO CONS
+                "cdadr"
+                (CAR (THE-WHO CONS
+                              "cdadr"
+                              (CDR (THE-WHO CONS "cdadr" SCHEME::X)))))))
+(DEFUN .CDAR (SCHEME::X)
+  (CDR (THE-WHO CONS "cdar" (CAR (THE-WHO CONS "cdar" SCHEME::X)))))
 (DEFUN .CDDAAR (SCHEME::X)
-  (CDR (THE CONS (CDR (THE CONS (CAR (THE CONS (CAR (THE CONS SCHEME::X)))))))))
+  (CDR (THE-WHO CONS
+                "cddaar"
+                (CDR (THE-WHO CONS
+                              "cddaar"
+                              (CAR (THE-WHO CONS
+                                            "cddaar"
+                                            (CAR (THE-WHO CONS
+                                                          "cddaar"
+                                                          SCHEME::X)))))))))
 (DEFUN .CDDADR (SCHEME::X)
-  (CDR (THE CONS (CDR (THE CONS (CAR (THE CONS (CDR (THE CONS SCHEME::X)))))))))
+  (CDR (THE-WHO CONS
+                "cddadr"
+                (CDR (THE-WHO CONS
+                              "cddadr"
+                              (CAR (THE-WHO CONS
+                                            "cddadr"
+                                            (CDR (THE-WHO CONS
+                                                          "cddadr"
+                                                          SCHEME::X)))))))))
 (DEFUN .CDDDAR (SCHEME::X)
-  (CDR (THE CONS (CDR (THE CONS (CDR (THE CONS (CAR (THE CONS SCHEME::X)))))))))
+  (CDR (THE-WHO CONS
+                "cdddar"
+                (CDR (THE-WHO CONS
+                              "cdddar"
+                              (CDR (THE-WHO CONS
+                                            "cdddar"
+                                            (CAR (THE-WHO CONS
+                                                          "cdddar"
+                                                          SCHEME::X)))))))))
 (DEFUN .CDDDDR (SCHEME::X)
-  (CDR (THE CONS (CDR (THE CONS (CDR (THE CONS (CDR (THE CONS SCHEME::X)))))))))
+  (CDR (THE-WHO CONS
+                "cddddr"
+                (CDR (THE-WHO CONS
+                              "cddddr"
+                              (CDR (THE-WHO CONS
+                                            "cddddr"
+                                            (CDR (THE-WHO CONS
+                                                          "cddddr"
+                                                          SCHEME::X)))))))))
 (DEFUN .CDDAR (SCHEME::X)
-  (CDR (THE CONS (CDR (THE CONS (CAR (THE CONS SCHEME::X)))))))
+  (CDR (THE-WHO CONS
+                "cddar"
+                (CDR (THE-WHO CONS
+                              "cddar"
+                              (CAR (THE-WHO CONS "cddar" SCHEME::X)))))))
 (DEFUN .CDDDR (SCHEME::X)
-  (CDR (THE CONS (CDR (THE CONS (CDR (THE CONS SCHEME::X)))))))
-(DEFUN .CDDR (SCHEME::X) (CDR (THE CONS (CDR (THE CONS SCHEME::X)))))
+  (CDR (THE-WHO CONS
+                "cdddr"
+                (CDR (THE-WHO CONS
+                              "cdddr"
+                              (CDR (THE-WHO CONS "cdddr" SCHEME::X)))))))
+(DEFUN .CDDR (SCHEME::X)
+  (CDR (THE-WHO CONS "cddr" (CDR (THE-WHO CONS "cddr" SCHEME::X)))))
 (DEFUN CHAR-ALPHABETIC? (SCHEME::X) (TRUE? (ALPHA-CHAR-P SCHEME::X)))
 (DEFUN CHAR-CI<=? (&REST SCHEME::X)
   (TRUE? (APPLY #'CHAR-NOT-GREATERP SCHEME::X)))
@@ -242,6 +410,7 @@
            TRANSCRIPT-ON
            TRANSCRIPT-OFF
            VECTOR-LENGTH
+           VECTOR-REF
            VECTOR-SET!
            .ASSOC
            ASSQ
@@ -352,7 +521,6 @@
         (QUOTIENT SCHEME-QUOTIENT)
         (REAL-PART REALPART)
         (REMAINDER SCHEME-REMAINDER)
-        (VECTOR-REF SVREF)
         (.WRITE-CHAR SCHEME-WRITE-CHAR)
         (.APPEND APPEND)
         (.ABS ABS)

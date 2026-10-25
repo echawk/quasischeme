@@ -17,12 +17,12 @@
 (SET-FUNCTION-FROM-VALUE 'SYNTAX-CHECKERS 'SCHEME::SYNTAX-CHECKERS)
 (DEFUN DEFINE-SYNTAX-CHECKER (CLASS PROC)
   (DECLARE (SPECIAL SYNTAX-CHECKERS))
-  (SETF (SVREF SYNTAX-CHECKERS CLASS) PROC)
+  (CHECKED-SVSET "vector-set!" SYNTAX-CHECKERS CLASS PROC)
   UNSPECIFIC)
 (SET-VALUE-FROM-FUNCTION 'DEFINE-SYNTAX-CHECKER 'SCHEME::DEFINE-SYNTAX-CHECKER)
 (DEFUN CHECK-SPECIAL-FORM-SYNTAX (CLASS FORM)
   (DECLARE (SPECIAL SYNTAX-CHECKERS))
-  (FUNCALL (SVREF SYNTAX-CHECKERS CLASS) FORM))
+  (FUNCALL (CHECKED-SVREF "vector-ref" SYNTAX-CHECKERS CLASS) FORM))
 (SET-VALUE-FROM-FUNCTION
  'CHECK-SPECIAL-FORM-SYNTAX
  'SCHEME::CHECK-SPECIAL-FORM-SYNTAX)
@@ -45,7 +45,7 @@
          (IF (SCHEME= (CAREFUL-LENGTH .EXP) 3)
              (CAREFUL-EVERY
               CHECK-SYNTAX-SPEC
-              (CAR (THE CONS (CDR (THE CONS .EXP)))))
+              (CAR (THE-WHO CONS "cadr" (CDR (THE-WHO CONS "cadr" .EXP)))))
              FALSE)))))
 (LOCALLY
   (DECLARE (SPECIAL LETREC-SYNTAX-FORM-DSPECS LET-SYNTAX-FORM-DSPECS))
@@ -68,7 +68,7 @@
          (IF (SCHEME= (CAREFUL-LENGTH .EXP) 3)
              (CAREFUL-EVERY
               CHECK-SYNTAX-SPEC
-              (CAR (THE CONS (CDR (THE CONS .EXP)))))
+              (CAR (THE-WHO CONS "cadr" (CDR (THE-WHO CONS "cadr" .EXP)))))
              FALSE)))))
 (LOCALLY (DECLARE (SPECIAL SYNTAX-SPEC-NAME .CAR)) (SETQ SYNTAX-SPEC-NAME .CAR))
 (SET-FUNCTION-FROM-VALUE 'SYNTAX-SPEC-NAME 'SCHEME::SYNTAX-SPEC-NAME)
@@ -101,7 +101,7 @@
     (DECLARE (SPECIAL CLASS/DEFINE-SYNTAX))
     (DEFINE-SYNTAX-CHECKER
      CLASS/DEFINE-SYNTAX
-     #'(LAMBDA (FORM) (CHECK-SYNTAX-SPEC (CDR (THE CONS FORM)))))))
+     #'(LAMBDA (FORM) (CHECK-SYNTAX-SPEC (CDR (THE-WHO CONS "cdr" FORM)))))))
 (LOCALLY
   (DECLARE (SPECIAL BEGIN-FORM-STATEMENTS .CDR))
   (SETQ BEGIN-FORM-STATEMENTS .CDR))
@@ -146,8 +146,8 @@
       (LET ((TEMP (NAME? FORMALS)))
         (IF (TRUEP TEMP)
             TEMP
-            (IF (TRUEP (NAME? (CAR (THE CONS FORMALS))))
-                (CHECK-FORMALS (CDR (THE CONS FORMALS)))
+            (IF (TRUEP (NAME? (CAR (THE-WHO CONS "car" FORMALS))))
+                (CHECK-FORMALS (CDR (THE-WHO CONS "cdr" FORMALS)))
                 FALSE)))))
 (SET-VALUE-FROM-FUNCTION 'CHECK-FORMALS 'SCHEME::CHECK-FORMALS)
 (LOCALLY
@@ -187,7 +187,11 @@
   (SETQ IF-FORM-CONSEQUENT .CADDR))
 (SET-FUNCTION-FROM-VALUE 'IF-FORM-CONSEQUENT 'SCHEME::IF-FORM-CONSEQUENT)
 (DEFUN IF-FORM-ALTERNATE? (.EXP)
-  (TRUE? (NOT (NULL (CDR (THE CONS (CDR (THE CONS (CDR (THE CONS .EXP))))))))))
+  (TRUE? (NOT (NULL (CDR (THE-WHO CONS
+                                  "cdddr"
+                                  (CDR (THE-WHO CONS
+                                                "cdddr"
+                                                (CDR (THE-WHO CONS "cdddr" .EXP))))))))))
 (SET-VALUE-FROM-FUNCTION 'IF-FORM-ALTERNATE? 'SCHEME::IF-FORM-ALTERNATE?)
 (LOCALLY
   (DECLARE (SPECIAL IF-FORM-ALTERNATE .CADDDR))
@@ -212,7 +216,7 @@
      CLASS/SET!
      #'(LAMBDA (.EXP)
          (IF (SCHEME= (CAREFUL-LENGTH .EXP) 3)
-             (NAME? (CAR (THE CONS (CDR (THE CONS .EXP)))))
+             (NAME? (CAR (THE-WHO CONS "cadr" (CDR (THE-WHO CONS "cadr" .EXP)))))
              FALSE)))))
 (AT-TOP-LEVEL
   (LOCALLY
@@ -220,41 +224,50 @@
     (DEFINE-SYNTAX-CHECKER
      CLASS/DEFINE
      #'(LAMBDA (FORM)
-         (IF (CONSP (CDR (THE CONS FORM)))
-             (LET ((PAT (CAR (THE CONS (CDR (THE CONS FORM)))))
+         (IF (CONSP (CDR (THE-WHO CONS "cdr" FORM)))
+             (LET ((PAT (CAR (THE-WHO CONS
+                                      "cadr"
+                                      (CDR (THE-WHO CONS "cadr" FORM)))))
                    (LEN (CAREFUL-LENGTH FORM)))
                (IF (TRUEP (NAME? PAT))
                    (OR (SCHEME= LEN 2) (TRUE? (SCHEME= LEN 3)))
                    (IF (CONSP PAT)
-                       (IF (TRUEP (CHECK-FORMALS (CDR (THE CONS PAT))))
+                       (IF (TRUEP (CHECK-FORMALS (CDR (THE-WHO CONS "cdr" PAT))))
                            (TRUE? (SCHEME>= LEN 3))
                            FALSE)
                        FALSE)))
              FALSE)))))
 (DEFUN DEFINE-FORM-LHS (FORM)
-  (LET ((PAT (CAR (THE CONS (CDR (THE CONS FORM))))))
-    (IF (CONSP PAT) (CAR (THE CONS PAT)) PAT)))
+  (LET ((PAT (CAR (THE-WHO CONS "cadr" (CDR (THE-WHO CONS "cadr" FORM))))))
+    (IF (CONSP PAT) (CAR (THE-WHO CONS "car" PAT)) PAT)))
 (SET-VALUE-FROM-FUNCTION 'DEFINE-FORM-LHS 'SCHEME::DEFINE-FORM-LHS)
 (DEFUN DEFINE-FORM-RHS (FORM)
-  (LET ((PAT (CAR (THE CONS (CDR (THE CONS FORM))))))
+  (LET ((PAT (CAR (THE-WHO CONS "cadr" (CDR (THE-WHO CONS "cadr" FORM))))))
     (IF (CONSP PAT)
         (CONS 'SCHEME::LAMBDA
-              (CONS (CDR (THE CONS PAT)) (CDR (THE CONS (CDR (THE CONS FORM))))))
-        (IF (NULL (CDR (THE CONS (CDR (THE CONS FORM)))))
+              (CONS (CDR (THE-WHO CONS "cdr" PAT))
+                    (CDR (THE-WHO CONS "cddr" (CDR (THE-WHO CONS "cddr" FORM))))))
+        (IF (NULL (CDR (THE-WHO CONS "cddr" (CDR (THE-WHO CONS "cddr" FORM)))))
             'UNSPECIFIC
-            (CAR (THE CONS (CDR (THE CONS (CDR (THE CONS FORM))))))))))
+            (CAR (THE-WHO CONS
+                          "caddr"
+                          (CDR (THE-WHO CONS
+                                        "caddr"
+                                        (CDR (THE-WHO CONS "caddr" FORM))))))))))
 (SET-VALUE-FROM-FUNCTION 'DEFINE-FORM-RHS 'SCHEME::DEFINE-FORM-RHS)
 (DEFUN CAREFUL-LENGTH (L)
   (IF (NULL L)
       0
-      (IF (CONSP L) (SCHEME+ 1 (CAREFUL-LENGTH (CDR (THE CONS L)))) -1)))
+      (IF (CONSP L)
+          (SCHEME+ 1 (CAREFUL-LENGTH (CDR (THE-WHO CONS "cdr" L))))
+          -1)))
 (SET-VALUE-FROM-FUNCTION 'CAREFUL-LENGTH 'SCHEME::CAREFUL-LENGTH)
 (DEFUN CAREFUL-EVERY (PRED L)
   (IF (NULL L)
       TRUE
       (IF (CONSP L)
-          (IF (TRUEP (FUNCALL PRED (CAR (THE CONS L))))
-              (CAREFUL-EVERY PRED (CDR (THE CONS L)))
+          (IF (TRUEP (FUNCALL PRED (CAR (THE-WHO CONS "car" L))))
+              (CAREFUL-EVERY PRED (CDR (THE-WHO CONS "cdr" L)))
               FALSE)
           FALSE)))
 (SET-VALUE-FROM-FUNCTION 'CAREFUL-EVERY 'SCHEME::CAREFUL-EVERY)

@@ -8,8 +8,8 @@
 (BEGIN-TRANSLATED-FILE)
 (DEFUN REWRITE-SYNTAX-RULES (.EXP R C)
   (PROCESS-RULES
-   (CDR (THE CONS (CDR (THE CONS .EXP))))
-   (CAR (THE CONS (CDR (THE CONS .EXP))))
+   (CDR (THE-WHO CONS "cddr" (CDR (THE-WHO CONS "cddr" .EXP))))
+   (CAR (THE-WHO CONS "cadr" (CDR (THE-WHO CONS "cadr" .EXP))))
    R
    C))
 (SET-VALUE-FROM-FUNCTION 'REWRITE-SYNTAX-RULES 'SCHEME::REWRITE-SYNTAX-RULES)
@@ -49,27 +49,31 @@
                   (IF (AND (NOT (MEMBER TEMPLATE FREE :TEST #'EQ))
                            (LET ((PROBE (TRUE? (ASSOC TEMPLATE ENV :TEST #'EQ))))
                              (AND (TRUEP PROBE)
-                                  (SCHEME>= (CDR (THE CONS PROBE)) RANK))))
+                                  (SCHEME>= (CDR (THE-WHO CONS "cdr" PROBE))
+                                            RANK))))
                       (CONS TEMPLATE FREE)
                       FREE)
                   (IF (TRUEP (SEGMENT-TEMPLATE? TEMPLATE))
                       (FUNCALL FREE-META-VARIABLES
-                               (CAR (THE CONS TEMPLATE))
+                               (CAR (THE-WHO CONS "car" TEMPLATE))
                                RANK
                                ENV
                                (FUNCALL FREE-META-VARIABLES
-                                        (CDR (THE CONS
-                                                  (CDR (THE CONS TEMPLATE))))
+                                        (CDR (THE-WHO CONS
+                                                      "cddr"
+                                                      (CDR (THE-WHO CONS
+                                                                    "cddr"
+                                                                    TEMPLATE))))
                                         RANK
                                         ENV
                                         FREE))
                       (IF (CONSP TEMPLATE)
                           (FUNCALL FREE-META-VARIABLES
-                                   (CAR (THE CONS TEMPLATE))
+                                   (CAR (THE-WHO CONS "car" TEMPLATE))
                                    RANK
                                    ENV
                                    (FUNCALL FREE-META-VARIABLES
-                                            (CDR (THE CONS TEMPLATE))
+                                            (CDR (THE-WHO CONS "cdr" TEMPLATE))
                                             RANK
                                             ENV
                                             FREE))
@@ -82,15 +86,15 @@
                       (CONS (CONS PATTERN RANK) VARS))
                   (IF (TRUEP (SEGMENT-PATTERN? PATTERN))
                       (FUNCALL META-VARIABLES
-                               (CAR (THE CONS PATTERN))
+                               (CAR (THE-WHO CONS "car" PATTERN))
                                (SCHEME+ RANK 1)
                                VARS)
                       (IF (CONSP PATTERN)
                           (FUNCALL META-VARIABLES
-                                   (CAR (THE CONS PATTERN))
+                                   (CAR (THE-WHO CONS "car" PATTERN))
                                    RANK
                                    (FUNCALL META-VARIABLES
-                                            (CDR (THE CONS PATTERN))
+                                            (CDR (THE-WHO CONS "cdr" PATTERN))
                                             RANK
                                             VARS))
                           VARS)))))
@@ -99,7 +103,7 @@
               (IF (TRUEP (NAME? TEMPLATE))
                   (LET ((PROBE (TRUE? (ASSOC TEMPLATE ENV :TEST #'EQ))))
                     (IF (TRUEP PROBE)
-                        (IF (SCHEME<= (CDR (THE CONS PROBE)) RANK)
+                        (IF (SCHEME<= (CDR (THE-WHO CONS "cdr" PROBE)) RANK)
                             TEMPLATE
                             (SYNTAX-ERROR "template rank error (too few ...'s?)"
                                           TEMPLATE))
@@ -107,14 +111,14 @@
                               (LIST (CONS 'SCHEME::QUOTE (LIST TEMPLATE))))))
                   (IF (TRUEP (SEGMENT-TEMPLATE? TEMPLATE))
                       (LET ((VARS (FUNCALL FREE-META-VARIABLES
-                                           (CAR (THE CONS TEMPLATE))
+                                           (CAR (THE-WHO CONS "car" TEMPLATE))
                                            (SCHEME+ RANK 1)
                                            ENV
                                            'NIL)))
                         (IF (NULL VARS)
                             (SYNTAX-ERROR "too many ...'s" TEMPLATE)
                             (LET ((X (FUNCALL PROCESS-TEMPLATE
-                                              (CAR (THE CONS TEMPLATE))
+                                              (CAR (THE-WHO CONS "car" TEMPLATE))
                                               (SCHEME+ RANK 1)
                                               ENV)))
                               (LET ((GEN (IF (SCHEME-EQUAL-P (LIST X) VARS)
@@ -125,25 +129,34 @@
                                                                      (LIST X)))
                                                          VARS)))))
                                 (LET NIL
-                                  (IF (NULL (CDR (THE CONS
-                                                      (CDR (THE CONS TEMPLATE)))))
+                                  (IF (NULL (CDR (THE-WHO CONS
+                                                          "cddr"
+                                                          (CDR (THE-WHO CONS
+                                                                        "cddr"
+                                                                        TEMPLATE)))))
                                       GEN
                                       (CONS %APPEND
                                             (CONS GEN
                                                   (LIST (FUNCALL PROCESS-TEMPLATE
-                                                                 (CDR (THE CONS
-                                                                           (CDR (THE CONS
-                                                                                     TEMPLATE))))
+                                                                 (CDR (THE-WHO CONS
+                                                                               "cddr"
+                                                                               (CDR (THE-WHO CONS
+                                                                                             "cddr"
+                                                                                             TEMPLATE))))
                                                                  RANK
                                                                  ENV))))))))))
                       (IF (CONSP TEMPLATE)
                           (CONS %CONS
                                 (CONS (FUNCALL PROCESS-TEMPLATE
-                                               (CAR (THE CONS TEMPLATE))
+                                               (CAR (THE-WHO CONS
+                                                             "car"
+                                                             TEMPLATE))
                                                RANK
                                                ENV)
                                       (LIST (FUNCALL PROCESS-TEMPLATE
-                                                     (CDR (THE CONS TEMPLATE))
+                                                     (CDR (THE-WHO CONS
+                                                                   "cdr"
+                                                                   TEMPLATE))
                                                      RANK
                                                      ENV))))
                           (CONS %QUOTE (LIST TEMPLATE)))))))
@@ -155,7 +168,7 @@
                       (LIST (LIST PATTERN (FUNCALL MAPIT PATH))))
                   (IF (TRUEP (SEGMENT-PATTERN? PATTERN))
                       (FUNCALL PROCESS-PATTERN
-                               (CAR (THE CONS PATTERN))
+                               (CAR (THE-WHO CONS "car" PATTERN))
                                %TEMP
                                #'(LAMBDA (X)
                                    (FUNCALL MAPIT
@@ -168,11 +181,11 @@
                                                             (LIST PATH)))))))
                       (IF (CONSP PATTERN)
                           (APPEND (FUNCALL PROCESS-PATTERN
-                                           (CAR (THE CONS PATTERN))
+                                           (CAR (THE-WHO CONS "car" PATTERN))
                                            (CONS %CAR (LIST PATH))
                                            MAPIT)
                                   (FUNCALL PROCESS-PATTERN
-                                           (CDR (THE CONS PATTERN))
+                                           (CDR (THE-WHO CONS "cdr" PATTERN))
                                            (CONS %CDR (LIST PATH))
                                            MAPIT))
                           'NIL)))))
@@ -207,7 +220,7 @@
                   (IF (TRUEP (SEGMENT-PATTERN? PATTERN))
                       (FUNCALL PROCESS-SEGMENT-MATCH
                                INPUT
-                               (CAR (THE CONS PATTERN)))
+                               (CAR (THE-WHO CONS "car" PATTERN)))
                       (IF (CONSP PATTERN)
                           (LIST (CONS %LET
                                       (CONS (LIST (CONS %TEMP (LIST INPUT)))
@@ -217,13 +230,15 @@
                                                               (APPEND (FUNCALL PROCESS-MATCH
                                                                                (CONS %CAR
                                                                                      (LIST %TEMP))
-                                                                               (CAR (THE CONS
-                                                                                         PATTERN)))
+                                                                               (CAR (THE-WHO CONS
+                                                                                             "car"
+                                                                                             PATTERN)))
                                                                       (FUNCALL PROCESS-MATCH
                                                                                (CONS %CDR
                                                                                      (LIST %TEMP))
-                                                                               (CDR (THE CONS
-                                                                                         PATTERN))))))))))
+                                                                               (CDR (THE-WHO CONS
+                                                                                             "cdr"
+                                                                                             PATTERN))))))))))
                           (IF (OR (NULL PATTERN)
                                   (BOOLEANP PATTERN)
                                   (CHARACTERP PATTERN))
@@ -238,10 +253,16 @@
     (SETQ PROCESS-RULE
           #'(LAMBDA (RULE)
               (IF (AND (CONSP RULE)
-                       (CONSP (CDR (THE CONS RULE)))
-                       (NULL (CDR (THE CONS (CDR (THE CONS RULE))))))
-                  (LET ((PATTERN (CDR (THE CONS (CAR (THE CONS RULE)))))
-                        (TEMPLATE (CAR (THE CONS (CDR (THE CONS RULE))))))
+                       (CONSP (CDR (THE-WHO CONS "cdr" RULE)))
+                       (NULL (CDR (THE-WHO CONS
+                                           "cddr"
+                                           (CDR (THE-WHO CONS "cddr" RULE))))))
+                  (LET ((PATTERN (CDR (THE-WHO CONS
+                                               "cdar"
+                                               (CAR (THE-WHO CONS "cdar" RULE)))))
+                        (TEMPLATE (CAR (THE-WHO CONS
+                                                "cadr"
+                                                (CDR (THE-WHO CONS "cadr" RULE))))))
                     (CONS (CONS %AND (FUNCALL PROCESS-MATCH %TAIL PATTERN))
                           (LIST (CONS %LET*
                                       (CONS (FUNCALL PROCESS-PATTERN
@@ -297,15 +318,17 @@
 (SET-VALUE-FROM-FUNCTION 'PROCESS-RULES 'SCHEME::PROCESS-RULES)
 (DEFUN SEGMENT-PATTERN? (PATTERN)
   (IF (TRUEP (SEGMENT-TEMPLATE? PATTERN))
-      (OR (NULL (CDR (THE CONS (CDR (THE CONS PATTERN)))))
+      (OR (NULL (CDR (THE-WHO CONS "cddr" (CDR (THE-WHO CONS "cddr" PATTERN)))))
           (SYNTAX-ERROR "segment matching not implemented" PATTERN))
       FALSE))
 (SET-VALUE-FROM-FUNCTION 'SEGMENT-PATTERN? 'SCHEME::SEGMENT-PATTERN?)
 (DEFUN SEGMENT-TEMPLATE? (PATTERN)
   (DECLARE (SPECIAL INDICATORS-FOR-ZERO-OR-MORE))
   (IF (CONSP PATTERN)
-      (IF (CONSP (CDR (THE CONS PATTERN)))
-          (TRUE? (MEMBER (CAR (THE CONS (CDR (THE CONS PATTERN))))
+      (IF (CONSP (CDR (THE-WHO CONS "cdr" PATTERN)))
+          (TRUE? (MEMBER (CAR (THE-WHO CONS
+                                       "cadr"
+                                       (CDR (THE-WHO CONS "cadr" PATTERN))))
                          INDICATORS-FOR-ZERO-OR-MORE
                          :TEST
                          #'EQ))

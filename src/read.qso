@@ -25,16 +25,17 @@
       (IF (SCHEME< I 0)
           (RETURN S)
           (PROGN
-            (SETF (CHAR (THE SIMPLE-STRING S) I) (CAR (THE CONS .L.0)))
+            (SETF (CHAR (THE SIMPLE-STRING S) I)
+                  (CAR (THE-WHO CONS "car" .L.0)))
             UNSPECIFIC
-            (PSETQ I (SCHEME- I 1) .L.0 (CDR (THE CONS .L.0)))
+            (PSETQ I (SCHEME- I 1) .L.0 (CDR (THE-WHO CONS "cdr" .L.0)))
             (GO LOOP))))))
 (SET-VALUE-FROM-FUNCTION 'REVERSE-LIST->STRING 'SCHEME::REVERSE-LIST->STRING)
 (DEFUN INPUT-PORT-OPTION (PORT-OPTION)
   (IF (NULL PORT-OPTION)
       *STANDARD-INPUT*
-      (IF (NULL (CDR (THE CONS PORT-OPTION)))
-          (CAR (THE CONS PORT-OPTION))
+      (IF (NULL (CDR (THE-WHO CONS "cdr" PORT-OPTION)))
+          (CAR (THE-WHO CONS "car" PORT-OPTION))
           (.ERROR "read-mumble: too many arguments" PORT-OPTION))))
 (SET-VALUE-FROM-FUNCTION 'INPUT-PORT-OPTION 'SCHEME::INPUT-PORT-OPTION)
 (LOCALLY (DECLARE (SPECIAL .ERROR)) (SETQ .ERROR #'SCHEME-ERROR))
@@ -49,7 +50,7 @@
      #'(LAMBDA NIL
          (LET ((FORM (SUB-READ PORT)))
            (IF (TRUEP (READER-TOKEN? FORM))
-               (READING-ERROR PORT (CDR (THE CONS FORM)))
+               (READING-ERROR PORT (CDR (THE-WHO CONS "cdr" FORM)))
                (DATUM-OF FORM)))))))
 (SET-VALUE-FROM-FUNCTION 'SCHEME-READ 'SCHEME::SCHEME-READ)
 (DEFUN SUB-READ-PLAIN (PORT)
@@ -60,7 +61,7 @@
     (IF (EQ FORM EOF-OBJECT)
         (READING-ERROR PORT "unexpected end of file")
         (IF (TRUEP (READER-TOKEN? FORM))
-            (READING-ERROR PORT (CDR (THE CONS FORM)))
+            (READING-ERROR PORT (CDR (THE-WHO CONS "cdr" FORM)))
             (DATUM-OF FORM)))))
 (SET-VALUE-FROM-FUNCTION 'SUB-READ-CAREFULLY 'SCHEME::SUB-READ-CAREFULLY)
 (LOCALLY
@@ -81,7 +82,9 @@
 (SET-VALUE-FROM-FUNCTION 'MAKE-READER-TOKEN 'SCHEME::MAKE-READER-TOKEN)
 (DEFUN READER-TOKEN? (FORM)
   (DECLARE (SPECIAL READER-TOKEN-MARKER))
-  (IF (CONSP FORM) (TRUE? (EQ (CAR (THE CONS FORM)) READER-TOKEN-MARKER)) FALSE))
+  (IF (CONSP FORM)
+      (TRUE? (EQ (CAR (THE-WHO CONS "car" FORM)) READER-TOKEN-MARKER))
+      FALSE))
 (SET-VALUE-FROM-FUNCTION 'READER-TOKEN? 'SCHEME::READER-TOKEN?)
 (LOCALLY
   (DECLARE (SPECIAL CLOSE-PAREN))
@@ -138,12 +141,17 @@
             (IF (CHAR-WHITESPACE-P C)
                 (SUB-READ PORT)
                 (PARSE-TOKEN (SUB-READ-SYMBOL-TOKEN C PORT) PORT))
-            (FUNCALL (SVREF READ-DISPATCH-VECTOR (CHAR->ASCII C)) C PORT)))))
+            (FUNCALL (CHECKED-SVREF
+                      "vector-ref"
+                      READ-DISPATCH-VECTOR
+                      (CHAR->ASCII C))
+                     C
+                     PORT)))))
 (SET-VALUE-FROM-FUNCTION 'SUB-READ-1 'SCHEME::SUB-READ-1)
 (DEFUN TERMINATING? (C)
   (DECLARE (SPECIAL READ-TERMINATING?-VECTOR ASCII-LIMIT))
   (IF (SCHEME< (CHAR->ASCII C) ASCII-LIMIT)
-      (SVREF READ-TERMINATING?-VECTOR (CHAR->ASCII C))
+      (CHECKED-SVREF "vector-ref" READ-TERMINATING?-VECTOR (CHAR->ASCII C))
       (TRUE? (CHAR-WHITESPACE-P C))))
 (SET-VALUE-FROM-FUNCTION 'TERMINATING? 'SCHEME::TERMINATING?)
 (AT-TOP-LEVEL
@@ -162,9 +170,13 @@
  'SCHEME::READ-TERMINATING?-VECTOR)
 (DEFUN SET-STANDARD-SYNTAX! (.CHAR TERMINATING? READER)
   (DECLARE (SPECIAL READ-TERMINATING?-VECTOR READ-DISPATCH-VECTOR))
-  (SETF (SVREF READ-DISPATCH-VECTOR (CHAR->ASCII .CHAR)) READER)
+  (CHECKED-SVSET "vector-set!" READ-DISPATCH-VECTOR (CHAR->ASCII .CHAR) READER)
   UNSPECIFIC
-  (SETF (SVREF READ-TERMINATING?-VECTOR (CHAR->ASCII .CHAR)) TERMINATING?)
+  (CHECKED-SVSET
+   "vector-set!"
+   READ-TERMINATING?-VECTOR
+   (CHAR->ASCII .CHAR)
+   TERMINATING?)
   UNSPECIFIC)
 (SET-VALUE-FROM-FUNCTION 'SET-STANDARD-SYNTAX! 'SCHEME::SET-STANDARD-SYNTAX!)
 (AT-TOP-LEVEL
@@ -172,7 +184,11 @@
     (DECLARE (SPECIAL ASCII-WHITESPACES READ-DISPATCH-VECTOR))
     (FLET ((SUB-READ-WHITESPACE (C PORT) C (SUB-READ PORT)))
       (MAPC #'(LAMBDA (C)
-                (SETF (SVREF READ-DISPATCH-VECTOR C) #'SUB-READ-WHITESPACE)
+                (CHECKED-SVSET
+                 "vector-set!"
+                 READ-DISPATCH-VECTOR
+                 C
+                 #'SUB-READ-WHITESPACE)
                 UNSPECIFIC)
             ASCII-WHITESPACES))))
 (AT-TOP-LEVEL
@@ -180,14 +196,16 @@
           (C PORT)
           (LET ((TOKEN (SUB-READ-SYMBOL-TOKEN C PORT)))
             (IF (AND (CHAR= C #\&)
-                     (NULL (CDR (THE CONS TOKEN)))
+                     (NULL (CDR (THE-WHO CONS "cdr" TOKEN)))
                      (LET ((NEXT (.PEEK-CHAR PORT)))
                        (AND (CHARACTERP NEXT)
                             (OR (CHAR= NEXT #\{) (CHAR= NEXT #\[)))))
                 (READ-QUASI-LITERAL
-                 (SUBSEQ (CAR (THE CONS TOKEN))
+                 (SUBSEQ (CAR (THE-WHO CONS "car" TOKEN))
                          1
-                         (LENGTH (THE SIMPLE-STRING (CAR (THE CONS TOKEN)))))
+                         (LENGTH (THE-WHO SIMPLE-STRING
+                                          "string-length"
+                                          (CAR (THE-WHO CONS "car" TOKEN)))))
                  PORT)
                 (PARSE-TOKEN TOKEN PORT)))))
     (MAPC #'(LAMBDA (C) (SET-STANDARD-SYNTAX! C FALSE #'SUB-READ-CONSTITUENT))
@@ -258,40 +276,51 @@
       (CONS 'SCHEME::$NFX$ ES)
       (IF (NULL ES)
           'NIL
-          (IF (NULL (CDR (THE CONS ES)))
-              (CAR (THE CONS ES))
-              (IF (NULL (CDR (THE CONS (CDR (THE CONS ES)))))
+          (IF (NULL (CDR (THE-WHO CONS "cdr" ES)))
+              (CAR (THE-WHO CONS "car" ES))
+              (IF (NULL (CDR (THE-WHO CONS
+                                      "cddr"
+                                      (CDR (THE-WHO CONS "cddr" ES)))))
                   ES
                   (IF (TRUEP (SIMPLE-INFIX? ES))
-                      (CONS (CAR (THE CONS (CDR (THE CONS ES))))
+                      (CONS (CAR (THE-WHO CONS
+                                          "cadr"
+                                          (CDR (THE-WHO CONS "cadr" ES))))
                             (EVERY-OTHER ES))
                       (CONS 'SCHEME::$NFX$ ES)))))))
 (SET-VALUE-FROM-FUNCTION 'CURLY-INFIX 'SCHEME::CURLY-INFIX)
 (DEFUN SIMPLE-INFIX? (ES)
-  (LET ((OP (CAR (THE CONS (CDR (THE CONS ES))))))
+  (LET ((OP (CAR (THE-WHO CONS "cadr" (CDR (THE-WHO CONS "cadr" ES))))))
     (PROG (REST)
-      (SETQ REST (CDR (THE CONS ES)))
+      (SETQ REST (CDR (THE-WHO CONS "cdr" ES)))
       (GO LOOP)
       LOOP
       (IF (NULL REST)
           (RETURN FALSE)
-          (IF (NOT (SCHEME-EQUAL-P (CAR (THE CONS REST)) OP))
+          (IF (NOT (SCHEME-EQUAL-P (CAR (THE-WHO CONS "car" REST)) OP))
               (RETURN FALSE)
-              (IF (NULL (CDR (THE CONS REST)))
+              (IF (NULL (CDR (THE-WHO CONS "cdr" REST)))
                   (RETURN FALSE)
-                  (IF (NULL (CDR (THE CONS (CDR (THE CONS REST)))))
+                  (IF (NULL (CDR (THE-WHO CONS
+                                          "cddr"
+                                          (CDR (THE-WHO CONS "cddr" REST)))))
                       (RETURN TRUE)
                       (PROGN
-                        (SETQ REST (CDR (THE CONS (CDR (THE CONS REST)))))
+                        (SETQ REST
+                              (CDR (THE-WHO CONS
+                                            "cddr"
+                                            (CDR (THE-WHO CONS "cddr" REST)))))
                         (GO LOOP)))))))))
 (SET-VALUE-FROM-FUNCTION 'SIMPLE-INFIX? 'SCHEME::SIMPLE-INFIX?)
 (DEFUN EVERY-OTHER (ES)
   (IF (NULL ES)
       'NIL
-      (CONS (CAR (THE CONS ES))
-            (IF (NULL (CDR (THE CONS ES)))
+      (CONS (CAR (THE-WHO CONS "car" ES))
+            (IF (NULL (CDR (THE-WHO CONS "cdr" ES)))
                 'NIL
-                (EVERY-OTHER (CDR (THE CONS (CDR (THE CONS ES)))))))))
+                (EVERY-OTHER (CDR (THE-WHO CONS
+                                           "cddr"
+                                           (CDR (THE-WHO CONS "cddr" ES)))))))))
 (SET-VALUE-FROM-FUNCTION 'EVERY-OTHER 'SCHEME::EVERY-OTHER)
 (DEFUN SUB-READ-ARGUMENTS (C PORT)
   (DECLARE (SPECIAL DOT))
@@ -531,16 +560,20 @@
                                          #\i))))
                      (NOT-IN-R6RS PORT (.STRING #\# .C.1)))
                  (IF (TRUEP PROBE)
-                     (FUNCALL (CDR (THE CONS PROBE)) .C.1 PORT)
+                     (FUNCALL (CDR (THE-WHO CONS "cdr" PROBE)) .C.1 PORT)
                      (READING-ERROR PORT "unknown # syntax" .C.1))))))))))
 (DEFUN SHARP-BOOLEAN (VALUE LONG-NAME)
   #'(LAMBDA (C PORT)
       C
-      (LET ((NAME (CAR (THE CONS (SUB-READ-TOKEN (.READ-CHAR PORT) PORT)))))
-        (IF (AND (SCHEME> (LENGTH (THE SIMPLE-STRING NAME)) 1)
+      (LET ((NAME (CAR (THE-WHO CONS
+                                "car"
+                                (SUB-READ-TOKEN (.READ-CHAR PORT) PORT)))))
+        (IF (AND (SCHEME> (LENGTH (THE-WHO SIMPLE-STRING "string-length" NAME))
+                          1)
                  (TRUEP (R6RS-STRICT? PORT)))
             (NOT-IN-R6RS PORT "alternative boolean"))
-        (IF (OR (SCHEME= (LENGTH (THE SIMPLE-STRING NAME)) 1)
+        (IF (OR (SCHEME= (LENGTH (THE-WHO SIMPLE-STRING "string-length" NAME))
+                         1)
                 (STRING= (STRING-DOWNCASE NAME) LONG-NAME))
             VALUE
             (READING-ERROR PORT "unknown # syntax" NAME)))))
@@ -554,8 +587,11 @@
          (LET ((NEXT (.PEEK-CHAR PORT)))
            (IF (AND (CHARACTERP NEXT) (CHAR-NUMERIC-P NEXT))
                (SHARP-NUMERIC-VECTOR-AFTER "f" C PORT)
-               (LET ((NAME (CAR (THE CONS (SUB-READ-TOKEN #\f PORT)))))
-                 (IF (OR (SCHEME= (LENGTH (THE SIMPLE-STRING NAME)) 1)
+               (LET ((NAME (CAR (THE-WHO CONS "car" (SUB-READ-TOKEN #\f PORT)))))
+                 (IF (OR (SCHEME= (LENGTH (THE-WHO SIMPLE-STRING
+                                                   "string-length"
+                                                   NAME))
+                                  1)
                          (STRING= (STRING-DOWNCASE NAME) "false"))
                      FALSE
                      (READING-ERROR PORT "unknown # syntax" NAME)))))))))
@@ -568,7 +604,9 @@
      #'(LAMBDA (C PORT)
          (.READ-CHAR PORT)
          (LET ((NAME (STRING-DOWNCASE
-                      (CAR (THE CONS (SUB-READ-TOKEN (.READ-CHAR PORT) PORT))))))
+                      (CAR (THE-WHO CONS
+                                    "car"
+                                    (SUB-READ-TOKEN (.READ-CHAR PORT) PORT))))))
            (IF (OR (STRING= NAME "fold-case") (STRING= NAME "no-fold-case"))
                (SET-PORT-FOLD-CASE PORT (STRING= NAME "fold-case")))
            (IF (OR (STRING= NAME "srfi-88") (STRING= NAME "no-srfi-88"))
@@ -632,14 +670,17 @@
                                                         .LAST
                                                         (IF (NULL L)
                                                             (RETURN 0)
-                                                            (IF (NULL (CDR (THE CONS
-                                                                                L)))
-                                                                (RETURN (CAR (THE CONS
-                                                                                  L)))
+                                                            (IF (NULL (CDR (THE-WHO CONS
+                                                                                    "cdr"
+                                                                                    L)))
+                                                                (RETURN (CAR (THE-WHO CONS
+                                                                                      "car"
+                                                                                      L)))
                                                                 (PROGN
                                                                   (SETQ L
-                                                                        (CDR (THE CONS
-                                                                                  L)))
+                                                                        (CDR (THE-WHO CONS
+                                                                                      "cdr"
+                                                                                      L)))
                                                                   (GO .LAST))))))))
                                   (RETURN (PROG (I L)
                                             (PSETQ I 0 L ELEMENTS)
@@ -648,28 +689,35 @@
                                             (IF (NULL L)
                                                 (RETURN V)
                                                 (PROGN
-                                                  (SETF (SVREF V I)
-                                                        (CAR (THE CONS L)))
+                                                  (CHECKED-SVSET
+                                                   "vector-set!"
+                                                   V
+                                                   I
+                                                   (CAR (THE-WHO CONS "car" L)))
                                                   UNSPECIFIC
                                                   (PSETQ I
                                                          (SCHEME+ I 1)
                                                          L
-                                                         (CDR (THE CONS L)))
+                                                         (CDR (THE-WHO CONS
+                                                                       "cdr"
+                                                                       L)))
                                                   (GO |.loop.173|))))))))
                             (IF (CHAR= D #\%)
                                 (RETURN (LIST 'SCHEME::$PRIMITIVE
                                               N
                                               (SUB-READ-PLAIN PORT)))
                                 (IF (CHAR-EQUAL D #\r)
-                                    (LET ((TOKEN (CAR (THE CONS
-                                                           (SUB-READ-TOKEN
-                                                            #\#
-                                                            PORT)))))
+                                    (LET ((TOKEN (CAR (THE-WHO CONS
+                                                               "car"
+                                                               (SUB-READ-TOKEN
+                                                                #\#
+                                                                PORT)))))
                                       (LET ((X (STRING->NUMBER
                                                 (SUBSEQ TOKEN
                                                         1
-                                                        (LENGTH (THE SIMPLE-STRING
-                                                                     TOKEN)))
+                                                        (LENGTH (THE-WHO SIMPLE-STRING
+                                                                         "string-length"
+                                                                         TOKEN)))
                                                 N)))
                                         (LET NIL
                                           (LET ((TEMP X))
@@ -716,14 +764,17 @@
                                                                      .LAST
                                                                      (IF (NULL L)
                                                                          (RETURN 0)
-                                                                         (IF (NULL (CDR (THE CONS
-                                                                                             L)))
-                                                                             (RETURN (CAR (THE CONS
-                                                                                               L)))
+                                                                         (IF (NULL (CDR (THE-WHO CONS
+                                                                                                 "cdr"
+                                                                                                 L)))
+                                                                             (RETURN (CAR (THE-WHO CONS
+                                                                                                   "car"
+                                                                                                   L)))
                                                                              (PROGN
                                                                                (SETQ L
-                                                                                     (CDR (THE CONS
-                                                                                               L)))
+                                                                                     (CDR (THE-WHO CONS
+                                                                                                   "cdr"
+                                                                                                   L)))
                                                                                (GO .LAST)))))))
                                                         (LET ((.ELEMENTS.1 (PROG (L K)
                                                                              (PSETQ L
@@ -795,7 +846,7 @@
             (PROGN (SETQ .L.0 (CONS (.READ-CHAR PORT) L)) (GO LOOP))
             (IF (AND (CHARACTERP C)
                      (CHAR= C #\:)
-                     (NULL (CDR (THE CONS L)))
+                     (NULL (CDR (THE-WHO CONS "cdr" L)))
                      (CHAR= (CHAR-DOWNCASE FIRST) #\a))
                 (PROGN
                   (.READ-CHAR PORT)
@@ -805,10 +856,11 @@
                                              (CONS FIRST
                                                    (CONS #\:
                                                          (COERCE (THE SIMPLE-STRING
-                                                                      (CAR (THE CONS
-                                                                                (SUB-READ-TOKEN
-                                                                                 (.READ-CHAR PORT)
-                                                                                 PORT))))
+                                                                      (CAR (THE-WHO CONS
+                                                                                    "car"
+                                                                                    (SUB-READ-TOKEN
+                                                                                     (.READ-CHAR PORT)
+                                                                                     PORT))))
                                                                  'LIST))))
                                         'SIMPLE-STRING))
                         (PROGN
@@ -933,20 +985,23 @@
                (READING-ERROR PORT "end of file after #\\")
                (IF (ALPHA-CHAR-P .C.0)
                    (LET ((NAME (SUB-READ-PLAIN PORT)))
-                     (IF (SCHEME= (LENGTH (THE SIMPLE-STRING
-                                               (SYMBOL->STRING NAME)))
+                     (IF (SCHEME= (LENGTH (THE-WHO SIMPLE-STRING
+                                                   "string-length"
+                                                   (SYMBOL->STRING NAME)))
                                   1)
                          .C.0
-                         (LET ((TEMP (IF (CHAR= (CHAR (THE SIMPLE-STRING
-                                                           (SYMBOL->STRING NAME))
-                                                      0)
+                         (LET ((TEMP (IF (CHAR= (CHECKED-SCHAR
+                                                 "string-ref"
+                                                 (SYMBOL->STRING NAME)
+                                                 0)
                                                 #\x)
                                          (STRING->NUMBER
                                           (SUBSEQ (SYMBOL->STRING NAME)
                                                   1
-                                                  (LENGTH (THE SIMPLE-STRING
-                                                               (SYMBOL->STRING
-                                                                NAME))))
+                                                  (LENGTH (THE-WHO SIMPLE-STRING
+                                                                   "string-length"
+                                                                   (SYMBOL->STRING
+                                                                    NAME))))
                                           16)
                                          FALSE)))
                            (IF (TRUEP TEMP)
@@ -959,7 +1014,7 @@
                                                             :TEST
                                                             #'EQ))))
                                  (IF (TRUEP .TEMP.1)
-                                     (CDR (THE CONS .TEMP.1))
+                                     (CDR (THE-WHO CONS "cdr" .TEMP.1))
                                      (READING-ERROR
                                       PORT
                                       "unknown #\\ name"
@@ -1003,7 +1058,7 @@
          (IF (OR (EQ P EOF-OBJECT) (TRUEP (TERMINATING? P)))
              (READING-ERROR PORT "missing keyword name after #:")
              (INTERN-LISP-KEYWORD
-              (CAR (THE CONS (SUB-READ-TOKEN (.READ-CHAR PORT) PORT)))))))))
+              (CAR (THE-WHO CONS "car" (SUB-READ-TOKEN (.READ-CHAR PORT) PORT)))))))))
 (AT-TOP-LEVEL
   (DEFINE-SHARP-MACRO
    #\<
@@ -1019,7 +1074,7 @@
   (FLET ((NUMBER-SHARP-MACRO
           (C PORT)
           C
-          (LET ((.STRING (CAR (THE CONS (SUB-READ-TOKEN #\# PORT)))))
+          (LET ((.STRING (CAR (THE-WHO CONS "car" (SUB-READ-TOKEN #\# PORT)))))
             (LET ((TEMP (STRING->NUMBER .STRING)))
               (IF (TRUEP TEMP)
                   TEMP
@@ -1107,9 +1162,9 @@
  'SCHEME::READ-HEX-SYMBOL-ESCAPE)
 (DEFUN PARSE-TOKEN (TOKEN PORT)
   (DECLARE (SPECIAL DOT STRANGE-SYMBOL-NAMES))
-  (LET ((.STRING (CAR (THE CONS TOKEN))))
-    (IF (AND (NULL (CDR (THE CONS TOKEN)))
-             (LET ((C (CHAR (THE SIMPLE-STRING .STRING) 0)))
+  (LET ((.STRING (CAR (THE-WHO CONS "car" TOKEN))))
+    (IF (AND (NULL (CDR (THE-WHO CONS "cdr" TOKEN)))
+             (LET ((C (CHECKED-SCHAR "string-ref" .STRING 0)))
                (OR (CHAR-NUMERIC-P C) (CHAR= C #\+) (CHAR= C #\-) (CHAR= C #\.))))
         (LET ((TEMP (STRING->NUMBER .STRING)))
           (IF (TRUEP TEMP)
@@ -1119,7 +1174,7 @@
                   (IF (STRING= .STRING ".")
                       DOT
                       (IF (AND (CHAR-NUMERIC-P
-                                (CHAR (THE SIMPLE-STRING .STRING) 0))
+                                (CHECKED-SCHAR "string-ref" .STRING 0))
                                (NOT (CHEZ-READER-P)))
                           (READING-ERROR
                            PORT
@@ -1129,15 +1184,15 @@
         (TOKEN-SYMBOL TOKEN PORT))))
 (SET-VALUE-FROM-FUNCTION 'PARSE-TOKEN 'SCHEME::PARSE-TOKEN)
 (DEFUN TOKEN-SYMBOL (TOKEN PORT)
-  (IF (AND (NULL (CDR (THE CONS TOKEN)))
+  (IF (AND (NULL (CDR (THE-WHO CONS "cdr" TOKEN)))
            (TRUEP (R6RS-STRICT? PORT))
-           (NOT (R6RS-IDENTIFIER-P (CAR (THE CONS TOKEN)))))
+           (NOT (R6RS-IDENTIFIER-P (CAR (THE-WHO CONS "car" TOKEN)))))
       (READING-ERROR
        PORT
        (STRING-APPEND
-        (CAR (THE CONS TOKEN))
+        (CAR (THE-WHO CONS "car" TOKEN))
         " symbol syntax not allowed in #!r6rs mode"))
-      (INTERN-TOKEN (CAR (THE CONS TOKEN)))))
+      (INTERN-TOKEN (CAR (THE-WHO CONS "car" TOKEN)))))
 (SET-VALUE-FROM-FUNCTION 'TOKEN-SYMBOL 'SCHEME::TOKEN-SYMBOL)
 (DEFUN R6RS-STRICT? (PORT) (TRUE? (PORT-R6RS-P PORT)))
 (SET-VALUE-FROM-FUNCTION 'R6RS-STRICT? 'SCHEME::R6RS-STRICT?)
@@ -1150,10 +1205,10 @@
 (SET-FUNCTION-FROM-VALUE 'STRANGE-SYMBOL-NAMES 'SCHEME::STRANGE-SYMBOL-NAMES)
 (DEFUN INTERN-TOKEN (.STRING)
   (LET ((.STRING.0 (IF *FOLD-CASE* (STRING-DOWNCASE .STRING) .STRING))
-        (N (LENGTH (THE SIMPLE-STRING .STRING))))
+        (N (LENGTH (THE-WHO SIMPLE-STRING "string-length" .STRING))))
     (IF (AND (TRUEP (KEYWORDS-P))
              (SCHEME> N 1)
-             (CHAR= (CHAR (THE SIMPLE-STRING .STRING.0) (SCHEME- N 1)) #\:))
+             (CHAR= (CHECKED-SCHAR "string-ref" .STRING.0 (SCHEME- N 1)) #\:))
         (INTERN-KEYWORD-OBJECT (SUBSEQ .STRING.0 0 (SCHEME- N 1)))
         (INTERN-SCHEME-SYMBOL .STRING.0))))
 (SET-VALUE-FROM-FUNCTION 'INTERN-TOKEN 'SCHEME::INTERN-TOKEN)
@@ -1192,8 +1247,10 @@
   (DECLARE (SPECIAL READ-DISPATCH-VECTOR CHAR->ASCII))
   (LET ((CODES (MAPCAR CHAR->ASCII
                        (COERCE (THE SIMPLE-STRING
-                                    (FUNCALL (SVREF READ-DISPATCH-VECTOR
-                                                    (CHAR->ASCII #\"))
+                                    (FUNCALL (CHECKED-SVREF
+                                              "vector-ref"
+                                              READ-DISPATCH-VECTOR
+                                              (CHAR->ASCII #\"))
                                              #\"
                                              PORT))
                                'LIST))))
@@ -1206,8 +1263,8 @@
 (DEFUN FILTER-OUT-BYTES (CODES)
   (IF (NULL CODES)
       'NIL
-      (IF (SCHEME< (CAR (THE CONS CODES)) 256)
-          (FILTER-OUT-BYTES (CDR (THE CONS CODES)))
+      (IF (SCHEME< (CAR (THE-WHO CONS "car" CODES)) 256)
+          (FILTER-OUT-BYTES (CDR (THE-WHO CONS "cdr" CODES)))
           CODES)))
 (SET-VALUE-FROM-FUNCTION 'FILTER-OUT-BYTES 'SCHEME::FILTER-OUT-BYTES)
 (DEFUN SHARP-NUMERIC-VECTOR-LIST (TAG C PORT)
@@ -1293,12 +1350,14 @@
                                         (GO FIND)
                                         FIND
                                         (IF (SCHEME= I
-                                                     (LENGTH (THE SIMPLE-STRING
-                                                                  TEXT)))
+                                                     (LENGTH (THE-WHO SIMPLE-STRING
+                                                                      "string-length"
+                                                                      TEXT)))
                                             (RETURN FALSE)
-                                            (IF (CHAR= (CHAR (THE SIMPLE-STRING
-                                                                  TEXT)
-                                                             I)
+                                            (IF (CHAR= (CHECKED-SCHAR
+                                                        "string-ref"
+                                                        TEXT
+                                                        I)
                                                        #\Space)
                                                 (RETURN I)
                                                 (PROGN
@@ -1309,15 +1368,18 @@
                                  (LET ((NAME (SUBSEQ TEXT 0 SPACE)))
                                    (LET ((UNIQUE (SUBSEQ TEXT
                                                          (SCHEME+ SPACE 1)
-                                                         (LENGTH (THE SIMPLE-STRING
-                                                                      TEXT)))))
+                                                         (LENGTH (THE-WHO SIMPLE-STRING
+                                                                          "string-length"
+                                                                          TEXT)))))
                                      (LET ((PROBE (TRUE? (ASSOC UNIQUE
                                                                 *READ-GENSYMS*
                                                                 :TEST
                                                                 #'SCHEME-EQUAL-P))))
                                        (LET NIL
                                          (IF (TRUEP PROBE)
-                                             (RETURN (CDR (THE CONS PROBE)))
+                                             (RETURN (CDR (THE-WHO CONS
+                                                                   "cdr"
+                                                                   PROBE)))
                                              (LET ((SYMBOL (MAKE-GENSYM-FROM-NAME
                                                             NAME)))
                                                (SETQ *READ-GENSYMS*
@@ -1352,11 +1414,12 @@
              (LIST 'SCHEME::UNSYNTAX-SPLICING (SUB-READ-CAREFULLY PORT)))
            (LET ((DATUM (SUB-READ-CAREFULLY PORT)))
              (LET ((CTOR (IF (CONSP DATUM)
-                             (IF (SCHEME-SYMBOL-P (CAR (THE CONS DATUM)))
-                                 (READER-CTOR (CAR (THE CONS DATUM)))
+                             (IF (SCHEME-SYMBOL-P
+                                  (CAR (THE-WHO CONS "car" DATUM)))
+                                 (READER-CTOR (CAR (THE-WHO CONS "car" DATUM)))
                                  FALSE)
                              FALSE)))
                (LET NIL
                  (IF (TRUEP CTOR)
-                     (APPLY CTOR (CDR (THE CONS DATUM)))
+                     (APPLY CTOR (CDR (THE-WHO CONS "cdr" DATUM)))
                      (LIST 'SCHEME::UNSYNTAX DATUM)))))))))
