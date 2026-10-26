@@ -76,9 +76,21 @@
 	  (lower (string-upcase string))
 	  (t string))))
 
+(defvar *scheme-name-key* (make-symbol "SCHEME-NAME")
+  "The property a symbol keeps its Scheme name under, once made.")
+
 (defun scheme-symbol-name (symbol)
-  "The Scheme name of SYMBOL (SYMBOL->STRING)."
-  (invert-case (symbol-name symbol)))
+  "The Scheme name of SYMBOL (SYMBOL->STRING): made once and kept, as a
+symbol's name is (the browse benchmark spent a third of its time making
+it again).  A name with no letters, or of both cases, is the symbol's
+own; R7RS makes changing either an error."
+  (or (get symbol *scheme-name-key*)
+      (let ((scheme (invert-case (symbol-name symbol)))
+	    (package (symbol-package symbol)))
+	;; kept only on symbols of our own (a keyword's or CL's plist isn't)
+	(if (or (null package) (eq package scheme-package))
+	    (setf (get symbol *scheme-name-key*) scheme)
+	    scheme))))
 
 (defun intern-scheme-symbol (string)
   "The Scheme symbol named STRING (STRING->SYMBOL).  The inverted name is
