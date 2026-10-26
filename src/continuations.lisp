@@ -398,9 +398,29 @@ ESTABLISH again when rebuilt."
 (defun mapn-continue (value f lists acc)
   (mapn-loop f (list-cdrs lists) (cons value acc) t))
 
+;;; Two lists, the common case of more than one: without the lists of
+;;; cars and cdrs MAPN-LOOP makes at each step (the matrix benchmark's
+;;; (map (lambda (f z) ...) row1 row2)).
+(defun map2-loop (f list1 list2 acc captured)
+  (loop
+    (when (or (atom list1) (atom list2)) (return (if captured (reverse acc) (nreverse acc))))
+    (let ((x (car list1)) (y (car list2)) (promoted nil))
+      (push (let ((frame (vector :resume nil 'map2-continue f list1 list2 acc)))
+	      (declare (dynamic-extent frame))
+	      (multiple-value-prog1 (with-frame (frame) (funcall f x y))
+		(setq promoted (svref frame 1))))
+	    acc)
+      (when promoted (setq captured t)))
+    (setq list1 (cdr list1) list2 (cdr list2))))
+
+(defun map2-continue (value f list1 list2 acc)
+  (map2-loop f (cdr list1) (cdr list2) (cons value acc) t))
+
 (defun full-map (f list &rest lists)
   (qs-r6rs::check-map-arguments "map" f (cons list lists))
-  (if lists (mapn-loop f (cons list lists) '() nil) (map1-loop f list '() nil)))
+  (cond ((null lists) (map1-loop f list '() nil))
+	((null (cdr lists)) (map2-loop f list (car lists) '() nil))
+	(t (mapn-loop f (cons list lists) '() nil))))
 
 (defun for-each-loop (f lists)
   ;; LISTS: a list of lists
@@ -426,9 +446,23 @@ ESTABLISH again when rebuilt."
   (declare (ignore value))
   (for-each1-loop f (cdr list)))
 
+(defun for-each2-loop (f list1 list2)
+  (loop
+    (when (or (atom list1) (atom list2)) (return qs:unspecific))
+    (let ((x (car list1)) (y (car list2)))
+      (with-resume-frame (frame 'for-each2-continue f list1 list2)
+	(funcall f x y)))
+    (setq list1 (cdr list1) list2 (cdr list2))))
+
+(defun for-each2-continue (value f list1 list2)
+  (declare (ignore value))
+  (for-each2-loop f (cdr list1) (cdr list2)))
+
 (defun full-for-each (f list &rest lists)
   (qs-r6rs::check-map-arguments "for-each" f (cons list lists))
-  (if lists (for-each-loop f (cons list lists)) (for-each1-loop f list)))
+  (cond ((null lists) (for-each1-loop f list))
+	((null (cdr lists)) (for-each2-loop f list (car lists)))
+	(t (for-each-loop f (cons list lists)))))
 
 ;;; vector-map, vector-for-each, string-map, string-for-each: KIND says
 ;;; which; SEQUENCES are walked in step, to the shortest's length N.
