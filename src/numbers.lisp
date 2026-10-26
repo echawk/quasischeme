@@ -323,6 +323,14 @@ the same side of every finite OTHER."
 (defun exponent-marker-p (c)
   (member (char-downcase c) '(#\e #\s #\f #\d #\l)))
 
+(defvar *exact-decimals* nil
+  "True while a number is read whose value is to be exact (#e): PARSE-DECIMAL
+then makes the exact rational, not a double.")
+
+(sb-ext:defglobal +exact-powers-of-ten+
+    (coerce (loop for k from 0 to 22 collect (float (expt 10 k) 1d0)) 'simple-vector)
+  "10^0 to 10^22, each exactly a double.")
+
 (defun parse-decimal (s start end)
   "Digits with optional point and exponent, as an exact rational."
   (let ((i start) (mantissa 0) (scale 0) (digits 0))
@@ -355,6 +363,14 @@ the same side of every finite OTHER."
       ;; 0.0 (so #e1e200000 is not a number here).
       (let ((magnitude (+ scale (floor (* (integer-length mantissa) 0.30103)))))
 	(cond ((zerop mantissa) 0)
+	      ;; Clinger's fast path: a mantissa a double holds exactly,
+	      ;; times or over a power of ten it holds exactly, is one
+	      ;; correctly rounded operation, the double the exact value
+	      ;; rounds to (and it was a fifth of reading decimals)
+	      ((and (not *exact-decimals*) (< mantissa (expt 2 53)) (<= -22 scale 22))
+	       (if (minusp scale)
+		   (/ (float mantissa 1d0) (svref +exact-powers-of-ten+ (- scale)))
+		   (* (float mantissa 1d0) (svref +exact-powers-of-ten+ scale))))
 	      ((> magnitude 100000) +inf+)
 	      ((< magnitude -100000) 0d0)
 	      (t (* mantissa (expt 10 scale))))))))
@@ -485,10 +501,10 @@ RADIX (below 10), as an exact rational; or NIL."
 (defun parse-real (s start end radix)
   "Returns value and inexact-by-default-p, or NIL."
   (when (>= start end) (return-from parse-real nil))
-  (let ((text (string-downcase (subseq s start end))))
-    (cond ((string= text "+inf.0") (values +inf+ t :special))
-	  ((string= text "-inf.0") (values -inf+ t :special))
-	  ((or (string= text "+nan.0") (string= text "-nan.0")) (values +nan+ t :special))
+  (flet ((is (text) (string-equal s text :start1 start :end1 end)))
+    (cond ((is "+inf.0") (values +inf+ t :special))
+	  ((is "-inf.0") (values -inf+ t :special))
+	  ((or (is "+nan.0") (is "-nan.0")) (values +nan+ t :special))
 	  (t
 	   (let ((sign 1) (i start))
 	     (when (member (char s i) '(#\+ #\-))
@@ -559,6 +575,61 @@ follow an exponent marker."
 		    (dbl z))))))
       (t (real-part* start end)))))
 
+(defun parse-plain-decimal (string)
+  "STRING's number if it is [+-]digits[.digits][e[+-]digits] (at least one
+digit before the exponent) and simply read: an integer, or a decimal
+Clinger's fast path reads (see PARSE-DECIMAL).  NIL for anything else,
+which PARSE-SCHEME-NUMBER then reads: one pass over the text, where that
+makes several (reading data files of decimals, the reader's time)."
+  (declare (optimize speed))
+  (when (simple-string-p string)
+    (let* ((s string) (n (length s)) (i 0) (sign 1) (mantissa 0) (digits 0) (scale 0)
+	   (inexact nil))
+      (declare (simple-string s) (fixnum n i sign digits scale)
+	       (type (integer 0 #.(expt 10 19)) mantissa))
+      (flet ((digit (j) (let ((c (char-code (schar s j)))) (and (<= 48 c 57) (- c 48)))))
+	(when (and (< i n) (member (schar s i) '(#\+ #\-)))
+	  (when (char= (schar s i) #\-) (setq sign -1))
+	  (incf i))
+	(loop while (< i n)
+	      do (let ((d (digit i)))
+		   (unless d (return))
+		   (when (> digits 17) (return-from parse-plain-decimal nil))
+		   (setq mantissa (+ (* mantissa 10) d)) (incf digits) (incf i)))
+	(when (and (< i n) (char= (schar s i) #\.))
+	  (setq inexact t)
+	  (incf i)
+	  (loop while (< i n)
+		do (let ((d (digit i)))
+		     (unless d (return))
+		     (when (> digits 17) (return-from parse-plain-decimal nil))
+		     (setq mantissa (+ (* mantissa 10) d)) (incf digits) (decf scale) (incf i))))
+	(when (zerop digits) (return-from parse-plain-decimal nil))
+	(when (and (< i n) (char-equal (schar s i) #\e))
+	  (setq inexact t)
+	  (incf i)
+	  (let ((esign 1) (e 0) (edigits 0))
+	    (declare (fixnum esign e edigits))
+	    (when (and (< i n) (member (schar s i) '(#\+ #\-)))
+	      (when (char= (schar s i) #\-) (setq esign -1))
+	      (incf i))
+	    (loop while (< i n)
+		  do (let ((d (digit i)))
+		       (unless d (return))
+		       (when (> edigits 4) (return-from parse-plain-decimal nil))
+		       (setq e (+ (* e 10) d)) (incf edigits) (incf i)))
+	    (when (zerop edigits) (return-from parse-plain-decimal nil))
+	    (incf scale (* esign e))))
+	(cond ((< i n) nil)
+	      ((not inexact) (* sign mantissa))
+	      ((zerop mantissa) (if (= sign -1) -0d0 0d0))
+	      ((and (< mantissa (expt 2 53)) (<= -22 scale 22))
+	       (let ((m (float mantissa 1d0)))
+		 (* sign (if (minusp scale)
+			     (/ m (the double-float (svref +exact-powers-of-ten+ (- scale))))
+			     (* m (the double-float (svref +exact-powers-of-ten+ scale)))))))
+	      (t nil))))))
+
 (defun parse-scheme-number (string &optional (radix 10))
   "The number STRING denotes, or NIL (STRING->NUMBER)."
   ;; Number syntax is ASCII: CL's DIGIT-CHAR-P would take Unicode's
@@ -591,7 +662,8 @@ follow an exponent marker."
       (setq string (remove-digit-underscores string start radix))
       (unless string (return-from parse-scheme-number nil))
       (setq end (length string)))
-    (ignore-errors (parse-complex string start end radix exactness))))
+    (let ((*exact-decimals* (eq exactness :exact)))
+      (ignore-errors (parse-complex string start end radix exactness)))))
 
 (defun remove-digit-underscores (string start radix)
   "SRFI 169: STRING without its underscores, each of which must be

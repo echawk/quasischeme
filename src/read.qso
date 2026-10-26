@@ -1257,83 +1257,57 @@
               (GO LOOP)))))))
 (SET-VALUE-FROM-FUNCTION 'SUB-READ-TOKEN 'SCHEME::SUB-READ-TOKEN)
 (DEFUN SUB-READ-SYMBOL-TOKEN (C PORT)
-  (PROG (.L.0 .N.1 .C.2 .ESCAPED?.3 .VERBATIM?.4)
-    (PSETQ .L.0 'NIL .N.1 1 .C.2 C .ESCAPED?.3 FALSE .VERBATIM?.4 FALSE)
-    (GO LOOP)
-    LOOP
-    (LET ((L .L.0)
-          (N .N.1)
-          (.C.5 .C.2)
-          (ESCAPED? .ESCAPED?.3)
-          (VERBATIM? .VERBATIM?.4))
-      (LET ((ESCAPE? (TRUE? (CHAR= .C.5 #\\))))
-        (LET ((HEX? (IF (TRUEP ESCAPE?)
-                        (TRUE? (EQL (.PEEK-CHAR PORT) #\x))
-                        FALSE)))
-          (LET ((.L.6 (CONS (IF (TRUEP ESCAPE?) (READ-SYMBOL-ESCAPE PORT) .C.5)
-                            L)))
-            (LET ((.ESCAPED?.7 (LET ((TEMP ESCAPED?))
-                                 (IF (TRUEP TEMP) TEMP ESCAPE?))))
-              (LET ((.VERBATIM?.8 (LET ((TEMP VERBATIM?))
-                                    (IF (TRUEP TEMP)
-                                        TEMP
-                                        (IF (TRUEP ESCAPE?)
-                                            (TRUE? (NOT (TRUEP HEX?)))
-                                            FALSE)))))
-                (LET NIL
-                  (RETURN (PROG (.L.9 .N.10 .ESCAPED?.11 .VERBATIM?.12)
-                            (PSETQ .L.9
-                                   .L.6
-                                   .N.10
-                                   N
-                                   .ESCAPED?.11
-                                   .ESCAPED?.7
-                                   .VERBATIM?.12
-                                   .VERBATIM?.8)
-                            (GO BARS)
-                            BARS
-                            (LET ((.L.13 .L.9)
-                                  (.N.14 .N.10)
-                                  (.ESCAPED?.15 .ESCAPED?.11)
-                                  (.VERBATIM?.16 .VERBATIM?.12))
-                              (LET ((P (.PEEK-CHAR PORT)))
-                                (IF (AND (EQL P #\|) (CHEZ-READER-P))
-                                    (PROGN
-                                      (.READ-CHAR PORT)
-                                      (LET ((PART (READ-BAR-PART PORT)))
-                                        (PSETQ .L.9
-                                               (APPEND PART .L.13)
-                                               .N.10
-                                               (SCHEME+ .N.14 (LENGTH PART))
-                                               .ESCAPED?.11
-                                               TRUE
-                                               .VERBATIM?.12
-                                               TRUE)
-                                        (GO BARS)))
-                                    (IF (OR (EQ P EOF-OBJECT)
-                                            (TRUEP (TERMINATING? P)))
-                                        (RETURN (CONS (REVERSE-LIST->STRING
-                                                       .L.13
-                                                       .N.14)
-                                                      (APPEND (IF (TRUEP .ESCAPED?.15)
-                                                                  '(SCHEME::ESCAPED)
-                                                                  'NIL)
-                                                              (IF (TRUEP .VERBATIM?.16)
-                                                                  '(SCHEME::VERBATIM)
-                                                                  'NIL))))
-                                        (PROGN
-                                          (PSETQ .L.0
-                                                 .L.13
-                                                 .N.1
-                                                 (SCHEME+ .N.14 1)
-                                                 .C.2
-                                                 (.READ-CHAR PORT)
-                                                 .ESCAPED?.3
-                                                 .ESCAPED?.15
-                                                 .VERBATIM?.4
-                                                 .VERBATIM?.16)
-                                          (GO LOOP)))))))))))))))))
+  (DECLARE (SPECIAL READ-TERMINATING?-VECTOR))
+  (IF (CHAR= C #\\)
+      (SYMBOL-TOKEN-CHAR 'NIL 1 C FALSE FALSE PORT)
+      (LET ((FAST (READ-PLAIN-TOKEN C PORT READ-TERMINATING?-VECTOR)))
+        (IF (NULL (CDR (THE-WHO CONS "cdr" FAST)))
+            FAST
+            (SYMBOL-TOKEN-BARS
+             (CAR (THE-WHO CONS "car" FAST))
+             (CDR (THE-WHO CONS "cdr" FAST))
+             FALSE
+             FALSE
+             PORT)))))
 (SET-VALUE-FROM-FUNCTION 'SUB-READ-SYMBOL-TOKEN 'SCHEME::SUB-READ-SYMBOL-TOKEN)
+(DEFUN SYMBOL-TOKEN-CHAR (L N C ESCAPED? VERBATIM? PORT)
+  (LET ((ESCAPE? (TRUE? (CHAR= C #\\))))
+    (LET ((HEX? (IF (TRUEP ESCAPE?) (TRUE? (EQL (.PEEK-CHAR PORT) #\x)) FALSE)))
+      (LET ((.L.0 (CONS (IF (TRUEP ESCAPE?) (READ-SYMBOL-ESCAPE PORT) C) L)))
+        (LET ((.ESCAPED?.1 (LET ((TEMP ESCAPED?))
+                             (IF (TRUEP TEMP) TEMP ESCAPE?))))
+          (LET ((.VERBATIM?.2 (LET ((TEMP VERBATIM?))
+                                (IF (TRUEP TEMP)
+                                    TEMP
+                                    (IF (TRUEP ESCAPE?)
+                                        (TRUE? (NOT (TRUEP HEX?)))
+                                        FALSE)))))
+            (LET NIL (SYMBOL-TOKEN-BARS .L.0 N .ESCAPED?.1 .VERBATIM?.2 PORT))))))))
+(SET-VALUE-FROM-FUNCTION 'SYMBOL-TOKEN-CHAR 'SCHEME::SYMBOL-TOKEN-CHAR)
+(DEFUN SYMBOL-TOKEN-BARS (L N ESCAPED? VERBATIM? PORT)
+  (LET ((P (.PEEK-CHAR PORT)))
+    (IF (AND (EQL P #\|) (CHEZ-READER-P))
+        (PROGN
+          (.READ-CHAR PORT)
+          (LET ((PART (READ-BAR-PART PORT)))
+            (SYMBOL-TOKEN-BARS
+             (APPEND PART L)
+             (SCHEME+ N (LENGTH PART))
+             TRUE
+             TRUE
+             PORT)))
+        (IF (OR (EQ P EOF-OBJECT) (TRUEP (TERMINATING? P)))
+            (CONS (REVERSE-LIST->STRING L N)
+                  (APPEND (IF (TRUEP ESCAPED?) '(SCHEME::ESCAPED) 'NIL)
+                          (IF (TRUEP VERBATIM?) '(SCHEME::VERBATIM) 'NIL)))
+            (SYMBOL-TOKEN-CHAR
+             L
+             (SCHEME+ N 1)
+             (.READ-CHAR PORT)
+             ESCAPED?
+             VERBATIM?
+             PORT)))))
+(SET-VALUE-FROM-FUNCTION 'SYMBOL-TOKEN-BARS 'SCHEME::SYMBOL-TOKEN-BARS)
 (DEFUN READ-BAR-PART (PORT)
   (PROG (L)
     (SETQ L 'NIL)

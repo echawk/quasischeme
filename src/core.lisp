@@ -80,10 +80,9 @@
   "The property a symbol keeps its Scheme name under, once made.")
 
 (defun scheme-symbol-name (symbol)
-  "The Scheme name of SYMBOL (SYMBOL->STRING): made once and kept, as a
-symbol's name is (the browse benchmark spent a third of its time making
-it again).  A name with no letters, or of both cases, is the symbol's
-own; R7RS makes changing either an error."
+  "The Scheme name of SYMBOL: made once and kept, as a symbol's name is
+(the browse benchmark spent a third of its time making it again).  Not
+to be changed: SYMBOL->STRING gives a program a copy."
   (or (get symbol *scheme-name-key*)
       (let ((scheme (invert-case (symbol-name symbol)))
 	    (package (symbol-package symbol)))
@@ -820,6 +819,43 @@ symbols, not errors, and #!r6rs restricts a port to R6RS syntax.")
 
 (defun chez-reader-p () *chez-reader*)
 
+;;; The reader's tokens (read.scm, SUB-READ-SYMBOL-TOKEN), read here while
+;;; they hold no escape: a token was a list of its characters, consed one
+;;; by one through the translated reader's calls, half of reading a data
+;;; file of numbers.
+
+(defun read-plain-token (c port terminating)
+  "From C, a token's first character (read already, not \\): the token's
+characters up to a terminating one (TERMINATING, the reader's vector of
+which ASCII characters are; Unicode whitespace too) or the end of the
+file, both left unread.  The token, (string), if it holds no \\ (nor, in
+Chez mode, |); else (l . n), its characters so far last first and how
+many, the \\ or | next."
+  (declare (optimize speed) (simple-vector terminating))
+  (let ((buffer (make-string 32)) (n 1) (chez *chez-reader*))
+    (declare (fixnum n) (type (simple-array character (*)) buffer))
+    (setf (schar buffer 0) c)
+    (loop
+      (let ((p (peek-char nil port nil nil)))
+	;; Chez's | before the terminating characters, which hold it
+	(when (and p chez (char= p #\|))
+	  (return (cons (nreverse (coerce (subseq buffer 0 n) 'list)) n)))
+	(when (or (null p)
+		  (let ((code (char-code p)))
+		    (if (< code 128)
+			(not (eq (svref terminating code) false))
+			(char-whitespace-p p))))
+	  (return (list (subseq buffer 0 n))))
+	(when (char= p #\\)
+	  (return (cons (nreverse (coerce (subseq buffer 0 n) 'list)) n)))
+	(read-char port)
+	(when (= n (length buffer))
+	  (let ((new (make-string (* 2 n))))
+	    (replace new buffer)
+	    (setq buffer new)))
+	(setf (schar buffer n) p)
+	(incf n)))))
+
 ; Chez Scheme's #!name data other than #!eof, as (name . object): the
 ; Chez mode's #!base-rtd (src/chez/chez.lisp)
 (defvar *sharp-bang-data* '())
@@ -944,11 +980,18 @@ braces; or with PORT's alternative reader, if it has one."
 	(call-with-reader-state-1 port thunk))))
 
 (defun call-with-reader-state-1 (port thunk)
-  (let ((*fold-case* (multiple-value-bind (fold found) (gethash port *port-fold-case*)
+  ;; the tables are weak, so synchronized: looked in only when not empty
+  ;; (a fifth of reading a file of numbers was these two lookups)
+  (let ((*fold-case* (multiple-value-bind (fold found)
+			 (if (zerop (hash-table-count *port-fold-case*))
+			     (values nil nil)
+			     (gethash port *port-fold-case*))
 		       (if found
 			   fold
 			   (or *fold-case* (and *fold-case-default* (funcall *fold-case-default*))))))
-	(*keywords* (values (gethash port *port-keywords*)))
+	(*keywords* (if (zerop (hash-table-count *port-keywords*))
+			nil
+			(values (gethash port *port-keywords*))))
 	(*neoteric* nil)
 	(*datum-labels* '())
 	(*forward-labels* nil))

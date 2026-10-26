@@ -810,22 +810,36 @@
 ; (VERBATIM), where an \x<hex>; escape doesn't.
 
 (define (sub-read-symbol-token c port)
-  (let loop ((l '()) (n 1) (c c) (escaped? #f) (verbatim? #f))
-    (let* ((escape? (char=? c #\\))
-	   (hex? (and escape? (eqv? (peek-char port) #\x)))
-	   (l (cons (if escape? (read-symbol-escape port) c) l))
-	   (escaped? (or escaped? escape?))
-	   (verbatim? (or verbatim? (and escape? (not hex?)))))
-      (let bars ((l l) (n n) (escaped? escaped?) (verbatim? verbatim?))
-	(let ((p (peek-char port)))
-	  (cond ((and (eqv? p #\|) (qs:true? (qs:chez-reader-p)))
-		 (read-char port)
-		 (let ((part (read-bar-part port)))
-		   (bars (append part l) (+ n (length part)) #t #t)))
-		((or (eof-object? p) (terminating? p))
-		 (cons (reverse-list->string l n)
-		       (append (if escaped? '(escaped) '()) (if verbatim? '(verbatim) '()))))
-		(else (loop l (+ n 1) (read-char port) escaped? verbatim?))))))))
+  ;; A token without escapes is read by the host (qs:read-plain-token),
+  ;; whole, or up to its first \ or Chez's |, where this goes on
+  (if (char=? c #\\)
+      (symbol-token-char '() 1 c #f #f port)
+      (let ((fast (qs:read-plain-token c port read-terminating?-vector)))
+	(if (null? (cdr fast))
+	    fast
+	    (symbol-token-bars (car fast) (cdr fast) #f #f port)))))
+
+; C, a token's next character (read already), then the rest: L its
+; characters so far, last first, N how many
+
+(define (symbol-token-char l n c escaped? verbatim? port)
+  (let* ((escape? (char=? c #\\))
+	 (hex? (and escape? (eqv? (peek-char port) #\x)))
+	 (l (cons (if escape? (read-symbol-escape port) c) l))
+	 (escaped? (or escaped? escape?))
+	 (verbatim? (or verbatim? (and escape? (not hex?)))))
+    (symbol-token-bars l n escaped? verbatim? port)))
+
+(define (symbol-token-bars l n escaped? verbatim? port)
+  (let ((p (peek-char port)))
+    (cond ((and (eqv? p #\|) (qs:true? (qs:chez-reader-p)))
+	   (read-char port)
+	   (let ((part (read-bar-part port)))
+	     (symbol-token-bars (append part l) (+ n (length part)) #t #t port)))
+	  ((or (eof-object? p) (terminating? p))
+	   (cons (reverse-list->string l n)
+		 (append (if escaped? '(escaped) '()) (if verbatim? '(verbatim) '()))))
+	  (else (symbol-token-char l (+ n 1) (read-char port) escaped? verbatim? port)))))
 
 ; The characters of a |...| part, after its |, last first
 

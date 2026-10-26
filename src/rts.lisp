@@ -125,7 +125,7 @@
 ; STRING->NUMBER
 
 (defune string->number (string &optional (radix 10))
-  (or (and (cl:eql radix 10) (decimal-integer-string-p string) (cl:parse-integer string))
+  (or (and (cl:eql radix 10) (qs::parse-plain-decimal string))
       (qs:parse-scheme-number string radix)
       qs:false))
 
@@ -161,7 +161,13 @@ PARSE-INTEGER reads as Scheme does."
 	       (null package)
 	       ;; #:name keywords (docs/interop.md): their name
 	       (keywordp symbol))
-	   (qs:scheme-symbol-name symbol))
+	   ;; a copy: the name is kept (SCHEME-SYMBOL-NAME), and a program
+	   ;; may change the string it gets (R6RS's mutable-strings test)
+	   (cl:let ((name (qs:scheme-symbol-name symbol)))
+	     (cl:typecase name
+	       ((cl:simple-array cl:character (cl:*)) (cl:copy-seq name))
+	       (cl:simple-base-string (cl:copy-seq name))
+	       (cl:t (cl:copy-seq name)))))
 	  ((not (qs:scheme-symbol-p symbol))
 	   (error "symbol->string: invalid argument - ~S"
 		  symbol))

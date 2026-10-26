@@ -91,8 +91,8 @@
   (LET ((LEN (LENGTH (THE-WHO SIMPLE-STRING "string-length" NAME))))
     (PROG (.I.0)
       (SETQ .I.0 0)
-      (GO |.loop.437|)
-      |.loop.437|
+      (GO |.loop.434|)
+      |.loop.434|
       (LET ((I .I.0))
         (IF (SCHEME= I LEN)
             (RETURN (SCHEME-WRITE-CHAR #\| PORT))
@@ -110,7 +110,7 @@
                           (SCHEME-WRITE-CHAR #\; PORT))
                         (SCHEME-WRITE-CHAR C PORT))))
               (SETQ .I.0 (SCHEME+ I 1))
-              (GO |.loop.437|)))))))
+              (GO |.loop.434|)))))))
 (SET-VALUE-FROM-FUNCTION 'WRITE-BARRED-SYMBOL 'SCHEME::WRITE-BARRED-SYMBOL)
 (DEFUN WRITE-BOOLEAN (MUMBLE PORT)
   (SCHEME-WRITE-CHAR #\# PORT)
@@ -133,8 +133,8 @@
   (LET ((LEN (LENGTH (THE-WHO SIMPLE-STRING "string-length" OBJ))))
     (PROG (.I.0)
       (SETQ .I.0 0)
-      (GO |.loop.449|)
-      |.loop.449|
+      (GO |.loop.446|)
+      |.loop.446|
       (LET ((I .I.0))
         (IF (SCHEME= I LEN)
             (RETURN (SCHEME-WRITE-CHAR #\" PORT))
@@ -148,7 +148,7 @@
                         (WRITE-STRING (CHEZ-STRING-ESCAPE C) PORT)
                         (SCHEME-WRITE-CHAR C PORT))))
               (SETQ .I.0 (SCHEME+ I 1))
-              (GO |.loop.449|)))))))
+              (GO |.loop.446|)))))))
 (SET-VALUE-FROM-FUNCTION 'WRITE-STRING-LITERAL 'SCHEME::WRITE-STRING-LITERAL)
 (DEFUN CHEZ-STRING-ESCAPE (C)
   (LET ((N (CHAR-CODE C)))
@@ -306,8 +306,8 @@
                    PORT)
                   (PROG (.I.0)
                     (SETQ .I.0 1)
-                    (GO |.loop.488|)
-                    |.loop.488|
+                    (GO |.loop.485|)
+                    |.loop.485|
                     (LET ((I .I.0))
                       (OR (SCHEME>= I LEN)
                           (PROGN
@@ -315,7 +315,7 @@
                              (CHAR-DOWNCASE (CHECKED-SCHAR "string-ref" S I))
                              PORT)
                             (SETQ .I.0 (SCHEME+ I 1))
-                            (GO |.loop.488|))))))
+                            (GO |.loop.485|))))))
                 (DISPLAY NAME PORT)))))
       (DISPLAY NAME PORT)))
 (SET-VALUE-FROM-FUNCTION 'DISPLAY-TYPE-NAME 'SCHEME::DISPLAY-TYPE-NAME)
