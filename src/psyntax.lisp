@@ -917,20 +917,28 @@ propagation: its sets of constraints, a bit vector per block, grow with
 the square of a function's size, and one of Typed Racket's linklets took
 more than 3 GB of them (CALL-WITH-SIZE-POLICY).")
 
+(defparameter *eval-constraint-propagation-limit* 200000
+  "*CONSTRAINT-PROPAGATION-LIMIT* for a form EVAL-COMPILED-OR-INTERPRETED
+compiles: a program's body, which cpletrec makes one form.  Without
+constraint propagation SBCL leaves out much of what it inlines (a frame's
+VECTOR became a full call, consing on the heap, and the scheme benchmark
+took twice as long); its body of 53,000 conses took 80 MB more to compile
+with it, and 7% more time.")
+
 (defvar *force-constraint-propagation* nil
   "True to compile with constraint propagation whatever the size: SBCL
 2.6.9 can fail without it (\"full call to DATA-VECTOR-REF\", a bug) on
 code it compiles with it, so a compile that fails is tried again so.")
 
-(defun call-with-size-policy (size thunk)
+(defun call-with-size-policy (size thunk &optional (limit *constraint-propagation-limit*))
   "Call THUNK, which compiles code whose biggest form is SIZE conses:
-without SBCL's constraint propagation if that's past
-*CONSTRAINT-PROPAGATION-LIMIT* (and not *FORCE-CONSTRAINT-PROPAGATION*).
-The code is as correct, its types less well known."
-  #+sbcl (if (and (> size *constraint-propagation-limit*) (not *force-constraint-propagation*))
+without SBCL's constraint propagation if that's past LIMIT (and not
+*FORCE-CONSTRAINT-PROPAGATION*).  The code is as correct, its types less
+well known."
+  #+sbcl (if (and (> size limit) (not *force-constraint-propagation*))
 	     (let ((sb-c::*constraint-propagate* nil)) (funcall thunk))
 	     (funcall thunk))
-  #-sbcl (progn size (funcall thunk)))
+  #-sbcl (progn size limit (funcall thunk)))
 
 (defun call-without-jump-tables (thunk)
   "Call THUNK, which compiles code, with SBCL's jump tables off: a CASE
@@ -961,7 +969,8 @@ form bigger than *INTERPRET-LIMIT* is interpreted, and so is one
 				  (when (and (boundp 'sb-c::*compilation*) sb-c::*compilation*
 					     (not (typep c 'sb-int:simple-program-error)))
 				    (throw 'compile-failed (values nil t))))))
-	    (values (multiple-value-list (call-with-size-policy (tree-size form) (lambda () (eval form)))) nil)))
+	    (values (multiple-value-list (call-with-size-policy (tree-size form) (lambda () (eval form))
+								       *eval-constraint-propagation-limit*)) nil)))
       (cond ((not failure) (values-list values))
 	    ;; compiled again with constraint propagation, whatever its size:
 	    ;; without it, SBCL 2.6.9 can fail ("full call to DATA-VECTOR-REF",
@@ -1023,9 +1032,14 @@ TOP-LEVEL begin's forms are compiled one by one: its biggest counts."
 		       (string= (symbol-name (car form)) "BEGIN"))
 		  (reduce #'max (cdr form) :key #'tree-size :initial-value 0)
 		  (tree-size form))))
-    (if (> size *inline-arithmetic-limit*)
-	`(locally (declare (notinline qs:scheme+ qs:scheme- qs:scheme*)) ,lisp)
-	(inline-small-labels (declare-loop-types (stack-allocate-marked (name-marked-lambdas lisp)))))))
+    (let ((lisp (declare-loop-types (stack-allocate-marked (name-marked-lambdas lisp)))))
+      ;; a big form keeps cpdx's and cptypes' work (without it, its
+      ;; frames were heap vectors made by full calls of VECTOR: the
+      ;; scheme benchmark, whose program cpletrec makes one form of 53,000
+      ;; conses, took twice as long), not the code that grows it
+      (if (> size *inline-arithmetic-limit*)
+	  `(locally (declare (notinline qs:scheme+ qs:scheme- qs:scheme*)) ,lisp)
+	  (inline-small-labels lisp)))))
 
 (defun name-marked-lambdas (lisp)
   "LISP with each #'(lambda args '(:racket-name . id) ...) made
