@@ -1172,13 +1172,60 @@ are Lisp symbols are the transformation's own, or the translator's."
 		       (push (cons v (caddr l)) bodies))))
 		 lambdas)
 	(setq *known-procedures* known)
-	(let ((*safe-procedures* safe))
-	  (loop while (loop with changed = nil
-			    for (v . body) in bodies
-			    when (and (gethash v safe) (may-capture-p body))
-			      do (remhash v safe) (setq changed t)
-			    finally (return changed))))
+	;; Safe parameters: a parameter of a known procedure every use of
+	;; which is a call with its fixed arguments (so all its calls are
+	;; seen), never assigned, is safe while every call passes a safe
+	;; procedure in its place; a call through it then can't capture.
+	;; quicksort's LESS?, passed down from QUICK-1 to PARTITION's
+	;; loops, made each comparison a site.
+	(let ((params (safe-parameter-candidates form known assignments)))
+	  (loop for (p) in params do (setf (gethash p safe) t))
+	  (let ((*safe-procedures* safe))
+	    (loop while (loop with changed = nil
+			      for (v . body) in bodies
+			      when (and (gethash v safe) (may-capture-p body))
+				do (remhash v safe) (setq changed t)
+			      finally
+				 (loop for (p . args) in params
+				       when (and (gethash p safe) (notevery #'safe-procedure-p args))
+					 do (remhash p safe) (setq changed t))
+				 (return changed)))))
 	safe))))
+
+(defun safe-parameter-candidates (form known assignments)
+  "((parameter . arguments) ...): the fixed parameters of KNOWN's procedures
+(variable -> lambda) that are never assigned (ASSIGNMENTS) and whose
+procedure FORM only calls, with exactly its fixed arguments; ARGUMENTS
+are what its calls pass in that place."
+  (let ((calls (make-hash-table :test 'eq))	; variable -> its calls' arguments
+	(escapes (make-hash-table :test 'eq)))	; variable -> used otherwise
+    (labels ((walk (e)
+	       (cond ((symbolp e) (when (gethash e known) (setf (gethash e escapes) t)))
+		     ((atom e))
+		     ((quote-form-p e))
+		     ((lambda-form-p e) (walk (caddr e)))
+		     ((keyword-p (car e) "LETREC")
+		      (dolist (b (cadr e)) (walk (cadr b)))
+		      (mapc #'walk (cddr e)))
+		     ((and (symbolp (car e)) (gethash (car e) known))
+		      (push (cdr e) (gethash (car e) calls))
+		      (mapc #'walk (cdr e)))
+		     (t (loop for x on e
+			      do (walk (car x))
+				 (unless (listp (cdr x)) (walk (cdr x))))))))
+      (walk form))
+    (let ((out '()))
+      (maphash
+       (lambda (v l)
+	 (let ((formals (cadr l)))
+	   (when (and (listp formals) (null (cdr (last formals)))
+		      (not (gethash v escapes))
+		      (every (lambda (args) (= (length args) (length formals))) (gethash v calls)))
+	     (loop for p in formals for i from 0
+		   when (and (symbolp p) (zerop (gethash p assignments 0)))
+		     do (push (cons p (mapcar (lambda (args) (nth i args)) (gethash v calls))) out)))))
+       known)
+      out)))
 
 ;;; Continuations that are only ever invoked during the extent of their
 ;;; call/cc.  In (call/cc (lambda (k) body)), if BODY only calls K, or
