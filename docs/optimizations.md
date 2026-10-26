@@ -492,6 +492,36 @@ smaller main stack would limit recursion depth. This is why a smaller
 nursery costs more, as "Tried and not kept" records: each collection
 carries a fixed 6-8 ms.
 
+## Three slow paths found by profiling (2026-10-26)
+
+By instructions retired on the r7rs-benchmarks, before and after:
+
+- **scheme, 153G to 81G.** cpletrec makes the program's body one form,
+  of 53,000 conses. Past 50,000 a form was compiled without SBCL's
+  constraint propagation (`*constraint-propagation-limit*`, set for
+  Typed Racket's linklets, whose constraint sets took over 3 GB). Without
+  it, SBCL compiled each frame's `(vector ...)`, declared
+  dynamic-extent, as a full call of `VECTOR` consing on the heap. A
+  form that `eval-compiled-or-interpreted` compiles (a program, a
+  script, the REPL's) now keeps propagation up to 200,000 conses
+  (`*eval-constraint-propagation-limit*`). This one took 80 MB and 7%
+  more to compile. Linklets and other `compile-file` chunks keep 50,000.
+- **compiler, 63G to 51G.** Its program is hoisted into globals, and a
+  `set!` of one (`qs:set!-aux`) went through `CL:SET`'s checks (package
+  lock, constant, declared type), then `setf symbol-function` or
+  `fmakunbound`, which update SBCL's information on the name. A compiler
+  macro now stores a known symbol, declared special where it is
+  assigned, and sets the function cell through its fdefn.
+- **matrix, 35.5G to 33.1G.** With full continuations, `map` and
+  `for-each` of several lists made a list of the cars and one of the
+  cdrs at each step. Two lists, the usual case, have their own loops.
+
+matrix is otherwise the cost of capture sites: its procedures call
+`coef-+` and `coef-*` passed in as arguments, so every call is unknown.
+With `--continuations=escape` it retires 22G instructions against 35G.
+Chez's cp0 wouldn't specialize `make-row-reduce` either (it is far past
+cp0's size limit); Chez's unknown calls are just cheap.
+
 ## Run time against upstream Racket (October 2026)
 
 By instructions retired, Racket mode's over upstream Racket's on the same
