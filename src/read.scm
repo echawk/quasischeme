@@ -100,6 +100,8 @@
 ; R6RS and R7RS allow for most of Unicode.
 
 (define (sub-read port)
+  ;; the host reads whitespace, before an annotation's start is taken
+  (qs:skip-whitespace port)
   (let* ((start (and (qs:true? (qs:annotating-p)) (qs:reader-position port)))
 	 (form (sub-read-1 port))
 	 (form (if (and (qs:neoteric-p) (not (eof-object? form)) (not (reader-token? form)))

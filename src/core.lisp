@@ -819,6 +819,16 @@ symbols, not errors, and #!r6rs restricts a port to R6RS syntax.")
 
 (defun chez-reader-p () *chez-reader*)
 
+(defun skip-whitespace (port)
+  "Read the ASCII whitespace (read.scm's ascii-whitespaces) next on PORT:
+each of its characters went through the translated reader's dispatch
+and a call of itself, and half of a source file is whitespace."
+  (declare (optimize speed))
+  (loop for c = (peek-char nil port nil nil)
+	while (and c (member (char-code c) '(32 10 9 12 13)))
+	do (read-char port))
+  unspecific)
+
 ;;; The reader's tokens (read.scm, SUB-READ-SYMBOL-TOKEN), read here while
 ;;; they hold no escape: a token was a list of its characters, consed one
 ;;; by one through the translated reader's calls, half of reading a data

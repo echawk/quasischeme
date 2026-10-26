@@ -116,6 +116,7 @@
 (SET-FUNCTION-FROM-VALUE 'DOT 'SCHEME::DOT)
 (DEFUN SUB-READ (PORT)
   (DECLARE (SPECIAL EOF-DATUM))
+  (SKIP-WHITESPACE PORT)
   (LET ((START (IF (ANNOTATING-P) (READER-POSITION PORT) FALSE)))
     (LET ((FORM (SUB-READ-1 PORT)))
       (LET ((.FORM.0 (IF (AND (TRUEP (NEOTERIC-P))
@@ -766,8 +767,8 @@
                                                                   (GO .LAST))))))))
                                   (RETURN (PROG (I L)
                                             (PSETQ I 0 L ELEMENTS)
-                                            (GO |.loop.192|)
-                                            |.loop.192|
+                                            (GO |.loop.190|)
+                                            |.loop.190|
                                             (IF (NULL L)
                                                 (RETURN V)
                                                 (PROGN
@@ -783,7 +784,7 @@
                                                          (CDR (THE-WHO CONS
                                                                        "cdr"
                                                                        L)))
-                                                  (GO |.loop.192|))))))))
+                                                  (GO |.loop.190|))))))))
                             (IF (CHAR= D #\%)
                                 (PROGN
                                   (IF (SCHEME> N 3)
