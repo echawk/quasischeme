@@ -505,10 +505,48 @@ docs/interop.md): named by inverting case, like a Scheme symbol, so
     ((nil)
      (warn "SET! of undefined variable ~S" (or name CL-sym))))
   (setf (symbol-value CL-sym) value)
-  (if (procedurep value)
-      (setf (symbol-function CL-sym) value)
-      (fmakunbound CL-sym))
+  (set-function-cell CL-sym value)
   unspecific)
+
+(defun set-function-cell (CL-sym value)
+  "CL-SYM's function: VALUE if it's a procedure, else none.  By its fdefn,
+not SETF of SYMBOL-FUNCTION or FMAKUNBOUND, which also update SBCL's
+information on the name: a SET! of a program's global took more of the
+compiler benchmark than SBCL's CLEAR-INFO-VALUES."
+  #+sbcl (let ((fdefn (sb-kernel:find-or-create-fdefn CL-sym)))
+	   (if (procedurep value)
+	       (unless (eq (sb-kernel:fdefn-fun fdefn) value)
+		 (setf (sb-kernel:fdefn-fun fdefn) value))
+	       (when (sb-kernel:fdefn-fun fdefn)
+		 (sb-kernel:fdefn-makunbound fdefn))))
+  #-sbcl (if (procedurep value)
+	     (setf (symbol-function CL-sym) value)
+	     (fmakunbound CL-sym)))
+
+(defun set!-check (name CL-sym)
+  "SET!-AUX's check that CL-SYM may be assigned, when it isn't defined."
+  (case (get CL-sym 'defined)
+    ((:not-assignable)
+     (cerror "Assign it anyhow" "Variable ~S isn't supposed to be SET!" (or name CL-sym)))
+    ((nil)
+     (warn "SET! of undefined variable ~S" (or name CL-sym)))))
+
+;;; A SET! of a known global, in line: the variable declared special
+;;; where it is assigned, so SBCL stores it without SET's checks (its
+;;; package lock, its being a constant, its declared type), which took a
+;;; tenth of the compiler benchmark
+(define-compiler-macro set!-aux (&whole whole name value CL-sym)
+  (if (and (consp CL-sym) (eq (car CL-sym) 'quote) (consp (cdr CL-sym))
+	   (symbolp (cadr CL-sym)) (cadr CL-sym) (not (constantp (cadr CL-sym))))
+      (let ((sym (cadr CL-sym)) (v (gensym "VALUE")) (d (gensym "DEFINED")))
+	`(let ((,v ,value))
+	   (let ((,d (get ',sym 'defined)))
+	     (unless (or (eq ,d t) (eq ,d :assignable))
+	       (set!-check ,name ',sym)))
+	   (locally (declare (special ,sym)) (setq ,sym ,v))
+	   (set-function-cell ',sym ,v)
+	   unspecific))
+      whole))
 
 ; NEWLINE and WRITE-CHAR return no value worth printing, as in Scheme
 (defun scheme-newline (&optional (port *standard-output*))
