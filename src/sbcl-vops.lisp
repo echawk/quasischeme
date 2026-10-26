@@ -208,6 +208,101 @@ return after it)."
       (or (gethash lambda table)
 	  (setf (gethash lambda table) (cons (sb-assem:gen-label) nil)))))
 
+  ;; The frame pointer, after a local call, from the stack pointer, not
+  ;; from memory.  A function returns by loading its caller's frame
+  ;; pointer from its frame (LDP CFP, LR, [CFP]), and everything the
+  ;; caller does next with its frame (its variables live across the call
+  ;; are there) waits on that load: SBCL's tak took 2.2 times the cycles
+  ;; of C's for the same instructions.  The callee's frame starts at the
+  ;; caller's stack pointer, which, in a function with nothing on the
+  ;; stack above its frame, is the frame pointer plus the frame's size
+  ;; (one size for all of a component's functions); after the return the
+  ;; stack pointer is the callee's frame pointer again (or, with several
+  ;; values, OCFP is).  So after the call:
+  ;;
+  ;;       SUB CFP, CSP, #size                ; KNOWN-CALL-LOCAL
+  ;;       CSEL TMP, OCFP, CSP, EQ            ; CALL-LOCAL: OCFP if several
+  ;;       SUB CFP, TMP, #size                ;   values (Z set), else CSP
+  ;;
+  ;; the same value the callee loaded, from registers the processor has.
+  ;; Only in a function none of whose code leaves anything on the stack
+  ;; above its frame: no stack allocation (a dynamic-extent vector, list,
+  ;; closure or instance), no &more arguments, no values kept on the
+  ;; stack (multiple-value-call, VALUES-LIST, unknown values received),
+  ;; no unwind-protect or catch entry, in the calling function's own code
+  ;; (QS-DIRTY-LAMBDAS).  tak
+  ;; in SBCL took 0.59 of the cycles.  QUASISCHEME_FRAME_POINTER=0 turns
+  ;; it off.
+  (defvar cl-user::*quasischeme-frame-pointer* :unknown)
+  (pushnew (lambda () (setq cl-user::*quasischeme-frame-pointer* :unknown)) sb-ext:*init-hooks*)
+
+  (defparameter *qs-stack-vops*
+    '("%%NIP-VALUES" "%MORE-ARG-VALUES-SKIP" "%MORE-ARG-VALUES" "%MORE-ARG-CONTEXT"
+      "%LISTIFY-REST-ARGS" "ALLOCATE-DIRECT-MV-CALL-FRAME" "COPY-MORE-ARG" "NLX-ENTRY-MULTIPLE"
+      "NLX-ENTRY" "PUSH-VALUES" "RESET-STACK-POINTER" "VALUES-LIST" "REVERSE-VALUES-LIST"
+      "UNWIND-TO-FRAME-AND-CALL" "UWP-ENTRY-BLOCK" "MULTIPLE-CALL-LOCAL" "MULTIPLE-CALL"
+      "MULTIPLE-CALL-NAMED" "MULTIPLE-CALL-VARIABLE" "CURRENT-STACK-POINTER"
+      "ALLOCATE-VECTOR-ON-STACK" "QS-ALLOCATE-SMALL-VECTOR-ON-STACK" "MAKE-UNWIND-BLOCK"
+      "MAKE-CATCH-BLOCK" "SET-UNWIND-PROTECT" "%CATCH-BLOCK" "%UNWIND-PROTECT")
+    "VOPs that leave something on the stack above a frame.")
+
+  (defparameter *qs-maybe-stack-vops* '("LIST" "MAKE-CLOSURE" "FIXED-ALLOC" "VAR-ALLOC")
+    "VOPs that do when they allocate on the stack.")
+
+  (defun qs-stack-vop-p (v)
+    (let ((name (symbol-name (sb-c::vop-name v))))
+      (or (member name *qs-stack-vops* :test #'string=)
+	  (search "ON-STACK" name)
+	  (search "STACK-ALLOC" name)
+	  (and (member name *qs-maybe-stack-vops* :test #'string=)
+	       (or (member t (sb-c::vop-codegen-info v))
+		   (let ((node (sb-c::vop-node v)))
+		     (and node (sb-c::valued-node-p node)
+			  (sb-c::node-stack-allocate-p node))))))))
+
+  (defun qs-dirty-lambdas (component)
+    "The functions of COMPONENT whose code may leave something on the stack
+above their frame: those a stack-moving VOP is in (by its block)."
+    (let ((dirty (make-hash-table :test 'eq)))
+      (loop for b = (sb-c::block-info (sb-c::component-head component)) then (sb-c::ir2-block-next b)
+	    while b
+	    do (loop for v = (sb-c::ir2-block-start-vop b) then (sb-c::vop-next v)
+		     while v
+		     when (qs-stack-vop-p v)
+		       do (let ((block (sb-c::ir2-block-block b)))
+			    (setf (gethash (and block (sb-c::block-home-lambda block)) dirty) t))))
+      dirty))
+
+  ;; component -> its QS-DIRTY-LAMBDAS
+  (defvar *qs-dirty-lambdas* (make-hash-table :test 'eq :weakness :key :synchronized t))
+
+  (defun qs-emit-frame-pointer-restore (segment)
+    (let* ((vop (and (boundp 'sb-assem::*current-vop*) sb-assem::*current-vop*))
+	   (name (and (sb-c::vop-p vop) (symbol-name (sb-c::vop-name vop)))))
+      (when (and (member name '("KNOWN-CALL-LOCAL" "CALL-LOCAL") :test #'string=)
+		 (progn (when (eq cl-user::*quasischeme-frame-pointer* :unknown)
+			  (setq cl-user::*quasischeme-frame-pointer*
+				(not (equal (uiop:getenv "QUASISCHEME_FRAME_POINTER") "0"))))
+			cl-user::*quasischeme-frame-pointer*)
+		 (quasischeme-fast-p))
+	(let* ((component (sb-c::block-component (sb-c::ir2-block-block (sb-c::vop-block vop))))
+	       (bytes (* n-word-bytes (sb-c::sb-allocated-size 'control-stack))))
+	  (when (and (< 0 bytes 4096)
+		     (let ((dirty (or (gethash component *qs-dirty-lambdas*)
+				      (setf (gethash component *qs-dirty-lambdas*)
+					    (qs-dirty-lambdas component))))
+			   (block (sb-c::ir2-block-block (sb-c::vop-block vop))))
+		       (not (or (gethash nil dirty)
+				(gethash (sb-c::block-home-lambda block) dirty)))))
+	    (flet ((sub-imm (rd rn) (logior #xD1000000 (ash bytes 10) (ash rn 5) rd)))
+	      (if (string= name "KNOWN-CALL-LOCAL")
+		  (qs-emit-word segment (sub-imm cfp-offset csp-offset))
+		  (progn
+		    ;; CSEL TMP, OCFP, CSP, EQ
+		    (qs-emit-word segment (logior #x9A800000 (ash csp-offset 16) (ash 0 12)
+						  (ash ocfp-offset 5) tmp-offset))
+		    (qs-emit-word segment (sub-imm cfp-offset tmp-offset))))))))))
+
   (macrolet ((adr (rd offset)		; OFFSET from this instruction
 	       `(logior #x10000000 (ash (ldb (byte 2 0) ,offset) 29) (ash (ldb (byte 19 2) ,offset) 5) ,rd))
 	     (sub (rd rn rm) `(logior #xCB000000 (ash ,rm 16) (ash ,rn 5) ,rd))
@@ -234,8 +329,10 @@ return after it)."
 			(funcall (gethash 'sb-arm64-asm::b sb-assem::*inst-encoder*) segment target)
 			(sb-assem::%emit-label segment (and (boundp 'sb-assem::*current-vop*) sb-assem::*current-vop*)
 					       (car back))
-			(setf (cdr back) t))
-		      (funcall bl segment target)))))
+			(setf (cdr back) t)
+			(qs-emit-frame-pointer-restore segment))
+		      (progn (funcall bl segment target)
+			     (qs-emit-frame-pointer-restore segment))))))
 	(setf (gethash 'sb-arm64-asm::ret sb-assem::*inst-encoder*)
 	      (lambda (segment &optional (register lr-tn))
 		(let* ((node (qs-current-node))
