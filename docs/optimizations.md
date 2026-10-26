@@ -9,11 +9,12 @@ The aim throughout is to make the output faster by *adding*
 declarations and knowledge, not by restructuring the code into
 something unrecognizable.
 
-Where speed stands: ecraven's r7rs-benchmarks (bench/) run at 1.37×
-Chez Scheme's time as a geometric mean, with full continuations, and at
-1.30× escape-only (bench/RESULTS.md, ROADMAP section 1). Those runs
-predate the optimizer's first pass (cp0 and cptypes, 2026-10-18; "Plan",
-below), which hasn't been measured on them yet.
+Where speed stands (2026-10-26): ecraven's r7rs-benchmarks (bench/)
+run at 1.41× Chez Scheme's time as a geometric mean, with full
+continuations, measured side by side on one machine against Chez with
+its native procedures (the older 1.37×, bench/RESULTS.md, was against
+Chez with Akku's R7RS libraries). "Summary", at the end, lists what is
+done and what isn't.
 
 ## What the translator does now
 
@@ -78,7 +79,7 @@ The ideas below are judged against code like this.
 Each idea has a status: **done**, **partly**, or **not started**. For
 each, an example shows where it would help.
 
-### 1. A chosen optimization level (not started; the first to do)
+### 1. A chosen optimization level (partly: which passes run, not SBCL's policy)
 
 Every other idea fits under a level the user chooses. A level would map
 to an SBCL policy and switch the more aggressive transformations on.
@@ -111,7 +112,7 @@ library calling a level-1 library mustn't remove the second one's
 checks. Since a level is a policy around a form, this falls out of how
 the translation is compiled.
 
-### 2. Records as one object (not started)
+### 2. Records as one object (done, October 2026: see the Plan, item 7)
 
 A record is now a struct holding a vector of fields: two allocations,
 and an extra indirection on every field access (`gcbench` 2.1×). A
@@ -159,7 +160,7 @@ and with full continuations the call is a capture site, so the lambda
 needs a frame. With the knowledge exported, the lambda is safe, `square`
 can be inlined, and the `fold-left` call becomes the plain primitive.
 
-### 4. Type inference into declarations (not started)
+### 4. Type inference into declarations (partly: cptypes, typed loop variables)
 
 Chez's `cptypes` pass learns types from predicates and from the
 primitives' result types, and drops checks it has made redundant. Ours
@@ -225,7 +226,7 @@ prints, at exit, how many forms each pass handled and what cpdx marked.
 
 `xs` and the closure over `port` are each heap-allocated today.
 
-### 6. Scheme-level inlining and constant folding (partly)
+### 6. Scheme-level inlining and constant folding (partly: cp0)
 
 Chez's `cp0` inlines small procedures, folds constants and removes dead
 code before compiling. We rely on SBCL for this, which works inside a
@@ -264,7 +265,7 @@ from 71 to 45 billion instructions, `triangl` from 37 to 27, `browse`
 as a Lisp test directly. The gain is small since the test went inline;
 it matters in predicates called in tight loops.
 
-### 8. Faster compilation (not started)
+### 8. Faster compilation (partly: the library cache, QUASISCHEME_EVALUATOR)
 
 A different direction: importing a library spends about 90% of its time
 in SBCL's compiler. At level 0, or for code run once (a program's top
@@ -595,22 +596,58 @@ that compute. `auto` gains nothing measurable in these runs: Guile mode
 already interprets its run-once forms, and Racket's and the psyntax
 modes' cold time is in compiling procedures, which `auto` compiles too.
 
-## Summary
+## Summary: what is done and what isn't (2026-10-26)
 
-| # | idea | status | effect where it applies |
+Where speed stands: the r7rs-benchmarks at 1.41 times Chez Scheme's run
+time (geometric mean over all 57, full continuations, measured side by
+side on one machine against Chez 10.4 at `--optimize-level 2` with its
+native procedures; startup and compiling not counted). 13 run faster
+than in Chez, from 0.20 (`tail`) to 0.99 (`nboyer`); the slowest are
+those that call unknown procedures in loops (matrix, lattice, ctak,
+fibc, quicksort, cpstak, scheme, at 2.5 to 3.5).
+
+**Passes on core forms** (OPTIMIZE-CORE: cpletrec, cp0, cptypes, cpdx),
+against Chez's:
+
+| Chez's pass | here | status | what is left |
 |---|---|---|---|
-| 1 | an optimization level | not started | 8% at level 2; more at 3 |
-| 2 | records as one object | done | about halves record allocation and access; gcbench 14% fewer instructions |
-| 3 | cross-library knowledge | partly (per form) | inlining and fewer capture sites across libraries |
-| 4 | type inference into declarations | partly (cptypes; typed loop variables) | fixnum and unboxed-flonum loops |
-| 5 | `dynamic-extent` | partly (cpdx: closures passed to primitives, rest lists only read) | rest lists and non-escaping closures |
-| 6 | inlining small known procedures | partly (small `labels` functions; cp0, first pass) | calls to small helpers |
-| 7 | boolean results | partly | small |
-| 8 | faster compilation | not started | start-up and the REPL |
-| 9 | continuation frames | partly (across forms in Guile mode, across libraries, self-calls at psyntax's top level) | the runtime's higher-order primitives |
+| cpletrec | src/cpletrec.lisp | done | |
+| cp0: inlining | cp0, `inline-small-labels` | partly | inlining by the size a call *becomes* after optimizing it (Chez's score), not only by the lambda's size before (60 conses); copies of a procedure specialized to the constant or known-procedure arguments of a call (would make matrix's `coef-*` known calls) |
+| cp0: folding, copy and constant propagation, dead code | cp0 | done | more primitives folded (strings, characters) |
+| cp0: `or`/`and` in tests, `(car (cons a b))`, `call-with-values` | cp0 | done | |
+| cp0: record procedures inlined | the record runtime (one object, constructors without a vector) | partly | record accessors and predicates of a known type in line in the code, not calls |
+| cptypes: predicates and results | src/cptypes.lisp | done | |
+| cptypes: known procedures' parameters, from all their calls | cptypes, with clones of procedures that escape | done | |
+| cptypes: known procedures' results | | not started | `(fl+ (f x) 1.0)` where f returns a flonum |
+| fixnum loop counters | | not started | a counter from a fixnum, stepped by 1 and bounded by a fixnum (a `vector-length`), is a fixnum; generic `+` keeps its overflow check now |
+| unboxed flonums in loops | `declare-loop-types` | partly | only where the types are known from the program; Chez's answer for values `read` returns, a test choosing a specialized copy of the loop, not done |
+| dynamic extent (closures and rest lists on the stack) | src/cpdx.lisp | partly | rest lists passed to `apply` or a loop; procedures written in Scheme (Guile mode's `map`) |
+| cpcommonize (merging similar lambdas) | | not started | code size only |
+| optimize-level 3 (unsafe) | | not started | idea 1 |
 
-Ideas 1 and 2 are the cheapest and most certain; 3 and 4 are the
-largest and would be the core of a later major version.
+**The translator and the runtime:**
+
+| idea | status |
+|---|---|
+| definitions as `labels`, closed world for `--compile` executables | done |
+| open-coded primitives, inline fixnum and flonum arithmetic | done |
+| boolean tests in line | partly (idea 7): procedures known to return a Lisp boolean aren't used as tests directly |
+| records as one SBCL instance | done |
+| knowledge across forms and libraries | partly (idea 3): which procedures can't capture (safe locations, safe exports in Racket mode); not their bodies, so nothing is inlined across libraries |
+| safe parameters (a parameter only given safe procedures isn't a capture site) | done (2026-10-26) |
+| escape-only `call/cc` as a catch | done |
+| the library cache, interpreting run-once code | done (idea 8: `QUASISCHEME_EVALUATOR`) |
+
+**Code generation (SBCL, src/sbcl-vops.lisp, arm64):**
+
+| idea | status |
+|---|---|
+| small stack vectors in line | done |
+| deep self-recursion without the return-address stack | done (2026-10-25) |
+| the frame pointer after a local call from the stack pointer | done (2026-10-26), in functions with nothing on the stack above their frame |
+| capture sites cheaper: one frame per activation, frames without a cons, without zeroing | not started: a site costs about 50 instructions against a plain call's 10, and this is most of the gap left (matrix retires 35G instructions with full continuations, 22G escape-only) |
+| fewer spills around calls, `x - 1` in two instructions not four | not started (SBCL's register allocator and its fixnum VOPs) |
+| an unsafe policy for level 3 | not started |
 
 ## Tried and not kept (October 2026)
 
