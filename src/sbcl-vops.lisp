@@ -45,20 +45,55 @@ per process.")
   (sb-ext:unlock-package "SB-VM")
   (sb-ext:unlock-package "SB-C")
 
+  (defun qs-elements-stored-p (vop length)
+    "Whether the VOPs after VOP, which makes a simple vector of LENGTH, in
+its block store each of its elements, by a constant index, before
+anything else uses it (but moves of it): (VECTOR A B ...)'s stores."
+    (let ((tns (list (sb-c::tn-ref-tn (sb-c::vop-results vop))))
+	  (stored (make-array length :element-type 'bit :initial-element 0)))
+      (flet ((uses-p (v)
+	       (loop for r = (sb-c::vop-args v) then (sb-c::tn-ref-across r)
+		     while r thereis (member (sb-c::tn-ref-tn r) tns))))
+	(do ((v (sb-c::vop-next vop) (sb-c::vop-next v)))
+	    ((null v) nil)
+	  (let* ((name (sb-c::vop-name v))
+		 (args (sb-c::vop-args v))
+		 (index (and args (sb-c::tn-ref-across args)
+			     (sb-c::tn-ref-tn (sb-c::tn-ref-across args)))))
+	    (cond ((and (eq name 'data-vector-set/simple-vector)
+			(member (sb-c::tn-ref-tn args) tns)
+			index (eq (sb-c::tn-kind index) :constant)
+			(typep (sb-c::tn-value index) `(integer 0 (,length)))
+			(not (member (sb-c::tn-ref-tn (sb-c::tn-ref-across (sb-c::tn-ref-across args))) tns)))
+		   (setf (sbit stored (sb-c::tn-value index)) 1)
+		   (when (every #'plusp stored) (return t)))
+		  ((and (eq name 'move) (uses-p v))
+		   (push (sb-c::tn-ref-tn (sb-c::vop-results v)) tns))
+		  ((uses-p v) (return nil))))))))
+
+  ;; A small vector of constant length on the stack.  Its words aren't
+  ;; zeroed when the VOPs that follow store them all, as (VECTOR A B ...)'s
+  ;; do (a capture site's frame): the control stack is scanned
+  ;; conservatively, so a word not yet stored is no harm to the GC
+  ;; (SBCL's own stack vectors are words on the stack before they are
+  ;; zeroed, too)
   (define-vop (qs-allocate-small-vector-on-stack)
     (:info type length words)
     (:arg-types (:constant fixnum) (:constant fixnum) (:constant fixnum))
     (:results (result :scs (descriptor-reg)))
     (:temporary (:sc non-descriptor-reg) header)
     (:temporary (:sc any-reg) len)
+    (:vop-var vop)
     (:generator 2
       (let ((bytes (logandc2 (+ (* (+ words vector-data-offset) n-word-bytes) lowtag-mask) lowtag-mask)))
 	(allocation nil bytes other-pointer-lowtag result :stack-allocate-p t)
 	(load-immediate-word header type)
 	(load-immediate-word len (fixnumize length))
 	(inst stp header len (@ tmp-tn))
-	(loop for off from (* 2 n-word-bytes) below bytes by (* 2 n-word-bytes)
-	      do (inst stp zr-tn zr-tn (@ tmp-tn off))))))
+	(unless (and (= type simple-vector-widetag) (= length words)
+		     (qs-elements-stored-p vop length))
+	  (loop for off from (* 2 n-word-bytes) below bytes by (* 2 n-word-bytes)
+		do (inst stp zr-tn zr-tn (@ tmp-tn off)))))))
 
   (defvar cl-user::*quasischeme-fixnum-vops* :unknown)
   (pushnew (lambda () (setq cl-user::*quasischeme-fixnum-vops* :unknown)) sb-ext:*init-hooks*)
