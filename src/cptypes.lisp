@@ -185,6 +185,10 @@ argument type is within, else DEFAULT."
 (defvar *vtypes*)	; let-bound unassigned variable -> its init's type
 (defvar *facts*)	; variable -> narrowed type, scoped dynamically
 (defvar *emitting* nil)	; true in the final walk, which rewrites
+(defvar *rtypes*)	; known procedure's variable -> its result type (this iteration's)
+(defvar *rtypes-next*)	; ... joined from its body's type this iteration
+(defvar *known-lambdas*) ; a known procedure's lambda -> its variable
+(defvar *bounds* '())	; ((var . :upper or :lower) ...): var is below or above a fixnum
 
 (defun base-type (v)
   (cond ((not (vi v)) +all+)
@@ -222,6 +226,51 @@ argument type is within, else DEFAULT."
 		       (and (third entry) (list (cons (cadr e) (logandc2 +all+ (second entry))))))
 	       (values nil nil))))
 	(t (values nil nil))))
+
+(defun fixnum-operand-p (e)
+  "Whether E, a test's operand, is surely a fixnum: a fixnum constant, a
+variable of that type, or a call of a primitive that returns one."
+  (cond ((typed-variable-p e) (subtype-p (var-type e) +fix+))
+	((constant-p e) (typep (nth-value 1 (constant-p e)) 'fixnum))
+	((and (consp e) (primitive-call-name e))
+	 (= (primitive-result-type (primitive-call-name e) (mapcar (constantly +all+) (cdr e))) +fix+))))
+
+(defun test-bounds (e)
+  "Bounds ((var . :upper or :lower) ...) where test E is true, and where
+it is false: in (< i n), n a fixnum, i is below a fixnum."
+  (let ((name (and (consp e) (primitive-call-name e))))
+    (cond ((and (equal name "not") (= (length e) 2))
+	   (multiple-value-bind (yes no) (test-bounds (cadr e)) (values no yes)))
+	  ((and (member name '("<" ">" "<=" ">=") :test #'equal) (= (length e) 3))
+	   (destructuring-bind (a b) (cdr e)
+	     (flet ((less (x y)
+		      ;; X < Y holds
+		      (append (and (typed-variable-p x) (fixnum-operand-p y) (list (cons x :upper)))
+			      (and (typed-variable-p y) (fixnum-operand-p x) (list (cons y :lower))))))
+	       (cond ((string= name "<") (values (less a b) nil))
+		     ((string= name ">") (values (less b a) nil))
+		     ((string= name ">=") (values nil (less a b)))
+		     (t (values nil (less b a)))))))
+	  (t (values nil nil)))))
+
+(defun bounded-step-type (name args type)
+  "TYPE of the call of primitive NAME on ARGS, or a fixnum if it's a
+counter's step that can't leave the fixnums: (+ i 1) with i a fixnum
+below a fixnum, (- i 1) with i one above."
+  (flet ((counter (v bound)
+	   (and (typed-variable-p v) (subtype-p (var-type v) +fix+)
+		(member (cons v bound) *bounds* :test #'equal))))
+    (if (and (= (length args) 2) (/= type 0)
+	     (or (and (string= name "+")
+		      (or (and (eql (constant-value (second args)) 1) (counter (first args) :upper))
+			  (and (eql (constant-value (first args)) 1) (counter (second args) :upper))))
+		 (and (string= name "-")
+		      (eql (constant-value (second args)) 1) (counter (first args) :lower))))
+	+fix+
+	type)))
+
+(defun constant-value (e)
+  (multiple-value-bind (known value) (constant-p e) (and known value)))
 
 (defun call-facts (name args)
   "Facts about ARGS once a call of primitive NAME on them has returned."
@@ -287,18 +336,26 @@ calls in each hold for the rest."
       (setq *after-facts* (append after-test *after-facts*))
       (multiple-value-bind (yes no) (test-facts test)
 	(with-facts (after-test)
-	  (multiple-value-bind (then-type then2) (let ((*after-facts* '())) (with-facts (yes) (ty then)))
+	  (multiple-value-bind (yes-bounds no-bounds) (test-bounds test)
+	  (multiple-value-bind (then-type then2)
+	      (let ((*after-facts* '()) (*bounds* (append yes-bounds *bounds*))) (with-facts (yes) (ty then)))
 	    (multiple-value-bind (else-type else2)
-		(if else-p (let ((*after-facts* '())) (with-facts (no) (ty else))) (values +all+ nil))
+		(if else-p
+		    (let ((*after-facts* '()) (*bounds* (append no-bounds *bounds*))) (with-facts (no) (ty else)))
+		    (values +all+ nil))
 	      (values (logior then-type else-type)
-		      (list* (car e) test2 then2 (if else-p (list else2) '()))))))))))
+		      (list* (car e) test2 then2 (if else-p (list else2) '())))))))))))
 
 (defun ty-lambda (e)
   "Lambda E rewritten; its parameters' types are known if it's a known
-procedure's (from *PTYPES*) and else unknown."
-  (let* ((*after-facts* '())
-	 (body (nth-value 1 (ty-sequence (cddr e)))))
-    (list* (car e) (cadr e) body)))
+procedure's (from *PTYPES*) and else unknown.  A known procedure's body
+type is joined into its result type."
+  (let ((*after-facts* '()) (*bounds* '()))
+    (multiple-value-bind (type body) (ty-sequence (cddr e))
+      (let ((v (gethash e *known-lambdas*)))
+	(when v
+	  (setf (gethash v *rtypes-next*) (logior (gethash v *rtypes-next* 0) type))))
+      (list* (car e) (cadr e) body))))
 
 (defun ty-call (e)
   (let ((op (car e)) (args (cdr e)))
@@ -328,7 +385,9 @@ procedure's (from *PTYPES*) and else unknown."
 		 do (setf (gethash p *ptypes-next*) (logior (gethash p *ptypes-next* 0) type))))
 	 (when name
 	   (setq *after-facts* (append (call-facts name args) *after-facts*)))
-	 (values (if name (primitive-result-type name types) +all+)
+	 (values (cond (name (bounded-step-type name args (primitive-result-type name types)))
+		       ((and (symbolp op) (gethash op *known*)) (gethash op *rtypes* +all+))
+		       (t +all+))
 		 (cond ((and *emitting* name) (cons op2 (emit-argument-types name args2 types)))
 		       ((and *emitting* (symbolp op) (gethash op *known*))
 			(cons op2 (emit-call-types (gethash op *known*) args2)))
@@ -610,31 +669,39 @@ of an emitted type."
 	      (*ptypes* (make-hash-table :test 'eq))
 	      (*vtypes* (make-hash-table :test 'eq))
 	      (*facts* (make-hash-table :test 'eq))
+	      (*rtypes* (make-hash-table :test 'eq))
+	      (*known-lambdas* (make-hash-table :test 'eq))
+	      (*bounds* '())
 	      (*after-facts* '())
 	      (*emit-count* 0))
 	  (loop for v being the hash-keys of lambdas using (hash-value l)
 		unless (gethash v escapes)
-		  do (setf (gethash v *known*) l)
+		  do (setf (gethash v *known*) l (gethash l *known-lambdas*) v (gethash v *rtypes*) 0)
 		     (dolist (p (cadr l)) (setf (gethash p *ptypes*) 0)))
 	  (let ((converged nil))
 	    (loop repeat *cptypes-iterations*
-		  do (let ((*ptypes-next* (make-hash-table :test 'eq)))
+		  do (let ((*ptypes-next* (make-hash-table :test 'eq))
+			   (*rtypes-next* (make-hash-table :test 'eq)))
 		       (clrhash *vtypes*)
 		       (ty form)
 		       (let ((changed nil))
-			 (loop for p being the hash-keys of *ptypes* using (hash-value old)
-			       do (let ((new (logior old (gethash p *ptypes-next* 0))))
-				    (unless (= new old) (setf changed t (gethash p *ptypes*) new))))
+			 (loop for table in (list *ptypes* *rtypes*)
+			       for next in (list *ptypes-next* *rtypes-next*)
+			       do (loop for p being the hash-keys of table using (hash-value old)
+					do (let ((new (logior old (gethash p next 0))))
+					     (unless (= new old) (setf changed t (gethash p table) new)))))
 			 (unless changed (setq converged t) (return)))))
 	    (unless converged
-	      (loop for p being the hash-keys of *ptypes* do (setf (gethash p *ptypes*) +all+))))
+	      (loop for p being the hash-keys of *ptypes* do (setf (gethash p *ptypes*) +all+))
+	      (loop for v being the hash-keys of *rtypes* do (setf (gethash v *rtypes*) +all+))))
 	  ;; useless clones go
 	  (let ((drop (remove-if (lambda (c) (useful-clone-p (car c) lambdas)) clones)))
 	    (when drop
 	      (setq form (drop-clones form drop))
 	      (dolist (c drop) (remhash (car c) *known*))))
 	  (clrhash *vtypes*)
-	  (let ((*emitting* t) (*ptypes-next* (make-hash-table :test 'eq)))
+	  (let ((*emitting* t) (*ptypes-next* (make-hash-table :test 'eq))
+		(*rtypes-next* (make-hash-table :test 'eq)))
 	    (nth-value 1 (ty form))))))))
 
 ;;; ------------------------------------------------------------------
