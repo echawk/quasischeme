@@ -547,9 +547,41 @@ marker first."
 			       (cp (cadr b) :value)))
 			   bindings))
 	    (body (cp-sequence (cddr e) ctx)))
-	(if (and (null body) (every #'pure-p inits))
-	    nil
-	    (list (car e) (mapcar #'list names inits) (or (make-sequence-form body) (cp-void))))))))
+	(multiple-value-bind (names inits) (live-bindings names inits body)
+	  (cond ((and (null body) (every #'pure-p inits)) nil)
+		((null names) (make-sequence-form body))
+		(t (list (car e) (mapcar #'list names inits) (or (make-sequence-form body) (cp-void))))))))))
+
+(defun live-bindings (names inits body)
+  "NAMES and INITS less the bindings of pure inits that neither BODY (a
+list of forms) nor a binding kept references: a procedure whose calls
+were all inlined, for one."
+  (let ((refs (make-hash-table :test 'eq)) (dead '()))
+    (dolist (n names) (setf (gethash n refs) 0))
+    (labels ((count-refs (e self delta)
+	       ;; each reference in E to a name but SELF, DELTA to its count
+	       (cond ((symbolp e)
+		      (when (and (not (eq e self)) (gethash e refs))
+			(incf (gethash e refs) delta)))
+		     ((atom e))
+		     ((quote-p e))
+		     (t (loop for x on e
+			      do (count-refs (car x) self delta)
+				 (when (and (cdr x) (atom (cdr x))) (count-refs (cdr x) self delta))))))
+	     (kill (n)
+	       (let ((k (position n names)))
+		 (when (and (not (member n dead)) (pure-p (nth k inits)) (zerop (gethash n refs)))
+		   (push n dead)
+		   (count-refs (nth k inits) n -1)
+		   (dolist (m names) (when (zerop (gethash m refs)) (kill m)))))))
+      (count-refs body nil 1)
+      (loop for n in names for i in inits do (count-refs i n 1))
+      (dolist (n names) (kill n))
+      (if dead
+	  (loop for n in names for i in inits
+		unless (member n dead) collect n into ns and collect i into is
+		finally (return (values ns is)))
+	  (values names inits)))))
 
 (defun occurs-in-p (v e)
   (cond ((eq e v) t)
@@ -580,7 +612,11 @@ raise an error."
     (with-cp-bindings (vars cpbs)
       (let* ((body (cp-sequence body ctx))
 	     (kept (loop for b in cpbs for a in args
-			 unless (member (cpb-kind b) '(:const :copy)) collect (cons (cpb-name b) a))))
+			 unless (or (member (cpb-kind b) '(:const :copy))
+				    ;; a lambda whose calls were all inlined
+				    (and (eq (cpb-kind b) :lambda) (pure-p a)
+					 (not (occurs-in-p (cpb-name b) body))))
+			   collect (cons (cpb-name b) a))))
 	(cond ((and (null kept) (null body)) nil)
 	      ((null kept) (make-sequence-form body))
 	      (t (list* (list (sym "lambda") (mapcar #'car kept) (or (make-sequence-form body) (cp-void)))
