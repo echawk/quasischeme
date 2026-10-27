@@ -60,6 +60,96 @@ per process.")
 	(loop for off from (* 2 n-word-bytes) below bytes by (* 2 n-word-bytes)
 	      do (inst stp zr-tn zr-tn (@ tmp-tn off))))))
 
+  (defvar cl-user::*quasischeme-fixnum-vops* :unknown)
+  (pushnew (lambda () (setq cl-user::*quasischeme-fixnum-vops* :unknown)) sb-ext:*init-hooks*)
+  (defun qs-fixnum-vops-p ()
+    (when (eq cl-user::*quasischeme-fixnum-vops* :unknown)
+      (setq cl-user::*quasischeme-fixnum-vops*
+	    (not (equal (uiop:getenv "QUASISCHEME_FIXNUM_VOPS") "0"))))
+    (and cl-user::*quasischeme-fixnum-vops* (quasischeme-fast-p)))
+
+  (macrolet ((overflow-bignum ()
+	       ;; LOW, the untagged result, as a one-digit bignum in R
+	       ;; (WITH-FIXED-ALLOCATION and STOREW-PAIR aren't in a built
+	       ;; SBCL): two words, the header and the digit
+	       `(progn
+		  (inst mov header (logior (ash 1 n-widetag-bits) bignum-widetag))
+		  (pseudo-atomic (lr :sync nil)
+		    (allocation nil (* 2 n-word-bytes) other-pointer-lowtag r :flag-tn lr)
+		    (inst stp header low (@ tmp-tn)))))
+	     (def-c (name op)
+	       `(define-vop (,name)
+		  (:translate ,op)
+		  (:policy :fast-safe)
+		  (:guard (qs-fixnum-vops-p))
+		  (:args (x :scs (any-reg) :target r))
+		  (:info c)
+		  (:vop-var vop)
+		  (:arg-types tagged-num (:constant (integer -1023 1023)))
+		  (:temporary (:sc signed-reg) low)
+		  (:temporary (:sc unsigned-reg) header)
+		  (:temporary (:scs (non-descriptor-reg) :offset lr-offset) lr)
+		  (:results (r :scs (descriptor-reg any-reg)))
+		  (:result-types t)
+		  (:generator 3
+		    (let ((c (if (eq ',op '+) c (- c))))
+		      (if (minusp c)
+			  (inst subs r x (fixnumize (- c)))
+			  (inst adds r x (fixnumize c)))
+		      (inst b :vc done)
+		      (if (= (abs c) 1)
+			  ;; one value overflows: the bignum is a constant
+			  ;; (as SBCL's MOVE-FROM-FIXNUM+1), not code in the loop
+			  (load-constant vop (emit-constant (if (plusp c)
+								(1+ most-positive-fixnum)
+								(1- most-negative-fixnum)))
+					 r)
+			  (progn
+			    ;; R may be X: X is R less the constant, exactly (mod 2^64)
+			    (if (minusp c)
+				(inst add low r (fixnumize (- c)))
+				(inst sub low r (fixnumize c)))
+			    (inst asr low low n-fixnum-tag-bits)
+			    (if (minusp c)
+				(inst sub low low (- c))
+				(inst add low low c))
+			    (overflow-bignum))))
+		    done)))
+	     (def-2 (name op)
+	       `(define-vop (,name)
+		  (:translate ,op)
+		  (:policy :fast-safe)
+		  (:guard (qs-fixnum-vops-p))
+		  ;; to :SAVE: to (:RESULT 0), R may share X's register, and the
+		  ;; overflow path would untag the wrapped sum
+		  (:args (x :scs (any-reg) :to :save)
+			 (y :scs (any-reg) :to :save))
+		  (:arg-types tagged-num tagged-num)
+		  (:temporary (:sc signed-reg) low)
+		  (:temporary (:sc signed-reg) high)
+		  (:temporary (:sc unsigned-reg) header)
+		  (:temporary (:scs (non-descriptor-reg) :offset lr-offset) lr)
+		  (:results (r :scs (descriptor-reg any-reg)))
+		  (:result-types t)
+		  (:generator 4
+		    (inst ,(if (eq op '+) 'adds 'subs) r x y)
+		    (inst b :vc done)
+		    (inst asr low x n-fixnum-tag-bits)
+		    (inst asr high y n-fixnum-tag-bits)
+		    (inst ,(if (eq op '+) 'add 'sub) low low high)
+		    (overflow-bignum)
+		    done))))
+    ;; A fixnum plus or minus a fixnum or a small constant, an integer: on
+    ;; the tagged words, ADDS or SUBS and a branch if it overflowed, where
+    ;; SBCL's +/signed=>integer untags, adds and tags again (ASR, ADD,
+    ;; ADDS): (+ a b) and (- n 1) in 2 instructions, not 4.  An overflow
+    ;; makes the one-digit bignum.  QUASISCHEME_FIXNUM_VOPS=0 turns them
+    ;; off.
+    (def-c qs-fixnum+c=>integer +)
+    (def-c qs-fixnum-c=>integer -)
+    (def-2 qs-fixnum+fixnum=>integer +)
+    (def-2 qs-fixnum-fixnum=>integer -))
+
   ;; ALLOCATE-VECTOR's LTN-ANNOTATE optimizer chooses its VOP: this one
   ;; for a small constant vector on the stack, else SBCL's
   (let ((info (sb-c::fun-info-or-lose 'allocate-vector)))
