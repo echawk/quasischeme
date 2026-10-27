@@ -209,6 +209,61 @@ The translator turns the machine into one Lisp function: `labels` for
 `v16`, `let` for the hoisted locals, and `%machine` expands to a
 `block` around a `tagbody`.
 
+#### Stack sites (SBCL on arm64)
+
+The frame vector above is the portable implementation: plain Common
+Lisp, what Quasischeme on another Lisp would use, and what SBCL uses
+with `QUASISCHEME_STACK_SITES=0` or `QUASISCHEME_FAST=0`. Building it
+copies values SBCL already keeps: a variable live across a call is in
+a slot of the Lisp frame (its own, or the one its register is saved in)
+for the whole call. With the arm64 VOP layer (src/sbcl-vops.lisp), a
+site makes no frame. Before the call, `qs-stack-copy-n` copies the
+machine, `nil` (its cache) and the live variables to TNs of their own.
+After the call, `qs-site-mark-n` leaves in the code, behind a branch
+over it, where each copy is during the call:
+
+```
+MOV/STR ...                 ; the copies (SBCL saves them across the call)
+BLR  callee                 ; the call
+...                         ; its result moved
+B    over                   ; the mark: one instruction run
+.dword magic, site, parameter-count, n, (kind, word) × n
+over:
+```
+
+A copy is live across the call, so SBCL keeps it in a stack slot or
+saves its register in one, and the mark records that slot (its
+sc+offset; a constant is recorded as the code's constant or the
+immediate). Copying matters: SBCL may keep a variable in a register it
+doesn't save (an environment TN), or read it again after the call from
+a closure or a value cell, and then the variable has no slot during the
+call. A capture walks the frame pointers from its own frame out to the
+base's (`*base-fp*`). For each frame it looks past the return address
+into the caller for a branch over the magic word, with only moves
+between (a call of one value has no branch; any other branch or call on
+the way means the call wasn't a site's). A caller with a mark is a
+machine at that site, and `sb-di::sub-access-debug-var-slot` reads its
+values. The frame it makes is the portable one,
+`#(machine promoted site n live ...)`, which `resume-frame` resumes
+alike. The cache slot holds what `promoted` holds in a portable frame,
+the copies a capture made, so a later capture shares them; it's written
+into the Lisp frame, and each site's copy is `nil` again.
+
+The run time's frames (winders, handlers, prompts, barriers, `:resume`
+loops, a resumed machine's heap frame) are still pushed on `*fstack*`.
+`current-frames` puts them in order with the stack's machines by
+address, since an `*fstack*` cell is stack-allocated in its pusher's
+frame. Code SBCL's interpreter runs (a form too big to compile) has
+portable sites, and so does a site with more than 18 live variables.
+Code compiled either way goes together: a capture walks the stack
+whenever the marks exist.
+
+A site costs a few instructions (a move and a store a value, and the
+branch) where it cost about 45. quicksort, lattice and scheme retire
+about 30% fewer instructions and take 18–24% fewer cycles, matrix 14%;
+captures are faster too (ctak 5%), since nothing is pushed until one
+happens.
+
 ### 3. `call/cc` used as an escape: a `catch`
 
 ```scheme
@@ -598,10 +653,11 @@ re-entry, which logs `(in out in body out)`, nested tags, and a loop of
 - **Calls of procedure parameters** (`(f x)` with `f` a parameter) are
   sites even when every caller passes a safe procedure. Specializing,
   or a flag on safe closures checked at run time, could help.
-- **Cheaper frame pushes**: a per-thread frame stack (a vector and a
-  fill pointer) instead of a special binding per site; the non-local
-  exits inside Scheme (a base, an escape's `catch`, `guard`) would
-  restore the pointer.
+- **Cheaper portable frame pushes**: a per-thread frame stack (a vector
+  and a fill pointer) instead of a special binding per site; the
+  non-local exits inside Scheme (a base, an escape's `catch`, `guard`)
+  would restore the pointer. (SBCL on arm64 pushes nothing: "Stack
+  sites".)
 - **Fewer hoisted locals**: only variables live across a label need to
   be hoisted; others could stay `let`-bound, which avoids SBCL's value
   cells for the ones closures capture.

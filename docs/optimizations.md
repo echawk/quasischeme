@@ -645,7 +645,7 @@ against Chez's:
 | small stack vectors in line | done |
 | deep self-recursion without the return-address stack | done (2026-10-25) |
 | the frame pointer after a local call from the stack pointer | done (2026-10-26), in functions with nothing on the stack above their frame |
-| capture sites cheaper: one frame per activation, frames without a cons, without zeroing | not started: a site costs about 50 instructions against a plain call's 10, and this is most of the gap left (matrix retires 35G instructions with full continuations, 22G escape-only) |
+| capture sites cheaper | done on SBCL/arm64 (2026-10-27): stack sites (docs/continuations.md) make no frame, and a capture reads the live variables from SBCL's own frames; a site is 4 instructions, not about 45. The portable sites, kept for other Lisps, no longer zero their frames |
 | `x - 1` and `a + b` on fixnums in two instructions, not four | done: ADDS or SUBS on the tagged words and a branch on overflow (src/sbcl-vops.lisp, `QUASISCHEME_FIXNUM_VOPS=0` turns it off) |
 | fewer spills around calls | not started (SBCL's register allocator) |
 | an unsafe policy for level 3 | not started |

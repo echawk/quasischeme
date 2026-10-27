@@ -71,6 +71,10 @@ on (the Chez mode notes its continuation marks).")
   "The catch tag of the innermost base, to which a re-entered
 continuation throws.")
 
+(defvar *base-fp* 0
+  "The frame pointer of the innermost base's frame: a capture's walk of
+the stack (stack sites) stops there.")
+
 (defvar *shared-winders* '()
   "While a re-entered continuation throws to the base: the winders it
 shares with the current continuation, whose afters don't run.")
@@ -103,6 +107,53 @@ QUASISCHEME_SITE_CLOSURES=1.  Read once per process.")
   (when (eq *site-closures* :unknown)
     (setq *site-closures* (equal (uiop:getenv "QUASISCHEME_SITE_CLOSURES") "1")))
   *site-closures*))
+
+;;; Stack sites.  With SBCL's VOPs (src/sbcl-vops.lisp, on arm64) a
+;;; capture site needn't make a frame: the call's own Lisp frame can
+;;; hold what the frame would.  Before the call, QS-STACK-COPY-n stores
+;;; the machine, NIL (its cache: no capture has copied this frame) and
+;;; the live variables in stack slots of the frame, and after it
+;;; QS-SITE-MARK-n leaves in the code where each is.  A capture walks the control stack's frames from the
+;;; innermost out to the base, finds each site by its call's return
+;;; address, and reads the values: the frame it makes is the one the
+;;; portable sites push, which RESUME-FRAME resumes alike.  Frames of the
+;;; run time (winders, prompts, barriers) are still pushed on *FSTACK*,
+;;; and are put in order with the stack's by address.  The portable
+;;; sites, a frame vector pushed on *FSTACK*, are what every other Lisp
+;;; would use; QUASISCHEME_STACK_SITES=0 makes SBCL use them too.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+(defvar *stack-sites* :unknown
+  "Whether sites are stack sites (see above).  Read once per process.")
+
+#+sbcl (pushnew (lambda () (setq *stack-sites* :unknown)) sb-ext:*init-hooks*)
+
+(defun stack-sites-p ()
+  (when (eq *stack-sites* :unknown)
+    (setq *stack-sites*
+	  #+sbcl (let ((mark (find-symbol "QS-SITE-MARK-2" "SB-VM"))
+		       (fast (find-symbol "QUASISCHEME-FAST-P" "SB-VM")))
+		   (and mark fast (fboundp fast) (sb-int:info :function :info mark)
+			(funcall fast)
+			(not (equal (uiop:getenv "QUASISCHEME_STACK_SITES") "0"))
+			t))
+	  #-sbcl nil))
+  *stack-sites*)
+
+(defun stack-walk-p ()
+  "Whether a capture walks the stack for stack sites: whenever the marks
+can be compiled, as code compiled with them (a cached library's) and
+without goes together, whatever this process makes."
+  #+sbcl (let ((mark (find-symbol "QS-SITE-MARK-2" "SB-VM")))
+	   (and mark (sb-int:info :function :info mark) t))
+  #-sbcl nil)
+
+(defun stack-sites-here-p ()
+  "Whether the machine or site being expanded makes stack sites: not in
+code SBCL's interpreter runs (a form too big to compile), whose frames
+have no marks."
+  (and (stack-sites-p) #+sbcl (eq sb-ext:*evaluator-mode* :compile))))
+
+(defmacro %in-machine () nil)
 
 (defmacro with-pushed-frame ((frame) &body body &environment env)
   "Run BODY with FRAME (a vector, already allocated) pushed on *FSTACK*.
@@ -234,6 +285,7 @@ rebuilds it."
     (return-from call-with-continuation-base (funcall thunk)))
   (let* ((tag (list 'base))
 	 (*base-tag* tag)
+	 (*base-fp* (caller-frame))
 	 (*fstack* (list :base))
 	 (*winders* '())
 	 (*shared-winders* '()))
@@ -585,22 +637,163 @@ VM's stack (src/guile/vm.lisp).")
 (defun capture-frames ()
   "Copies of the current frames, innermost first, and whether they reach
 a base."
-  (let ((new '()) (tail '()) (complete nil))
-    (do ((s *fstack* (cdr s)))
-	((null s))
-      (let ((frame (car s)))
-	(cond ((eq frame :base) (setq complete t) (return))
-	      ((svref frame 1)
-	       (setq complete (car (svref frame 1)) tail (cdr (svref frame 1)))
-	       (return))
-	      (t (push frame new)))))
-    ;; NEW is outermost first: copy each onto TAIL, and promote it
-    (dolist (frame new)
-      (let ((copy (copy-frame frame (cdr (member frame new)))))
-	(setq tail (cons copy tail))
-	(setf (svref copy 1) (cons complete tail)
-	      (svref frame 1) (svref copy 1))))
-    (values tail complete)))
+  (multiple-value-bind (items broken) (current-frames)
+    (let ((new '()) (tail '()) (complete nil))
+      (dolist (frame items)
+	(let ((promoted (frame-promoted frame)))
+	  (cond ((eq frame :base) (setq complete t) (return))
+		(promoted
+		 (setq complete (car promoted) tail (cdr promoted))
+		 (return))
+		(t (push frame new)))))
+      (when broken (setq complete nil))
+      ;; NEW is outermost first: copy each onto TAIL, and promote it
+      (dolist (frame new)
+	(let ((copy (if (stack-frame-p frame)
+			(stack-frame-vector frame)
+			(copy-frame frame (remove-if #'stack-frame-p (cdr (member frame new)))))))
+	  (setq tail (cons copy tail))
+	  (setf (svref copy 1) (cons complete tail)
+		(frame-promoted frame) (svref copy 1))))
+      (values tail complete))))
+
+;;; The frames of stack sites, and the others in order with them
+
+(defstruct (stack-frame (:constructor make-stack-frame (fp data)))
+  fp		; the machine's frame pointer
+  data)		; the address of its site's QS-SITE-MARK-n data
+
+(defun current-frames ()
+  "The current frames, innermost first: *FSTACK*'s (to :BASE, if it's
+reached), and the stack sites' as STACK-FRAMEs, in order by address;
+second, true if the walk of the stack didn't reach the base."
+  #-sbcl (values *fstack* nil)
+  #+sbcl
+  (if (not (stack-walk-p))
+      (values *fstack* nil)
+      (multiple-value-bind (stack broken) (stack-site-frames)
+	(let ((out '()))
+	  (do ((s *fstack* (cdr s)))
+	      ((null s))
+	    (let ((cell-address (sb-kernel:get-lisp-obj-address s)))
+	      (loop while (and stack (on-control-stack-p cell-address)
+			       (> (stack-frame-fp (car stack)) cell-address))
+		    do (push (pop stack) out))
+	      (when (eq (car s) :base)
+		(setq out (append (reverse stack) out) stack '()))
+	      (push (car s) out)))
+	  (values (nreconc out stack) broken)))))
+
+(defun frame-promoted (frame)
+  (cond ((stack-frame-p frame) (stack-frame-value frame 1))
+	((vectorp frame) (svref frame 1))))
+
+(defun (setf frame-promoted) (value frame)
+  (if (stack-frame-p frame)
+      (setf (stack-frame-value frame 1) value)
+      (setf (svref frame 1) value)))
+
+#+sbcl
+(progn
+  (defun on-control-stack-p (address)
+    (let ((start (sb-sys:sap-int (sb-vm::current-thread-offset-sap sb-vm::thread-control-stack-start-slot)))
+	  (end (sb-sys:sap-int (sb-vm::current-thread-offset-sap sb-vm::thread-control-stack-end-slot))))
+      (<= start address end)))
+
+  (defun site-data (ra)
+    "The address of the QS-SITE-MARK-n data after return address RA, or NIL.
+A site's mark follows its call with nothing but moves between (a call of
+one value has no branch), or a branch to them: so the mark is the first
+B over the magic word, through other Bs, and any other branch or call
+on the way means RA isn't a site's (a call that isn't a site, from
+which the next site's mark could otherwise be reached)."
+    (let ((magic (symbol-value (find-symbol "+QS-SITE-MAGIC+" "SB-VM")))
+	  (pc ra))
+      (loop repeat 64
+	    do (let ((inst (sb-sys:sap-ref-32 (sb-sys:int-sap pc) 0)))
+		 (cond ((= (ldb (byte 6 26) inst) 5) ; B
+			(when (= (sb-sys:sap-ref-word (sb-sys:int-sap pc) 4) magic)
+			  (return (+ pc 4)))
+			(incf pc (* 4 (- (ldb (byte 26 0) inst)
+					 (if (logbitp 25 inst) (ash 1 26) 0)))))
+		       ((or (= (ldb (byte 6 26) inst) #x25) ; BL
+			    (= (logand inst #xff000010) #x54000000) ; B.cond
+			    (= (logand inst #x7e000000) #x34000000) ; CBZ, CBNZ
+			    (= (logand inst #x7e000000) #x36000000) ; TBZ, TBNZ
+			    (= (logand inst #xfe000000) #xd6000000)) ; BR, BLR, RET
+			(return nil))
+		       (t (incf pc 4)))))))
+
+  (defun stack-site-frames ()
+    "The frames of stack sites on the control stack, innermost first, out
+to the base's frame; second, true if the walk stopped short of it."
+    (let ((fp (sb-sys:sap-int (sb-kernel:current-fp)))
+	  (frames '()))
+      (loop
+	(let ((caller (sb-sys:sap-ref-word (sb-sys:int-sap fp) 0))
+	      (ra (sb-sys:sap-ref-word (sb-sys:int-sap fp) 8)))
+	  (when (and (/= *base-fp* 0) (<= caller *base-fp*))
+	    (return (values (nreverse frames) (/= caller *base-fp*))))
+	  (unless (and (< caller fp) (on-control-stack-p caller))
+	    (return (values (nreverse frames) (/= *base-fp* 0))))
+	  (let ((data (site-data ra)))
+	    (when data (push (make-stack-frame caller data) frames)))
+	  (setq fp caller)))))
+
+  (defun stack-frame-word (frame i)
+    (sb-sys:sap-ref-word (sb-sys:int-sap (stack-frame-data frame)) (* 8 i)))
+
+  (defun stack-frame-location (frame j)
+    "The kind and the word of where the Jth value QS-SITE-MARK-n marks is
+(0 the machine, 1 its cache, then the live variables; QS-SITE-LOCATION
+in src/sbcl-vops.lisp)."
+    (let ((kind (stack-frame-word frame (+ 4 (* 2 j)))))
+      (when (= kind 3)
+	(error "a continuation can't be captured here: a value of a frame isn't on the stack"))
+      (values kind (stack-frame-word frame (+ 5 (* 2 j))))))
+
+  (defun stack-frame-value (frame j)
+    (multiple-value-bind (kind word) (stack-frame-location frame j)
+      (ecase kind
+	(0 (sb-di::sub-access-debug-var-slot (sb-sys:int-sap (stack-frame-fp frame)) word))
+	(1 (sb-kernel:code-header-ref
+	    (sb-di::code-header-from-pc (sb-sys:int-sap (stack-frame-data frame)))
+	    word))
+	(2 (sb-kernel:make-lisp-obj word)))))
+
+  (defun (setf stack-frame-value) (value frame j)
+    (multiple-value-bind (kind word) (stack-frame-location frame j)
+      (unless (= kind 0)
+	(error "a frame's cache isn't in a slot of the frame"))
+      (sb-di::sub-set-debug-var-slot (sb-sys:int-sap (stack-frame-fp frame)) word value))
+    value)
+
+  (defun stack-frame-vector (frame)
+    "FRAME's frame as a portable site pushes it: #(machine promoted site n live ...)."
+    (let ((n (stack-frame-word frame 3)))
+      (let ((v (make-array (+ 2 n))))
+	(setf (svref v 0) (stack-frame-value frame 0)
+	      (svref v 1) nil
+	      (svref v 2) (stack-frame-word frame 1)
+	      (svref v 3) (stack-frame-word frame 2))
+	(loop for j from 2 below n
+	      do (setf (svref v (+ 2 j)) (stack-frame-value frame j)))
+	v))))
+
+#-sbcl
+(progn
+  (defun stack-frame-value (frame j) (declare (ignore frame j)) nil)
+  (defun (setf stack-frame-value) (value frame j) (declare (ignore frame j)) value)
+  (defun stack-frame-vector (frame) frame))
+
+(defun frames-inside (prompt)
+  "Fresh copies of the frames inside PROMPT (an *FSTACK* frame),
+innermost first."
+  (loop with inside = '()
+	for frame in (current-frames)
+	until (eq frame prompt)
+	collect (let ((v (if (stack-frame-p frame) (stack-frame-vector frame) frame)))
+		  (prog1 (fresh-frame v inside) (push v inside)))))
 
 (defvar *rewinding* '()
   "While a continuation's frames are rebuilt: the winders being re-entered,
@@ -745,10 +938,7 @@ VALUES to the innermost."
   (let ((prompt (find-prompt tag)))
     (unless prompt
       (qs:scheme-error "abort-to-prompt: no prompt with tag ~S in the current continuation" tag))
-    (let* ((frames (loop with inside = '()
-			 for frame in *fstack*
-			 until (eq frame prompt)
-			 collect (prog1 (fresh-frame frame inside) (push frame inside))))
+    (let* ((frames (frames-inside prompt))
 	   (winders (ldiff *winders* (svref prompt 4)))
 	   (full *full-continuations*))
       (flet ((k (&rest values)
@@ -771,26 +961,52 @@ SRFI 226's sample implementation tells tail calls so."
 ;;; What the transformation's output uses.  Each takes Scheme
 ;;; expressions, translated in place by the translator, and quoted data.
 
-(defmacro %site (frame call)
-  "Make CALL with FRAME, a (vector ...) form, pushed: both on the stack."
-  (let ((f (gensym "FRAME")))
-    `(let ((,f ,frame))
-       (declare (dynamic-extent ,f))
-       (with-pushed-frame (,f) ,call))))
+(defmacro %site (frame call &environment env)
+  "Make CALL with FRAME, a (vector machine '() site n live ...) form,
+pushed: both on the stack.  Or, for a stack site (see \"Stack sites\"),
+make CALL and mark where FRAME's values are."
+  (if (and (stack-sites-here-p) (macroexpand-1 '(%in-machine) env)
+	   (consp frame) (eq (car frame) 'vector) (>= (length frame) 5)
+	   (typep (fourth frame) 'fixnum) (typep (fifth frame) 'fixnum)
+	   ;; a mark takes the machine, its cache and the live variables
+	   (<= (+ 2 (length (nthcdr 5 frame)))
+	       (symbol-value (find-symbol "+QS-SITE-MARK-ARITY+" "SB-VM"))))
+      (destructuring-bind (machine promoted site n &rest live) (cdr frame)
+	(declare (ignore promoted))
+	(let* ((k (+ 2 (length live)))
+	       (copy (find-symbol (format nil "QS-STACK-COPY-~D" k) "SB-VM"))
+	       (mark (find-symbol (format nil "QS-SITE-MARK-~D" k) "SB-VM"))
+	       (copies (loop repeat k collect (gensym "STACK")))
+	       (value (gensym "VALUE")))
+	  ;; the machine, its cache (NIL) and the live variables, copied to
+	  ;; the stack; one value, as a site's is assigned or ignored, and a
+	  ;; call of one value has no branch before the mark (SITE-DATA)
+	  `(multiple-value-bind ,copies (,copy ,machine nil ,@live)
+	     (let ((,value ,call))
+	       (,mark ,site ,n ,@copies)
+	       ,value))))
+      (let ((f (gensym "FRAME")))
+	`(let ((,f ,frame))
+	   (declare (dynamic-extent ,f))
+	   (with-pushed-frame (,f) ,call)))))
 
 (defmacro %machine (entry dispatch &rest statements)
   "A machine's body: STATEMENTS (expressions, and quoted symbols as
 labels), entered at the start if ENTRY is 0, else at the label
 DISPATCH, '((site . label) ...), gives for site ENTRY, where statements
 restore the site's live variables and continue after it."
-  `(block %machine
-     (tagbody
-	(case ,entry
-	  ,@(loop for (site . label) in (second dispatch)
-		  collect `(,site (go ,label))))
-	,@(mapcar (lambda (s)
-		    (if (and (consp s) (eq (car s) 'quote)) (second s) s))
-		  statements))))
+  (let ((body `(block %machine
+		 (tagbody
+		    (case ,entry
+		      ,@(loop for (site . label) in (second dispatch)
+			      collect `(,site (go ,label))))
+		    ,@(mapcar (lambda (s)
+				(if (and (consp s) (eq (car s) 'quote)) (second s) s))
+			      statements)))))
+    (if (stack-sites-here-p)
+	`(macrolet ((%in-machine () t))
+	   ,body)
+	body)))
 
 (defmacro %return (x) `(return-from %machine ,x))
 

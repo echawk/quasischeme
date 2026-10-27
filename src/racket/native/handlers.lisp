@@ -788,10 +788,7 @@ the aborts abort-current-continuation makes do, without the throw)."
       (raise-exn "exn:fail:contract:continuation"
 		 (format nil "call-with-composable-continuation: no corresponding prompt in the continuation~%  tag: ~A"
 			 (with-output-to-string (s) (print-value tag s :display)))))
-    (let* ((frames (loop with inside = '()
-			 for frame in qsx::*fstack*
-			 until (eq frame prompt)
-			 collect (prog1 (qsx::fresh-frame frame inside) (push frame inside))))
+    (let* ((frames (qsx::frames-inside prompt))
 	   (winders (ldiff qsx::*winders* (svref prompt 4)))
 	   ;; its marks (a parameterization among them: a generator's), which
 	   ;; its frames, rebuilt, have on top of the caller's, as Racket's

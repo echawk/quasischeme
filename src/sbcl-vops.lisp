@@ -95,6 +95,139 @@ anything else uses it (but moves of it): (VECTOR A B ...)'s stores."
 	  (loop for off from (* 2 n-word-bytes) below bytes by (* 2 n-word-bytes)
 		do (inst stp zr-tn zr-tn (@ tmp-tn off)))))))
 
+;; Capture sites whose frames are SBCL's own (src/continuations.lisp,
+  ;; "Stack sites"): after a site's call, QS-SITE-MARK-n emits no code but
+  ;; a branch over a block of data, which a capture finds from the call's
+  ;; return address: a magic word, the site, the machine's parameter
+  ;; count, how many values follow, and where each value is while the
+  ;; call runs (QS-SITE-LOCATION: a slot of the machine's frame, a
+  ;; constant of its code, or an immediate).
+  ;; The values are the machine, its capture cache and the site's live
+  ;; variables, copied to the stack before the call (QS-STACK-COPY-n).
+  (defconstant +qs-site-magic+ #x5153534954454d4b)
+
+  (defconstant +qs-site-mark-arity+ 20
+    "The most values a site's mark can take: QS-SITE-MARK-n has n.  A site
+with more keeps a portable frame (SBCL fails to pack QS-STACK-COPY-32).")
+
+  (eval-when (:compile-toplevel :load-toplevel :execute)
+    (defun qs-site-mark-name (n)
+      (intern (format nil "QS-SITE-MARK-~D" n) "SB-VM"))
+    nil)
+
+  (defun qs-site-location (tn &optional (depth 0))
+    "Where TN's value is while the call before the mark runs, as two
+words, a kind and what it says: 0, an sc+offset (its stack slot, or the
+slot its register is saved in); 1, the index of a constant in the code
+object; 2, an immediate's tagged word; 3, nowhere known.  A copy made
+after the call (a fixnum variable kept untagged, tagged for the mark) is
+where its source is."
+    (let* ((kind (sb-c::sb-kind (sb-c::sc-sb (sb-c::tn-sc tn))))
+	   (loc (case kind
+		  (:unbounded tn)
+		  (:finite (sb-c::tn-save-tn tn)))))
+      (cond (loc
+	     (values 0 (sb-c:make-sc+offset (sb-c::sc-number (sb-c::tn-sc loc)) (sb-c::tn-offset loc))))
+	    ((sb-c::constant-p (sb-c::tn-leaf tn))
+	     (let ((value (sb-c::constant-value (sb-c::tn-leaf tn))))
+	       (cond ((typep value '(or fixnum character single-float))
+		      (values 2 (sb-kernel:get-lisp-obj-address value)))
+		     ((and (eq (sb-c::sc-name (sb-c::tn-sc tn)) 'constant) (sb-c::tn-offset tn))
+		      (values 1 (sb-c::tn-offset tn)))
+		     ((or (eq value nil) (eq value t))
+		      (values 2 (sb-kernel:get-lisp-obj-address value)))
+		     (t (values 3 0)))))
+	    ((let* ((write (sb-c::tn-writes tn))
+		    (vop (and write (null (sb-c::tn-ref-next write)) (sb-c::tn-ref-vop write)))
+		    (info (and vop (sb-c::vop-info vop))))
+	       (and (< depth 3) info
+		    (let ((name (symbol-name (sb-c::vop-info-name info))))
+		      (or (string= name "MOVE") (eql 0 (search "MOVE-" name))))
+		    (sb-c::vop-args vop) (null (sb-c::tn-ref-across (sb-c::vop-args vop)))
+		    (multiple-value-bind (k p) (qs-site-location (sb-c::tn-ref-tn (sb-c::vop-args vop)) (1+ depth))
+		      (and (/= k 3) (return-from qs-site-location (values k p)))))))
+	    (t (values 3 0)))))
+
+  (defun qs-emit-site-mark (vop site nparams)
+    (let ((over (gen-label))
+	  (locs (loop for r = (sb-c::vop-args vop) then (sb-c::tn-ref-across r)
+		      while r collect (multiple-value-list (qs-site-location (sb-c::tn-ref-tn r))))))
+      (inst b over)
+      (inst dword +qs-site-magic+)
+      (inst dword site)
+      (inst dword nparams)
+      (inst dword (length locs))
+      (loop for (kind payload) in locs
+	    do (inst dword kind)
+	       (inst dword (ldb (byte 64 0) payload)))
+      (emit-label over)))
+
+  ;; any SC, boxed or not, so that nothing is moved for the mark
+  (macrolet ((def (n)
+	       (let ((name (qs-site-mark-name n))
+		     (args (loop for i below n collect (intern (format nil "A~D" i) "SB-VM"))))
+		 `(progn
+		    (eval-when (:compile-toplevel :load-toplevel :execute)
+		      (sb-c:defknown ,name (fixnum fixnum ,@(make-list n :initial-element t)) (values) ()
+			:overwrite-fndb-silently t))
+		    (define-vop (,name)
+		      (:translate ,name)
+		      (:policy :fast-safe)
+		      (:args ,@(loop for a in args
+				     collect `(,a :load-if nil
+						  :scs (any-reg descriptor-reg control-stack signed-reg unsigned-reg
+							signed-stack unsigned-stack character-reg character-stack
+							sap-reg sap-stack single-reg single-stack double-reg double-stack
+							complex-single-reg complex-single-stack complex-double-reg
+							complex-double-stack))))
+		      (:arg-types (:constant fixnum) (:constant fixnum) ,@(make-list n :initial-element '*))
+		      (:info site nparams)
+		      (:ignore ,@args)
+		      (:vop-var vop)
+		      (:generator 0 (qs-emit-site-mark vop site nparams))))))
+	     (defs ()
+	       `(progn ,@(loop for n from 2 to +qs-site-mark-arity+ collect `(def ,n)))))
+    (defs))
+
+  ;; QS-STACK-COPY-n: its n arguments, copied to TNs of their own (its
+  ;; results) before a site's call.  Whatever SBCL does with a value
+  ;; across the call (keeps it in a register it doesn't save, as an
+  ;; environment TN; reads it again from a closure or a value cell), the
+  ;; mark after the call refers to the copies, which SBCL saves on the
+  ;; stack across the call as it saves any value live across one.  A move
+  ;; and a store a value.
+  (macrolet ((def (n)
+	       (let ((name (intern (format nil "QS-STACK-COPY-~D" n) "SB-VM"))
+		     (args (loop for i below n collect (intern (format nil "A~D" i) "SB-VM")))
+		     (results (loop for i below n collect (intern (format nil "R~D" i) "SB-VM"))))
+		 `(progn
+		    (eval-when (:compile-toplevel :load-toplevel :execute)
+		      (sb-c:defknown ,name ,(make-list n :initial-element t) (values ,@(make-list n :initial-element t)) ()
+			:overwrite-fndb-silently t))
+		    (define-vop (,name)
+		      (:translate ,name)
+		      (:policy :fast-safe)
+		      (:args ,@(loop for a in args
+				     collect `(,a :scs (descriptor-reg any-reg control-stack)
+						  :load-if (not (sc-is ,a control-stack)))))
+		      ;; on the stack past the registers
+		      (:results ,@(loop for r in results
+					collect `(,r :scs (descriptor-reg any-reg control-stack) :load-if nil)))
+		      (:temporary (:sc descriptor-reg) temp)
+		      (:generator 1
+			,@(loop for a in args for r in results
+				collect `(sc-case ,r
+					   (control-stack
+					    (sc-case ,a
+					      (control-stack (load-stack-tn temp ,a) (store-stack-tn ,r temp))
+					      (t (store-stack-tn ,r ,a))))
+					   (t (sc-case ,a
+						(control-stack (load-stack-tn ,r ,a))
+						(t (move ,r ,a)))))))))))
+	     (defs ()
+	       `(progn ,@(loop for n from 2 to +qs-site-mark-arity+ collect `(def ,n)))))
+    (defs))
+
   (defvar cl-user::*quasischeme-fixnum-vops* :unknown)
   (pushnew (lambda () (setq cl-user::*quasischeme-fixnum-vops* :unknown)) sb-ext:*init-hooks*)
   (defun qs-fixnum-vops-p ()
@@ -371,7 +504,7 @@ return after it)."
       "MAKE-CATCH-BLOCK" "SET-UNWIND-PROTECT" "%CATCH-BLOCK" "%UNWIND-PROTECT")
     "VOPs that leave something on the stack above a frame.")
 
-  (defparameter *qs-maybe-stack-vops* '("LIST" "MAKE-CLOSURE" "FIXED-ALLOC" "VAR-ALLOC")
+  (defparameter *qs-maybe-stack-vops* '("LIST" "LIST*" "CONS" "ACONS" "MAKE-CLOSURE" "FIXED-ALLOC" "VAR-ALLOC")
     "VOPs that do when they allocate on the stack.")
 
   (defun qs-stack-vop-p (v)
@@ -395,7 +528,14 @@ above their frame: those a stack-moving VOP is in (by its block)."
 		     while v
 		     when (qs-stack-vop-p v)
 		       do (let ((block (sb-c::ir2-block-block b)))
-			    (setf (gethash (and block (sb-c::block-home-lambda block)) dirty) t))))
+			    (setf (gethash (and block (sb-c::block-home-lambda block)) dirty) t))
+		     ;; an entry with &REST or &MORE arguments leaves them above
+		     ;; the frame and goes on, in the same frame, into functions
+		     ;; of its own (a machine's body): all of them, then (key NIL)
+		     when (member (symbol-name (sb-c::vop-name v))
+				  '("COPY-MORE-ARG" "%MORE-ARG-CONTEXT" "%LISTIFY-REST-ARGS")
+				  :test #'string=)
+		       do (setf (gethash nil dirty) t)))
       dirty))
 
   ;; component -> its QS-DIRTY-LAMBDAS
