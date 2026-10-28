@@ -139,12 +139,17 @@ QUASISCHEME_SITE_CLOSURES=1.  Read once per process.")
 	  #-sbcl nil))
   *stack-sites*)
 
+(defvar *stack-walk* nil "True once STACK-WALK-P has found the marks.")
+
 (defun stack-walk-p ()
   "Whether a capture walks the stack for stack sites: whenever the marks
 can be compiled, as code compiled with them (a cached library's) and
-without goes together, whatever this process makes."
-  #+sbcl (let ((mark (find-symbol "QS-SITE-MARK-2" "SB-VM")))
-	   (and mark (sb-int:info :function :info mark) t))
+without goes together, whatever this process makes.  Once true, always
+(the VOP layer can be loaded, not unloaded), so that it's looked up once."
+  #+sbcl (or *stack-walk*
+	     (setq *stack-walk*
+		   (let ((mark (find-symbol "QS-SITE-MARK-2" "SB-VM")))
+		     (and mark (sb-int:info :function :info mark) t))))
   #-sbcl nil)
 
 (defun stack-sites-here-p (env)
@@ -722,7 +727,30 @@ promoted frames (Guile's runtime under a program) cost their number."
 
   (defvar *site-magic* nil "SB-VM::+QS-SITE-MAGIC+, once looked up.")
 
+  (sb-ext:defglobal **site-data-cache** (make-array 1024 :initial-element nil)
+    "RA -> SITE-DATA's answer, as (ra . data) conses (one store each, so a
+thread reading one sees a whole entry), indexed by RA's low bits.
+Emptied when a collection has run since (code can move): its epoch is
+**SITE-DATA-EPOCH**.")
+  (sb-ext:defglobal **site-data-epoch** nil)
+  (declaim (type simple-vector **site-data-cache**))
+
+  (declaim (inline site-data))
   (defun site-data (ra)
+    "SITE-DATA-1's answer for RA, cached."
+    (declare (type sb-ext:word ra))
+    (unless (eq **site-data-epoch** sb-kernel::*gc-epoch*)
+      (fill **site-data-cache** nil)
+      (setq **site-data-epoch** sb-kernel::*gc-epoch*))
+    (let* ((i (logand (ash ra -2) 1023))
+	   (entry (svref **site-data-cache** i)))
+      (if (and entry (= (the sb-ext:word (car entry)) ra))
+	  (cdr entry)
+	  (let ((data (site-data-1 ra)))
+	    (setf (svref **site-data-cache** i) (cons ra data))
+	    data))))
+
+  (defun site-data-1 (ra)
     "The address of the QS-SITE-MARK-n data after return address RA, or NIL.
 A site's mark follows its call with nothing but moves between (a call of
 one value has no branch), or a branch to them: so the mark is the first
@@ -782,6 +810,7 @@ second, true if the walk stopped short of the base otherwise."
     "The kind and the word of where the Jth value QS-SITE-MARK-n marks is
 (0 the machine, 1 its cache, then the live variables; QS-SITE-LOCATION
 in src/sbcl-vops.lisp)."
+    (declare (fixnum j))
     (let ((kind (stack-frame-word frame (+ 4 (* 2 j)))))
       (when (= kind 3)
 	(error "a continuation can't be captured here: a value of a frame isn't on the stack"))
@@ -794,6 +823,8 @@ in src/sbcl-vops.lisp)."
     (declare (fixnum j))
     (multiple-value-bind (kind word) (stack-frame-location frame j)
       (ecase kind
+	(4 (sb-kernel:%make-lisp-obj
+	    (sb-sys:sap-ref-word (sb-sys:int-sap (the sb-ext:word (stack-frame-fp frame))) word)))
 	(0 (if (= (sb-c:sc+offset-scn word) sb-vm:control-stack-sc-number)
 	       (sb-kernel:%make-lisp-obj
 		(sb-sys:sap-ref-word (sb-sys:int-sap (the sb-ext:word (stack-frame-fp frame)))
@@ -806,11 +837,11 @@ in src/sbcl-vops.lisp)."
 
   (defun (setf stack-frame-value) (value frame j)
     (multiple-value-bind (kind word) (stack-frame-location frame j)
-      (unless (= kind 0)
+      (unless (or (= kind 0) (= kind 4))
 	(error "a frame's cache isn't in a slot of the frame"))
-      (if (= (sb-c:sc+offset-scn word) sb-vm:control-stack-sc-number)
+      (if (or (= kind 4) (= (sb-c:sc+offset-scn word) sb-vm:control-stack-sc-number))
 	  (setf (sb-sys:sap-ref-word (sb-sys:int-sap (the sb-ext:word (stack-frame-fp frame)))
-				     (* 8 (the fixnum (sb-c:sc+offset-offset word))))
+				     (if (= kind 4) word (* 8 (the fixnum (sb-c:sc+offset-offset word)))))
 		(sb-kernel:get-lisp-obj-address value))
 	  (sb-di::sub-set-debug-var-slot (sb-sys:int-sap (stack-frame-fp frame)) word value)))
     value)

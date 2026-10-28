@@ -117,7 +117,8 @@ with more keeps a portable frame (SBCL fails to pack QS-STACK-COPY-32).")
 
   (defun qs-site-location (tn &optional (depth 0))
     "Where TN's value is while the call before the mark runs, as two
-words, a kind and what it says: 0, an sc+offset (its stack slot, or the
+words, a kind and what it says: 4, a control-stack slot's byte offset
+from the frame pointer; 0, an sc+offset (another stack slot, or the
 slot its register is saved in); 1, the index of a constant in the code
 object; 2, an immediate's tagged word; 3, nowhere known.  A copy made
 after the call (a fixnum variable kept untagged, tagged for the mark) is
@@ -126,7 +127,11 @@ where its source is."
 	   (loc (case kind
 		  (:unbounded tn)
 		  (:finite (sb-c::tn-save-tn tn)))))
-      (cond (loc
+      (cond ((and loc (= (sb-c::sc-number (sb-c::tn-sc loc)) control-stack-sc-number))
+	     ;; 4: a control-stack slot, as its byte offset from the frame
+	     ;; pointer (STACK-FRAME-VALUE's fast case, decoded here)
+	     (values 4 (* n-word-bytes (sb-c::tn-offset loc))))
+	    (loc
 	     (values 0 (sb-c:make-sc+offset (sb-c::sc-number (sb-c::tn-sc loc)) (sb-c::tn-offset loc))))
 	    ((sb-c::constant-p (sb-c::tn-leaf tn))
 	     (let ((value (sb-c::constant-value (sb-c::tn-leaf tn))))
