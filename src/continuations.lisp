@@ -2035,7 +2035,31 @@ spot)."
 	  (flat (cadddr e) k)
 	  (emit `',end)))))
 
+(defparameter *spread-arguments* 16
+  "A call with more operands than this that may capture is made through
+a list of its arguments (SPREAD-CALL).")
+
+(defun spread-call (e)
+  "Call E, of many operands that may capture, as (apply f list): each
+operand's value consed onto the list of those before it, one let each.
+Made directly, every operand evaluated would be live across each later
+one's site, a frame of k values at the kth, quadratic in all (a list of
+2,000 entries, each calling, in Typed Racket's base-env: code past
+arm64's branch reach, and 5 GB to compile).  A list, not a vector
+filled in: a continuation re-entered at an operand shares what came
+before, not what comes after."
+  (let* ((op (fresh)) (acc (fresh))
+	 (body `(,(sym "apply") ,op (,(sym "reverse") ,acc))))
+    (loop for x in (reverse (cdr e))
+	  for prev = (fresh)
+	  do (setq body `((,(sym "lambda") (,acc) ,body) (,(sym "cons") ,x ,prev))
+		   acc prev))
+    `((,(sym "lambda") (,op) ((,(sym "lambda") (,acc) ,body) (,(sym "quote") ())))
+      ,(car e))))
+
 (defun flat-call (e k)
+  (when (> (count-if-not #'simple-p (cdr e)) *spread-arguments*)
+    (return-from flat-call (flat (spread-call e) k)))
   (let ((xs (cond ((plain-primitive-call-p e)
 		   ;; the primitive itself, not its frame-aware version
 		   (cons (car e) (cdr (operands e))))
@@ -2302,7 +2326,53 @@ its own, of the chunk's free variables."
 					 `((,(sym "lambda") ,marker (,(sym "begin") ,@c)))))
 			     (reverse chunks)))))))
 	((quote-form-p e) e)
-	(t (mapcar #'chunk-sequences e))))
+	((keyword-p (car e) "LETREC")
+	 `(,(car e) ,(mapcar (lambda (b) (list (car b) (chunk-sequences (cadr b)))) (cadr e))
+	   ,@(mapcar #'chunk-sequences (cddr e))))
+	((keyword-p (car e) "CASE-LAMBDA")
+	 `(,(car e) ,@(mapcar (lambda (c) (cons (car c) (mapcar #'chunk-sequences (cdr c)))) (cdr e))))
+	((core-keyword-form-p e) (mapcar #'chunk-sequences e))
+	(t (let ((e (mapcar #'chunk-sequences e)))
+	     (if (and (not (lambda-form-p (car e)))
+		      ;; (a few operands can't be many: no walk of each call's)
+		      (> (length e) 8)
+		      (or (> (loop for x in (cdr e) sum (count-sites x)) (* 2 *chunk-sites*))
+			  (> (tree-size (cdr e)) (* 2 *chunk-size*))))
+		 (chunked-call e)
+		 e)))))
+
+(defun core-keyword-form-p (e)
+  (and (symbolp (car e))
+       (some (lambda (k) (keyword-p (car e) k))
+	     '("QUOTE" "IF" "BEGIN" "SET!" "DEFINE" "LETREC" "LETREC*" "LAMBDA" "PRIMITIVE" "CASE-LAMBDA"))))
+
+(defparameter *chunk-size* 10000
+  "About how big (in conses) a chunk of a call's operands is.")
+
+(defun chunked-call (e)
+  "Call E, whose operands are big or make many calls that may capture, as
+(apply f (append chunk ...)): each chunk a list of operands of about
+*CHUNK-SITES* such calls or *CHUNK-SIZE* conses, compiled on its own as
+a sequence's chunk is.  Compiled with E, they could be past what SBCL
+compiles: Typed Racket's base-env is a list of 2,000 entries, each with
+a procedure, of 350,000 conses, code past arm64's branch reach."
+  (let ((chunks '()) (chunk '()) (n 0) (size 0))
+    (dolist (x (cdr e))
+      (let ((c (count-sites x)) (z (tree-size x)))
+	(when (and chunk (or (> (+ n c) *chunk-sites*) (> (+ size z) *chunk-size*)))
+	  (push (reverse chunk) chunks)
+	  (setq chunk '() n 0 size 0))
+	(push x chunk)
+	(incf n c)
+	(incf size z)))
+    (when chunk (push (reverse chunk) chunks))
+    `(,(sym "apply") ,(car e)
+      (,(sym "append")
+       ,@(mapcar (lambda (c)
+		   (let ((marker (fresh)))
+		     (setf (gethash marker *chunk-markers*) t)
+		     `((,(sym "lambda") ,marker (,(sym "begin") (,(sym "list") ,@c))))))
+		 (reverse chunks))))))
 
 (defun prepare (form)
   "FORM, chunked, its assigned variables boxed, and its chunks lifted."
@@ -2668,9 +2738,30 @@ left as they are, so continuations captured in them are escape-only.")
 		  (transformed (if (tail-simple-p prepared)
 				   (simple prepared)
 				   `(,(build-machine '() prepared)))))
-	     (if (> (tree-size transformed) *cc-transform-limit*)
+	     (if (> (largest-component-size transformed) *cc-transform-limit*)
 		 form
 		 transformed)))))
+
+(defun largest-component-size (form)
+  "The size in conses of the biggest part of FORM SBCL compiles as one
+code object: FORM without its %LIFTED procedures, or one of them (each
+compiled on its own)."
+  (let ((largest 0))
+    (labels ((size (x)
+	       ;; X's conses, not counting the %LIFTED forms in it, each
+	       ;; measured on its own
+	       (cond ((atom x) 0)
+		     ;; a quoted datum counts as one (it may be circular)
+		     ((quote-form-p x) 2)
+		     ((eq (car x) '%lifted)
+		      (setq largest (max largest (size (cadr x))))
+		      1)
+		     (t (let ((n 0))
+			  (loop for y on x
+				do (incf n (1+ (size (car y))))
+				while (consp (cdr y)))
+			  n)))))
+      (max largest (size form)))))
 
 ;;; ------------------------------------------------------------------
 ;;; The host's side

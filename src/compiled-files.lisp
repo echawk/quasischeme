@@ -115,7 +115,7 @@ is never reached.")
 				    (call-with-full-policy
 				     (lambda () (compile-file lisp :output-file fasl :verbose nil :print nil)))
 				    (compile-file lisp :output-file fasl :verbose nil :print nil))))
-			   (error () (values nil t t))))
+			   (error (e) (setq *compile-error* e) (values nil t t))))
 		     (declare (ignore warnings-p))
 		     ;; a big chunk leaves much garbage in older generations;
 		     ;; a small one (a --racket linklet) isn't worth a full GC
@@ -123,11 +123,13 @@ is never reached.")
 		     (and output (or (not failure-p) *accept-compile-failure*)))))
 	    ;; a form too big for SBCL (a branch past its reach, on arm64)
 	    ;; goes again with compact frames
-	    (or (try)
+	    (or (progn (setq *compile-error* nil) (try))
 		;; SBCL can fail on a big form without constraint propagation
 		;; where it compiles with it (CALL-WITH-SIZE-POLICY): Idris 2's
-		;; compiler
-		(let ((*force-constraint-propagation* t)) (try))
+		;; compiler.  Not after code past a branch's reach, which it doesn't
+		;; make smaller (BRANCH-REACH-ERROR-P)
+		(and (not (branch-reach-error-p *compile-error*))
+		     (let ((*force-constraint-propagation* t)) (try)))
 		(let ((*compact-frames* t)) (try))
 		(error "compiling ~A failed" source))))))))
 

@@ -556,9 +556,12 @@ circular, R7RS 2.4)."
 					(push s new)
 					(let ((c (and defines (assoc defines checked))))
 					  (when c (push `(,(sym "set!") ,(cdr c) (,(sym "quote") ,qs:true)) new))))))
-			   `((,(caar e) ,(append vars (mapcar #'cdr checked))
-			      (,(sym "begin") ,@(nreverse new)))
-			     ,@args
+			   ;; the flags bound outside the body's own lambda: among
+			   ;; its variables, cpletrec would take a flag's set! for
+			   ;; its definition and bind it there, after its checks
+			   `((,(caar e) ,(mapcar #'cdr checked)
+			      ((,(caar e) ,vars (,(sym "begin") ,@(nreverse new)))
+			       ,@args))
 			     ,@(mapcar (lambda (c) (declare (ignore c)) `(,(sym "quote") ,qs:false)) checked))))))))))
 	   (letrec-checked (e)
 	     (when (and (keyword-p (car e) "LETREC") (consp (cdr e)) (listp (cadr e)) (cadr e)
@@ -947,6 +950,19 @@ of more than 2047 keys (e's errno table) fails in its assembler."
 	   (funcall thunk))
   #-sbcl (funcall thunk))
 
+(defvar *compile-error* nil
+  "The error that stopped the last compile EVAL-COMPILED-OR-INTERPRETED
+or COMPILE-FORMS-CHUNK tried, or NIL.")
+
+(defun branch-reach-error-p (c)
+  "Whether C, an error compiling, is the assembler's: code past a
+branch's reach (arm64's conditional branches reach 1 MB), which no
+other policy makes small enough (constraint propagation, tried again
+with, took more than 8 GB on Typed Racket's base-env)."
+  (and (typep c 'type-error) (integerp (type-error-datum c))
+       (search "-ASM::" (princ-to-string c))
+       t))
+
 (defun eval-compiled-or-interpreted (form)
   "EVAL FORM, or, if SBCL's compiler fails on it (a procedure too big for
 one code object, past arm64's branch and constant reach), evaluate it
@@ -968,7 +984,9 @@ form bigger than *INTERPRET-LIMIT* is interpreted, and so is one
 	  (handler-bind ((error (lambda (c)
 				  (when (and (boundp 'sb-c::*compilation*) sb-c::*compilation*
 					     (not (typep c 'sb-int:simple-program-error)))
+				    (setq *compile-error* c)
 				    (throw 'compile-failed (values nil t))))))
+	    (setq *compile-error* nil)
 	    (values (multiple-value-list (call-with-size-policy (tree-size form) (lambda () (eval form))
 								       *eval-constraint-propagation-limit*)) nil)))
       (cond ((not failure) (values-list values))
@@ -976,9 +994,11 @@ form bigger than *INTERPRET-LIMIT* is interpreted, and so is one
 	    ;; without it, SBCL 2.6.9 can fail ("full call to DATA-VECTOR-REF",
 	    ;; a bug) on code it compiles with it (e's libraries had their
 	    ;; bodies interpreted so); then without jump tables too
-	    ((let ((f (or (compiled-or-nil form)
-			  (call-without-jump-tables (lambda () (compiled-or-nil form))))))
-	       (and f (return-from eval-compiled-or-interpreted (funcall f)))))
+	    ;; (not after code past a branch's reach: BRANCH-REACH-ERROR-P)
+	    ((and (not (branch-reach-error-p *compile-error*))
+		  (let ((f (or (compiled-or-nil form)
+			       (call-without-jump-tables (lambda () (compiled-or-nil form))))))
+		    (and f (return-from eval-compiled-or-interpreted (funcall f))))))
 	    (t (let ((sb-ext:*evaluator-mode* :interpret))
 		 (eval form))))))
   #-sbcl (eval form))
