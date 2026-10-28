@@ -278,7 +278,10 @@ references to these."
     ("null?" 1 1) ("not" 1 1) ("vector-length" 1 1) ("string-length" 1 1)
     ("cons" 2 2) ("eq?" 2 2) ("eqv?" 2 2) ("vector-ref" 2 2) ("string-ref" 2 2)
     ("set-car!" 2 2) ("set-cdr!" 2 2) ("char=?" 2 2) ("vector-set!" 3 3)
-    ("memq" 2 2) ("memv" 2 2) ("length" 1 1) ("append" 2 2) ("list" 0 nil))
+    ("memq" 2 2) ("memv" 2 2) ("length" 1 1) ("append" 2 2) ("list" 0 nil)
+    ;; the host's, which the continuation transformation sees: an escape
+    ;; (call/cc (lambda (k) ...)) of a K only called isn't a capture
+    ("call-with-current-continuation" 1 1) ("call/cc" 1 1))
   "Root primitives a call of which is made a primcall, with their numbers of
 arguments allowed: the others stay calls of the variable.  Not boolean?,
 which the host's has #f for #nil.  All are in Guile's

@@ -647,7 +647,7 @@ VM's stack (src/guile/vm.lisp).")
 (defun capture-frames ()
   "Copies of the current frames, innermost first, and whether they reach
 a base."
-  (multiple-value-bind (items broken) (current-frames)
+  (multiple-value-bind (items broken) (current-frames t)
     (let ((new '()) (tail '()) (complete nil))
       (dolist (frame items)
 	(let ((promoted (frame-promoted frame)))
@@ -673,25 +673,34 @@ a base."
   fp		; the machine's frame pointer
   data)		; the address of its site's QS-SITE-MARK-n data
 
-(defun current-frames ()
+(defun current-frames (&optional to-promoted)
   "The current frames, innermost first: *FSTACK*'s (to :BASE, if it's
 reached), and the stack sites' as STACK-FRAMEs, in order by address;
-second, true if the walk of the stack didn't reach the base."
-  #-sbcl (values *fstack* nil)
+second, true if the walk of the stack didn't reach the base.  With
+TO-PROMOTED, only as far as the first frame a capture has promoted,
+or :BASE (CAPTURE-FRAMES stops there): not the whole stack and
+*FSTACK* at every capture, which made a capture in a deep stack of
+promoted frames (Guile's runtime under a program) cost their number."
+  #-sbcl (progn to-promoted (values *fstack* nil))
   #+sbcl
   (if (not (stack-walk-p))
       (values *fstack* nil)
-      (multiple-value-bind (stack broken) (stack-site-frames)
+      (multiple-value-bind (stack broken) (stack-site-frames to-promoted)
 	(let ((out '()))
-	  (do ((s *fstack* (cdr s)))
-	      ((null s))
-	    (let ((cell-address (sb-kernel:get-lisp-obj-address s)))
-	      (loop while (and stack (on-control-stack-p cell-address)
-			       (> (stack-frame-fp (car stack)) cell-address))
-		    do (push (pop stack) out))
-	      (when (eq (car s) :base)
-		(setq out (append (reverse stack) out) stack '()))
-	      (push (car s) out)))
+	  (flet ((done-p (frame)
+		   (and to-promoted (or (eq frame :base) (frame-promoted frame)))))
+	    (do ((s *fstack* (cdr s)))
+		((null s))
+	      (let ((cell-address (sb-kernel:get-lisp-obj-address s)))
+		(loop while (and stack (on-control-stack-p cell-address)
+				 (> (stack-frame-fp (car stack)) cell-address))
+		      do (let ((frame (pop stack)))
+			   (push frame out)
+			   (when (done-p frame) (return-from current-frames (values (nreverse out) broken)))))
+		(when (eq (car s) :base)
+		  (setq out (append (reverse stack) out) stack '()))
+		(push (car s) out)
+		(when (done-p (car s)) (return-from current-frames (values (nreverse out) broken))))))
 	  (values (nreconc out stack) broken)))))
 
 (defun frame-promoted (frame)
@@ -706,9 +715,12 @@ second, true if the walk of the stack didn't reach the base."
 #+sbcl
 (progn
   (defun on-control-stack-p (address)
+    (declare (type sb-ext:word address))
     (let ((start (sb-sys:sap-int (sb-vm::current-thread-offset-sap sb-vm::thread-control-stack-start-slot)))
 	  (end (sb-sys:sap-int (sb-vm::current-thread-offset-sap sb-vm::thread-control-stack-end-slot))))
       (<= start address end)))
+
+  (defvar *site-magic* nil "SB-VM::+QS-SITE-MAGIC+, once looked up.")
 
   (defun site-data (ra)
     "The address of the QS-SITE-MARK-n data after return address RA, or NIL.
@@ -717,8 +729,11 @@ one value has no branch), or a branch to them: so the mark is the first
 B over the magic word, through other Bs, and any other branch or call
 on the way means RA isn't a site's (a call that isn't a site, from
 which the next site's mark could otherwise be reached)."
-    (let ((magic (symbol-value (find-symbol "+QS-SITE-MAGIC+" "SB-VM")))
+    (declare (type sb-ext:word ra))
+    (let ((magic (or *site-magic*
+		     (setq *site-magic* (symbol-value (find-symbol "+QS-SITE-MAGIC+" "SB-VM")))))
 	  (pc ra))
+      (declare (type sb-ext:word magic pc))
       (loop repeat 64
 	    do (let ((inst (sb-sys:sap-ref-32 (sb-sys:int-sap pc) 0)))
 		 (cond ((= (ldb (byte 6 26) inst) 5) ; B
@@ -734,24 +749,34 @@ which the next site's mark could otherwise be reached)."
 			(return nil))
 		       (t (incf pc 4)))))))
 
-  (defun stack-site-frames ()
+  (defun stack-site-frames (&optional to-promoted)
     "The frames of stack sites on the control stack, innermost first, out
-to the base's frame; second, true if the walk stopped short of it."
+to the base's frame, or with TO-PROMOTED to the first one a capture has
+promoted (what is outside it is in its copy: CAPTURE-FRAMES stops there);
+second, true if the walk stopped short of the base otherwise."
     (let ((fp (sb-sys:sap-int (sb-kernel:current-fp)))
 	  (frames '()))
+      (declare (type sb-ext:word fp))
       (loop
 	(let ((caller (sb-sys:sap-ref-word (sb-sys:int-sap fp) 0))
 	      (ra (sb-sys:sap-ref-word (sb-sys:int-sap fp) 8)))
+	  (declare (type sb-ext:word caller ra))
 	  (when (and (/= *base-fp* 0) (<= caller *base-fp*))
 	    (return (values (nreverse frames) (/= caller *base-fp*))))
 	  (unless (and (< caller fp) (on-control-stack-p caller))
 	    (return (values (nreverse frames) (/= *base-fp* 0))))
 	  (let ((data (site-data ra)))
-	    (when data (push (make-stack-frame caller data) frames)))
+	    (when data
+	      (let ((frame (make-stack-frame caller data)))
+		(push frame frames)
+		(when (and to-promoted (stack-frame-value frame 1))
+		  (return (values (nreverse frames) nil))))))
 	  (setq fp caller)))))
 
+  (declaim (inline stack-frame-word))
   (defun stack-frame-word (frame i)
-    (sb-sys:sap-ref-word (sb-sys:int-sap (stack-frame-data frame)) (* 8 i)))
+    (declare (fixnum i))
+    (sb-sys:sap-ref-word (sb-sys:int-sap (the sb-ext:word (stack-frame-data frame))) (* 8 i)))
 
   (defun stack-frame-location (frame j)
     "The kind and the word of where the Jth value QS-SITE-MARK-n marks is
@@ -762,10 +787,18 @@ in src/sbcl-vops.lisp)."
 	(error "a continuation can't be captured here: a value of a frame isn't on the stack"))
       (values kind (stack-frame-word frame (+ 5 (* 2 j))))))
 
+  ;; A value in a slot of the control stack (every one, so far: the copies
+  ;; QS-STACK-COPY-n makes are boxed) is read and written at FP plus its
+  ;; offset in words, as SB-DI's accessors do on arm64, without them.
   (defun stack-frame-value (frame j)
+    (declare (fixnum j))
     (multiple-value-bind (kind word) (stack-frame-location frame j)
       (ecase kind
-	(0 (sb-di::sub-access-debug-var-slot (sb-sys:int-sap (stack-frame-fp frame)) word))
+	(0 (if (= (sb-c:sc+offset-scn word) sb-vm:control-stack-sc-number)
+	       (sb-kernel:%make-lisp-obj
+		(sb-sys:sap-ref-word (sb-sys:int-sap (the sb-ext:word (stack-frame-fp frame)))
+				     (* 8 (the fixnum (sb-c:sc+offset-offset word)))))
+	       (sb-di::sub-access-debug-var-slot (sb-sys:int-sap (stack-frame-fp frame)) word)))
 	(1 (sb-kernel:code-header-ref
 	    (sb-di::code-header-from-pc (sb-sys:int-sap (stack-frame-data frame)))
 	    word))
@@ -775,7 +808,11 @@ in src/sbcl-vops.lisp)."
     (multiple-value-bind (kind word) (stack-frame-location frame j)
       (unless (= kind 0)
 	(error "a frame's cache isn't in a slot of the frame"))
-      (sb-di::sub-set-debug-var-slot (sb-sys:int-sap (stack-frame-fp frame)) word value))
+      (if (= (sb-c:sc+offset-scn word) sb-vm:control-stack-sc-number)
+	  (setf (sb-sys:sap-ref-word (sb-sys:int-sap (the sb-ext:word (stack-frame-fp frame)))
+				     (* 8 (the fixnum (sb-c:sc+offset-offset word))))
+		(sb-kernel:get-lisp-obj-address value))
+	  (sb-di::sub-set-debug-var-slot (sb-sys:int-sap (stack-frame-fp frame)) word value)))
     value)
 
   (defun stack-frame-vector (frame)
