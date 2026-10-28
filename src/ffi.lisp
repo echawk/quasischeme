@@ -45,7 +45,7 @@
 (declaim (inline address-pointer))
 (defun address-pointer (address)
   "A CFFI pointer to the integer ADDRESS."
-  #+sbcl (address-pointer address)
+  #+sbcl (sb-sys:int-sap address)
   #-sbcl (cffi:make-pointer address))
 
 (defmacro with-pinned ((&rest objects) &body body)
