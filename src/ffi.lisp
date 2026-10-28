@@ -22,7 +22,8 @@
 ;;;;   :void     only a result: the unspecified value
 ;;;; A foreign function is compiled once per call to FOREIGN-FUNCTION.
 ;;;; Pinning is SBCL's, so C may keep a bytevector's address only for
-;;;; the length of the call, as with Chez's u8*.
+;;;; the length of the call, as with Chez's u8*.  Elsewhere (ECL's
+;;;; collector doesn't move objects) nothing is pinned.
 
 (defpackage "QUASISCHEME-FFI"
   (:nicknames "QSFFI")
@@ -41,28 +42,52 @@
 (defun type-kind (type) (second type))
 (defun type-options (type) (cddr type))
 
+(declaim (inline address-pointer))
+(defun address-pointer (address)
+  "A CFFI pointer to the integer ADDRESS."
+  #+sbcl (address-pointer address)
+  #-sbcl (cffi:make-pointer address))
+
+(defmacro with-pinned ((&rest objects) &body body)
+  "BODY with OBJECTS where the collector won't move them."
+  #+sbcl `(sb-sys:with-pinned-objects ,objects ,@body)
+  #-sbcl `(progn ,@objects ,@body))
+
 (defun vector-address (octets)
   "The address of OCTETS' data now; it holds only while OCTETS is pinned."
-  (sb-sys:sap-int (sb-sys:vector-sap octets)))
+  #+sbcl (sb-sys:sap-int (sb-sys:vector-sap octets))
+  #-sbcl (cffi:with-pointer-to-vector-data (p octets) (cffi:pointer-address p)))
+
+(defun errno ()
+  "C's errno now."
+  #+sbcl (errno)
+  #-sbcl (cffi:mem-ref (cffi:foreign-funcall #+darwin "__error" #-darwin "__errno_location" :pointer) :int))
 
 (defun call-with-address (place function)
   "Call FUNCTION with the integer address PLACE denotes: an integer, or
 (bytevector . offset), pinned for the call."
   (if (consp place)
       (let ((v (car place)))
-	(sb-sys:with-pinned-objects (v)
+	(with-pinned (v)
 	  (funcall function (+ (vector-address v) (cdr place)))))
       (funcall function place)))
 
 (defun quiet-compile (form)
   "FORM, a lambda expression, compiled without the compiler's notes and warnings."
   (handler-bind ((warning #'muffle-warning)
-		 (sb-ext:compiler-note #'muffle-warning))
+		 #+sbcl (sb-ext:compiler-note #'muffle-warning))
     (let ((*error-output* (make-broadcast-stream)))
       (compile nil form))))
 
 (defun encoding-format (encoding)
   (or encoding :utf-8))
+
+(defun string-to-c-octets (string encoding)
+  "STRING's octets in ENCODING, NUL-terminated."
+  #+sbcl (sb-ext:string-to-octets string :external-format encoding :null-terminate t)
+  #-sbcl (let* ((o (babel:string-to-octets string :encoding encoding))
+		(v (make-array (1+ (length o)) :element-type '(unsigned-byte 8) :initial-element 0)))
+	   (replace v o)))
 
 ;;; ------------------------------------------------------------------
 ;;; Arguments and results
@@ -72,9 +97,7 @@
 to pin and point into."
   (ecase (type-kind type)
     (:string (if (false-p value) 0
-		 (cons (sb-ext:string-to-octets value :external-format (encoding-format (first (type-options type)))
-						      :null-terminate t)
-		       0)))
+		 (cons (string-to-c-octets value (encoding-format (first (type-options type)))) 0)))
     (:bytes (if (false-p value) 0 (cons value 0)))
     (:pointer (funcall (first (type-options type)) value))))
 
@@ -90,11 +113,12 @@ to pin and point into."
 
 (defun read-c-string (address &key (length nil) (encoding :utf-8))
   "The string of LENGTH bytes (up to a NUL if NIL) at ADDRESS."
-  (let* ((sap (sb-sys:int-sap address))
-	 (n (or length (loop for i from 0 until (zerop (sb-sys:sap-ref-8 sap i)) finally (return i))))
+  (let* ((p (address-pointer address))
+	 (n (or length (loop for i from 0 until (zerop (cffi:mem-ref p :uint8 i)) finally (return i))))
 	 (octets (make-array n :element-type '(unsigned-byte 8))))
-    (dotimes (i n) (setf (aref octets i) (sb-sys:sap-ref-8 sap i)))
-    (sb-ext:octets-to-string octets :external-format (encoding-format encoding))))
+    (dotimes (i n) (setf (aref octets i) (cffi:mem-ref p :uint8 i)))
+    #+sbcl (sb-ext:octets-to-string octets :external-format (encoding-format encoding))
+    #-sbcl (babel:octets-to-string octets :encoding (encoding-format encoding))))
 
 (defun result-value (type raw)
   (ecase (type-kind type)
@@ -126,18 +150,18 @@ arm64 passes the others on the stack)."
 	 (call-args
 	   (loop for a in args for v in vectors for p in places for type in arguments
 		 append (if (pointer-kind-p type)
-			    `(:pointer (sb-sys:int-sap (if ,v (+ (vector-address ,v) ,p) ,p)))
+			    `(:pointer (address-pointer (if ,v (+ (vector-address ,v) ,p) ,p)))
 			    `(,(type-ctype type) (argument-value ',type ,a)))))
 	 (call (if varargs-after
 		   (let ((fixed (* 2 (min varargs-after (length arguments)))))
 		     `(cffi:foreign-funcall-pointer-varargs
-		       (sb-sys:int-sap ,address) () ,(subseq call-args 0 fixed)
+		       (address-pointer ,address) () ,(subseq call-args 0 fixed)
 		       ,@(subseq call-args fixed) ,(call-ctype result)))
-		   `(cffi:foreign-funcall-pointer (sb-sys:int-sap ,address) () ,@call-args
+		   `(cffi:foreign-funcall-pointer (address-pointer ,address) () ,@call-args
 						  ,(call-ctype result))))
 	 (body `(let ((raw ,call))
 		  ,(if errno
-		       `(let ((e (sb-alien:get-errno))) (values (result-value ',result raw) e))
+		       `(let ((e (errno))) (values (result-value ',result raw) e))
 		       `(result-value ',result raw)))))
     (quiet-compile
 	       `(lambda ,args
@@ -150,7 +174,7 @@ arm64 passes the others on the stack)."
 						 (and (consp place) (car place))))))
 		    (declare (ignorable ,@(loop for v in vectors for type in arguments
 						 when (pointer-kind-p type) collect v)))
-		    (sb-sys:with-pinned-objects
+		    (with-pinned
 			,(loop for v in vectors for type in arguments when (pointer-kind-p type) collect v)
 		      ,body))))))
 
@@ -172,7 +196,7 @@ arm64 passes the others on the stack)."
     (:void nil)
     ((:number :float :boolean :char) (argument-value type value))
     (:pointer (let ((place (funcall (first (type-options type)) value)))
-		(sb-sys:int-sap (if (consp place)
+		(address-pointer (if (consp place)
 				    (+ (vector-address (car place)) (cdr place))
 				    place))))))
 
@@ -219,7 +243,7 @@ is NIL; NIL and the error message if it can't be opened."
   "The address of NAME in the library HANDLE; NIL and the error message
 if there is none."
   (cffi:foreign-funcall "dlerror" :pointer)
-  (let ((p (cffi:foreign-funcall "dlsym" :pointer (sb-sys:int-sap handle) :string name :pointer)))
+  (let ((p (cffi:foreign-funcall "dlsym" :pointer (address-pointer handle) :string name :pointer)))
     (if (cffi:null-pointer-p p)
 	(values nil (dlerror))
 	(cffi:pointer-address p))))
@@ -240,10 +264,10 @@ if there is none."
 (defun type-alignment (ctype) (cffi:foreign-type-alignment ctype))
 
 (defun allocate (n) (cffi:pointer-address (cffi:foreign-alloc :uint8 :count (max n 1))))
-(defun free (address) (cffi:foreign-free (sb-sys:int-sap address)))
+(defun free (address) (cffi:foreign-free (address-pointer address)))
 
 (defun mem-ref (ctype address &optional (offset 0))
-  (let ((v (cffi:mem-ref (sb-sys:int-sap address) ctype offset)))
+  (let ((v (cffi:mem-ref (address-pointer address) ctype offset)))
     (if (eq ctype :pointer) (cffi:pointer-address v) v)))
 
 (defvar *setters* (make-hash-table :test 'eq)
@@ -254,6 +278,6 @@ CFFI's (setf mem-ref) is a setf expansion, so it's compiled per type.")
   (funcall (or (gethash ctype *setters*)
 	       (setf (gethash ctype *setters*)
 		     (quiet-compile `(lambda (value address offset)
-				     (setf (cffi:mem-ref (sb-sys:int-sap address) ,ctype offset)
-					   ,(if (eq ctype :pointer) '(sb-sys:int-sap value) 'value))))))
+				     (setf (cffi:mem-ref (address-pointer address) ,ctype offset)
+					   ,(if (eq ctype :pointer) '(address-pointer value) 'value))))))
 	   value address offset))

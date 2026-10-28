@@ -234,6 +234,15 @@ that psyntax named with a gensym: the name the program gave it, else NIL."
 	 (let ((scheme (find-symbol (symbol-name loc) "SCHEME")))
 	   (and scheme (get scheme :source-name))))))
 
+(defun expects-function-p (type)
+  "Whether a type error expecting TYPE is one of applying a non-procedure.
+ECL's SUBTYPEP doesn't return on its recursive SI::PROPER-LIST (APPLY's
+type), so there only a compound type is asked about."
+  #+sbcl (subtypep 'function type)
+  #-sbcl (if (symbolp type)
+	     (member type '(function compiled-function))
+	     (subtypep 'function type)))
+
 (defun foreign-condition-message (c)
   "The message and irritants a Scheme handler sees for Lisp condition C.
 Applying a non-procedure shows up in Lisp as calling an undefined
@@ -249,7 +258,7 @@ function (#f is a symbol) or as a type error expecting a function."
 		 (values (format nil "variable ~a is not bound" name) '())
 		 (plain)))))
       (type-error
-       (cond ((subtypep 'function (type-error-expected-type c))
+       (cond ((expects-function-p (type-error-expected-type c))
 	      (values "attempt to apply non-procedure" (list (type-error-datum c))))
 	     ;; car/cdr of a non-pair (builtin.scm checks with (the cons x))
 	     ((member (type-error-expected-type c) '(cons list))

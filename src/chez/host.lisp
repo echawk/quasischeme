@@ -9,9 +9,14 @@
 
 (defun path-string (x) (if (pathnamep x) (namestring x) x))
 
+(defun unsupported (who)
+  "Signal that WHO isn't available on this Lisp (it is on SBCL)."
+  (qs:scheme-error "~A: not supported on ~A" who (lisp-implementation-type)))
+
 (defparameter *posix-spawn-p*
-  (find "USE-POSIX-SPAWN" (sb-kernel:%fun-lambda-list #'sb-ext:run-program)
-	:key (lambda (x) (symbol-name (if (consp x) (car x) x))) :test #'string=)
+  #+sbcl (find "USE-POSIX-SPAWN" (sb-kernel:%fun-lambda-list #'sb-ext:run-program)
+	       :key (lambda (x) (symbol-name (if (consp x) (car x) x))) :test #'string=)
+  #-sbcl nil
   "Whether this SBCL's RUN-PROGRAM can use posix_spawn (2.3 and later):
 much faster than fork for a process of a large heap, a few ms rather
 than a few hundred.")
@@ -20,10 +25,13 @@ than a few hundred.")
   ;; sh -c, its standard streams the process's own, written after what
   ;; is already ours
   (finish-output *standard-output*)
-  (sb-ext:process-exit-code
-   (apply #'sb-ext:run-program "/bin/sh" (list "-c" command)
-	  :input t :output t :error t :wait t
-	  (and *posix-spawn-p* '(:use-posix-spawn t)))))
+  #+sbcl (sb-ext:process-exit-code
+	  (apply #'sb-ext:run-program "/bin/sh" (list "-c" command)
+		 :input t :output t :error t :wait t
+		 (and *posix-spawn-p* '(:use-posix-spawn t))))
+  #-sbcl (nth-value 2 (uiop:run-program (list "/bin/sh" "-c" command)
+					:input :interactive :output :interactive
+					:error-output :interactive :ignore-error-status t)))
 
 ;;; open-process-ports and process: sh -c COMMAND, its standard streams
 ;;; pipes; closing a port closes its pipe, so the process sees end of file.
@@ -45,17 +53,24 @@ than a few hundred.")
 
 (defprim "chez:open-process-ports" (command transcoder)
   ;; Values: the process's standard input, output and error, and its id
-  (let* ((process (apply #'sb-ext:run-program "/bin/sh" (list "-c" command)
-			 :input :stream :output :stream :error :stream :wait nil
-			 (and *posix-spawn-p* '(:use-posix-spawn t))))
-	 (in (make-instance 'process-output-port :stream (sb-ext:process-input process)))
-	 (out (make-instance 'process-input-port :stream (sb-ext:process-output process)))
-	 (err (make-instance 'process-input-port :stream (sb-ext:process-error process))))
+  (let* ((process #+sbcl (apply #'sb-ext:run-program "/bin/sh" (list "-c" command)
+				:input :stream :output :stream :error :stream :wait nil
+				(and *posix-spawn-p* '(:use-posix-spawn t)))
+		  #-sbcl (uiop:launch-program (list "/bin/sh" "-c" command)
+					      :input :stream :output :stream :error-output :stream
+					      :element-type '(unsigned-byte 8)))
+	 (in (make-instance 'process-output-port
+			    :stream #+sbcl (sb-ext:process-input process) #-sbcl (uiop:process-info-input process)))
+	 (out (make-instance 'process-input-port
+			     :stream #+sbcl (sb-ext:process-output process) #-sbcl (uiop:process-info-output process)))
+	 (err (make-instance 'process-input-port
+			     :stream #+sbcl (sb-ext:process-error process) #-sbcl (uiop:process-info-error-output process))))
     (flet ((port (p)
 	     (cond ((not (transcoder-p transcoder)) p)
 		   ((input-stream-p p) (make-instance 'transcoded-input-port :binary p :transcoder transcoder))
 		   (t (make-instance 'transcoded-output-port :binary p :transcoder transcoder)))))
-      (values (port in) (port out) (port err) (sb-ext:process-pid process)))))
+      (values (port in) (port out) (port err)
+	      #+sbcl (sb-ext:process-pid process) #-sbcl (uiop:process-info-pid process)))))
 
 (defprim "chez:with-input-from-string" (string thunk)
   (let ((*standard-input* (make-string-input-stream string)))
@@ -87,17 +102,23 @@ than a few hundred.")
 	    s))))
 
 ;;; stat(2) and lstat(2), through sb-posix: Chez's file predicates
-;;; follow symbolic links unless their follow? argument is #f.
+;;; follow symbolic links unless their follow? argument is #f.  Elsewhere
+;;; than SBCL, a file's kind comes from UIOP, which can't tell a link.
 
 (defun file-stat (name follow?)
   "The stat of file NAME (lstat unless FOLLOW?), or NIL if there is none."
   (let ((path (namestring (uiop:parse-native-namestring name))))
-    (handler-case (if follow? (sb-posix:stat path) (sb-posix:lstat path))
-      (sb-posix:syscall-error () nil))))
+    #+sbcl (handler-case (if follow? (sb-posix:stat path) (sb-posix:lstat path))
+	     (sb-posix:syscall-error () nil))
+    #-sbcl (progn follow?
+		  (cond ((uiop:directory-exists-p path) :directory)
+			((uiop:file-exists-p path) :regular)))))
 
 (defun file-type-p (name follow? type)
   (let ((stat (file-stat name follow?)))
-    (qs:true? (and stat (= (logand (sb-posix:stat-mode stat) sb-posix:s-ifmt) type)))))
+    (qs:true? (and stat
+		   #+sbcl (= (logand (sb-posix:stat-mode stat) sb-posix:s-ifmt) type)
+		   #-sbcl (eq stat type)))))
 
 (defun follow-arg (follow?) (not (eq follow? qs:false)))
 
@@ -105,19 +126,20 @@ than a few hundred.")
   (qs:true? (and (file-stat name (follow-arg follow?)) t)))
 
 (defprim "chez:file-directory?" (name &optional (follow? t))
-  (file-type-p name (follow-arg follow?) sb-posix:s-ifdir))
+  (file-type-p name (follow-arg follow?) #+sbcl sb-posix:s-ifdir #-sbcl :directory))
 
 (defprim "chez:file-regular?" (name &optional (follow? t))
-  (file-type-p name (follow-arg follow?) sb-posix:s-ifreg))
+  (file-type-p name (follow-arg follow?) #+sbcl sb-posix:s-ifreg #-sbcl :regular))
 
 (defprim "chez:file-symbolic-link?" (name)
-  (file-type-p name nil sb-posix:s-iflnk))
+  (file-type-p name nil #+sbcl sb-posix:s-iflnk #-sbcl :link))
 
 ;;; File times to the nanosecond, as Chez gives them: sb-posix's stat has
 ;;; only seconds, so stat(2) is called here with sb-posix's layout of
 ;;; struct stat, in which each time is a struct timespec (seconds, then
 ;;; nanoseconds), as on Darwin and 64-bit Linux.
 
+#+sbcl
 (defun stat-time-offsets ()
   "Byte offsets of struct stat's access, change and modification times."
   (let ((fields (sb-alien::alien-record-type-fields
@@ -128,6 +150,7 @@ than a few hundred.")
 		     8))
 	    '(sb-posix::atime sb-posix::ctime sb-posix::mtime))))
 
+#+sbcl
 (defun stat-function (follow?)
   (loop for name in (if follow? '("stat$INODE64" "stat") '("lstat$INODE64" "lstat"))
 	for address = (sb-sys:find-dynamic-foreign-symbol-address name)
@@ -136,6 +159,8 @@ than a few hundred.")
 (defun file-times-ns (path follow?)
   "PATH's (access change modification) times as (seconds . nanoseconds),
 or NIL if it can't be had."
+  #-sbcl (progn path follow? nil)
+  #+sbcl
   (let ((function (ignore-errors (stat-function follow?)))
 	(offsets (ignore-errors (stat-time-offsets))))
     (when (and function offsets (= 64 sb-vm:n-word-bits))
@@ -162,24 +187,28 @@ or NIL if it can't be had."
     (or (file-times-ns native (follow-arg follow?))
 	(let ((stat (or (file-stat name (follow-arg follow?))
 			(qs:scheme-error "failed for ~S: no such file or directory" name))))
-	  (list (cons (sb-posix:stat-atime stat) 0) (cons (sb-posix:stat-ctime stat) 0)
-		(cons (sb-posix:stat-mtime stat) 0))))))
+	  #+sbcl (list (cons (sb-posix:stat-atime stat) 0) (cons (sb-posix:stat-ctime stat) 0)
+		       (cons (sb-posix:stat-mtime stat) 0))
+	  #-sbcl (let ((m (- (file-write-date native) 2208988800)))
+		   (progn stat (list (cons m 0) (cons m 0) (cons m 0))))))))
 
 (defun call-for-file (who name error? function)
   "Call FUNCTION on NAME's native path: #t, or on failure #f, or an
 error if ERROR? is true."
   (handler-case (progn (funcall function (namestring (uiop:parse-native-namestring name))) qs:true)
-    (sb-posix:syscall-error (e)
+    (#+sbcl sb-posix:syscall-error #-sbcl file-error (e)
       (if (and error? (not (eq error? qs:false)))
 	  (qs:scheme-error "~A: failed for ~A: ~A" who name
-			   (sb-int:strerror (sb-posix:syscall-errno e)))
+			   #+sbcl (sb-int:strerror (sb-posix:syscall-errno e)) #-sbcl e)
 	  qs:false))))
 
 (defprim "chez:delete-file" (name &optional error?)
-  (call-for-file "delete-file" name error? #'sb-posix:unlink))
+  (call-for-file "delete-file" name error? #+sbcl #'sb-posix:unlink #-sbcl #'delete-file))
 
 (defprim "chez:delete-directory" (name &optional error?)
-  (call-for-file "delete-directory" name error? #'sb-posix:rmdir))
+  (call-for-file "delete-directory" name error?
+		 #+sbcl #'sb-posix:rmdir
+		 #-sbcl (lambda (path) (uiop:delete-empty-directory (uiop:ensure-directory-pathname path)))))
 
 (defprim "chez:directory-list" (name)
   (let ((dir (uiop:ensure-directory-pathname (uiop:parse-native-namestring name))))
@@ -192,7 +221,12 @@ error if ERROR? is true."
 (defprim "chez:mkdir" (name &optional (mode #o777))
   ;; Chez's: one directory, with MODE (less the umask), an error if it
   ;; can't be made (it exists, say)
-  (call-for-file "mkdir" name t (lambda (path) (sb-posix:mkdir (string-right-trim "/" path) mode)))
+  (call-for-file "mkdir" name t (lambda (path)
+				     #+sbcl (sb-posix:mkdir (string-right-trim "/" path) mode)
+				     #-sbcl (progn mode
+						   (when (uiop:directory-exists-p path)
+						     (error 'file-error :pathname path))
+						   (ensure-directories-exist (uiop:ensure-directory-pathname path)))))
   qs:unspecific)
 
 (defprim "chez:rename-file" (old new)
@@ -364,17 +398,20 @@ chez-srfi derives its platform features (posix, darwin, ...) from it."
   (unless (and (typep start '(integer 0 64)) (typep end '(integer 0 64)) (<= start end))
     (r6rs-assertion-violation "flbit-field" "invalid range" (list start end)))
   (ldb (byte (- end start) start)
-       (logior (ash (ldb (byte 32 0) (sb-kernel:double-float-high-bits x)) 32)
-	       (sb-kernel:double-float-low-bits x))))
+       #+sbcl (logior (ash (ldb (byte 32 0) (sb-kernel:double-float-high-bits x)) 32)
+		      (sb-kernel:double-float-low-bits x))
+       #-sbcl (float-features:double-float-bits x)))
 
 ;;; Fixnum operations that wrap around rather than overflow
 
 (defun check-fixnum (who x)
   (unless (typep x 'fixnum) (r6rs-assertion-violation who "not a fixnum" x)))
 
+(defconstant +fixnum-bits+ (1+ (integer-length most-positive-fixnum)))
+
 (defun wrap-fixnum (n)
-  (let ((m (ldb (byte sb-vm:n-fixnum-bits 0) n)))
-    (if (logbitp (1- sb-vm:n-fixnum-bits) m) (- m (ash 1 sb-vm:n-fixnum-bits)) m)))
+  (let ((m (ldb (byte +fixnum-bits+ 0) n)))
+    (if (logbitp (1- +fixnum-bits+) m) (- m (ash 1 +fixnum-bits+)) m)))
 
 (macrolet ((wrapping (name op)
 	     `(defprim ,name (x y)
@@ -392,13 +429,13 @@ chez-srfi derives its platform features (posix, darwin, ...) from it."
 
 (defprim "chez:fxsll/wraparound" (x k)
   (check-fixnum "fxsll/wraparound" x)
-  (unless (typep k `(integer 0 ,sb-vm:n-fixnum-bits))
+  (unless (typep k `(integer 0 ,+fixnum-bits+))
     (r6rs-assertion-violation "fxsll/wraparound" "invalid shift" k))
   (wrap-fixnum (ash x k)))
 
 (defun check-bit-index (who i)
   ;; below the sign bit
-  (unless (typep i `(integer 0 (,(1- sb-vm:n-fixnum-bits))))
+  (unless (typep i `(integer 0 (,(1- +fixnum-bits+))))
     (r6rs-assertion-violation who "invalid bit index" i)))
 
 (defprim "chez:fxlogbit0" (i x)
@@ -420,19 +457,19 @@ chez-srfi derives its platform features (posix, darwin, ...) from it."
 
 (defvar *gc-count* 0)
 (defun count-gc () (incf *gc-count*))
-(pushnew 'count-gc sb-ext:*after-gc-hooks*)
+#+sbcl (pushnew 'count-gc sb-ext:*after-gc-hooks*)
 
-(defprim "chez:bytes-consed" () (sb-ext:get-bytes-consed))
-(defprim "chez:bytes-allocated" () (sb-kernel:dynamic-usage))
+(defprim "chez:bytes-consed" () #+sbcl (sb-ext:get-bytes-consed) #-sbcl 0)
+(defprim "chez:bytes-allocated" () #+sbcl (sb-kernel:dynamic-usage) #-sbcl 0)
 ;;; Chez's virtual registers: 16 per thread
 (defvar *virtual-registers* (make-hash-table :test 'eq :weakness :key :synchronized t))
 (defun virtual-registers ()
-  (or (gethash sb-thread:*current-thread* *virtual-registers*)
-      (setf (gethash sb-thread:*current-thread* *virtual-registers*) (make-array 16 :initial-element 0))))
+  (or (gethash (bt:current-thread) *virtual-registers*)
+      (setf (gethash (bt:current-thread) *virtual-registers*) (make-array 16 :initial-element 0))))
 (defprim "chez:virtual-register" (i) (svref (virtual-registers) i))
 (defprim "chez:set-virtual-register!" (i x) (setf (svref (virtual-registers) i) x) qs:unspecific)
 (defprim "chez:collect" ()
-  (sb-ext:gc :full t)
+  (tg:gc :full t)
   (qs-r6rs::note-full-collection)
   qs:unspecific)
 
@@ -456,7 +493,7 @@ chez-srfi derives its platform features (posix, darwin, ...) from it."
     (unless g (qs:scheme-error "unregister-guardian: ~S is not a guardian" procedure))
     (qs-r6rs::guardian-unregister g)))
 (defprim "chez:gc-statistics" ()
-  (vector *gc-count* (/ sb-ext:*gc-run-time* internal-time-units-per-second)))
+  (vector *gc-count* (/ #+sbcl sb-ext:*gc-run-time* #-sbcl 0 internal-time-units-per-second)))
 
 ;;; ------------------------------------------------------------------
 ;;; Weak and ephemeron hashtables: R6RS hashtables whose CL table is weak
@@ -694,17 +731,17 @@ chez-srfi derives its platform features (posix, darwin, ...) from it."
 ;;; data and an arity mask of its own; an arity wrapper checks its
 ;;; arguments' count against the mask.
 
-(defclass wrapper-procedure (sb-mop:funcallable-standard-object)
+(defclass wrapper-procedure (#+sbcl sb-mop:funcallable-standard-object #+ecl clos:funcallable-standard-object)
   ((proc :initarg :proc :accessor wrapper-proc)
    (mask :initarg :mask :reader wrapper-mask)
    (data :initarg :data :accessor wrapper-data))
-  (:metaclass sb-mop:funcallable-standard-class))
+  (:metaclass #+sbcl sb-mop:funcallable-standard-class #+ecl clos:funcallable-standard-class))
 
 (defun make-wrapper (who proc mask data check-arity)
   (unless (functionp proc) (r6rs-assertion-violation who "not a procedure" proc))
   (unless (integerp mask) (r6rs-assertion-violation who "not an exact integer" mask))
   (let ((w (make-instance 'wrapper-procedure :proc proc :mask mask :data data)))
-    (sb-mop:set-funcallable-instance-function
+    (#+sbcl sb-mop:set-funcallable-instance-function #+ecl clos:set-funcallable-instance-function
      w (if check-arity
 	   (lambda (&rest args)
 	     (unless (logbitp (length args) mask)
@@ -1336,14 +1373,20 @@ unspecified value too: #<void>."
 ;;; empty vector, string and bytevector are each a single object, and
 ;;; immutable.
 
-(defconstant +immutable-flag+ (ash sb-vm:+vector-shareable-nonstd+ 8))
+#+sbcl (defconstant +immutable-flag+ (ash sb-vm:+vector-shareable-nonstd+ 8))
+
+;;; Elsewhere than SBCL, a weak table records the immutable objects.
+#-sbcl (defvar *immutable* (tg:make-weak-hash-table :weakness :key :test 'eq))
 
 (declaim (inline immutable-p))
 (defun immutable-p (x)
   (and (typep x '(simple-array * (*)))
-       (logtest +immutable-flag+ (sb-kernel:get-header-data x))))
+       #+sbcl (logtest +immutable-flag+ (sb-kernel:get-header-data x))
+       #-sbcl (values (gethash x *immutable*))))
 
-(defun mark-immutable (x) (sb-impl::logically-readonlyize x nil))
+(defun mark-immutable (x)
+  #+sbcl (sb-impl::logically-readonlyize x nil)
+  #-sbcl (progn (setf (gethash x *immutable*) t) x))
 
 (defvar *empty-vector* (mark-immutable (make-array 0)))
 (defvar *empty-string* (mark-immutable (make-string 0)))
@@ -1502,8 +1545,11 @@ and a count."
 
 (defstruct (mark-set (:constructor make-mark-set (marks))) marks)
 
-(defmacro body-frame () `(sb-sys:sap-int (sb-vm::current-sp)))
-(defmacro own-frame () `(sb-sys:sap-int (sb-kernel:current-fp)))
+;;; Elsewhere than SBCL, no frame is known: each body is a frame of its
+;;; own, and a mark set in tail position adds to the enclosing one's.
+#-sbcl (defvar *frame-count* 0)
+(defmacro body-frame () #+sbcl `(sb-sys:sap-int (sb-vm::current-sp)) #-sbcl `(incf *frame-count*))
+(defmacro own-frame () #+sbcl `(sb-sys:sap-int (sb-kernel:current-fp)) #-sbcl -1)
 
 (declaim (notinline call-with-mark))
 (defun call-with-mark (key value thunk)
@@ -1606,8 +1652,8 @@ and a count."
 (defstruct (engine-state (:constructor make-engine-state (thunk)))
   thunk
   (thread nil)
-  (lock (sb-thread:make-mutex :name "engine"))
-  (cv (sb-thread:make-waitqueue))
+  (lock (bt:make-lock "engine"))
+  (cv (bt:make-condition-variable))
   (to-invoker '())		; messages for the invoker
   (to-engine '())		; messages for the computation
   (running nil))		; T while the computation runs its own code
@@ -1615,17 +1661,17 @@ and a count."
 (defvar *current-engine* nil "In an engine's thread: its state.")
 
 (defun engine-send (e slot message)
-  (sb-thread:with-mutex ((engine-state-lock e))
+  (bt:with-lock-held ((engine-state-lock e))
     (if (eq slot :invoker)
 	(setf (engine-state-to-invoker e) (append (engine-state-to-invoker e) (list message)))
 	(setf (engine-state-to-engine e) (append (engine-state-to-engine e) (list message))))
-    (sb-thread:condition-broadcast (engine-state-cv e))))
+    (bt:condition-notify (engine-state-cv e))))
 
 (defun engine-receive (e slot &optional timeout)
   "The next message for SLOT, or NIL if TIMEOUT seconds pass first."
   (let ((deadline (and timeout (+ (get-internal-real-time)
 				  (ceiling (* timeout internal-time-units-per-second))))))
-    (sb-thread:with-mutex ((engine-state-lock e))
+    (bt:with-lock-held ((engine-state-lock e))
       (loop
 	(let ((q (if (eq slot :invoker) (engine-state-to-invoker e) (engine-state-to-engine e))))
 	  (when q
@@ -1635,8 +1681,8 @@ and a count."
 	    (return (car q))))
 	(let ((left (and deadline (/ (- deadline (get-internal-real-time)) internal-time-units-per-second))))
 	  (when (and left (<= left 0)) (return nil))
-	  (sb-thread:condition-wait (engine-state-cv e) (engine-state-lock e)
-				    :timeout (and left (max left 0.000001))))))))
+	  (bt:condition-wait (engine-state-cv e) (engine-state-lock e)
+			     :timeout (and left (max left 0.000001))))))))
 
 (defun engine-wait-for-resume (e)
   "In the computation's thread: hand the invoker an expired engine and
@@ -1698,7 +1744,7 @@ reaches it goes to the invoker.")
       (let ((in *standard-input*) (out *standard-output*) (err *error-output*)
 	    (parameters (qs-r7rs::thread-parameters-snapshot)))
 	(setf (engine-state-thread e)
-	      (sb-thread:make-thread
+	      (bt:make-thread
 	       (lambda ()
 		 (qs:disable-float-traps)
 		 (let ((*standard-input* in) (*standard-output* out) (*error-output* err)
@@ -1717,7 +1763,7 @@ reaches it goes to the invoker.")
 		 ((nil)
 		  ;; out of ticks: stop the computation where it is
 		  (setq interrupted t)
-		  (ignore-errors (sb-thread:interrupt-thread (engine-state-thread e) #'engine-pause)))
+		  (ignore-errors (bt:interrupt-thread (engine-state-thread e) #'engine-pause)))
 		 (:done
 		  (setq finished t)
 		  (let ((left (max 1 (- ticks (floor (/ (- (get-internal-real-time) start) internal-time-units-per-second)
@@ -1734,7 +1780,7 @@ reaches it goes to the invoker.")
 		  (error (second m)))))))
       ;; an escape from a handler abandons the computation
       (unless finished
-	(ignore-errors (sb-thread:terminate-thread (engine-state-thread e)))))))
+	(ignore-errors (bt:destroy-thread (engine-state-thread e)))))))
 
 (defprim "chez:make-engine" (thunk)
   (unless (functionp thunk)
@@ -1816,10 +1862,13 @@ reaches it goes to the invoker.")
   (unless (record-p x) (qs:scheme-error "$record-cas!: ~S is not a record" x))
   (unless (and (typep i 'fixnum) (< -1 i (record-field-count x)))
     (qs:scheme-error "$record-cas!: invalid index ~S for ~S" i x))
-  (bool (eq (if (rtd-p x)
-		(sb-ext:compare-and-swap (svref (rtd-extras x) i) old new)
-		(sb-ext:compare-and-swap (sb-kernel:%instance-ref x (+ (record-field-start) i)) old new))
-	    old)))
+  #+sbcl (bool (eq (if (rtd-p x)
+		       (sb-ext:compare-and-swap (svref (rtd-extras x) i) old new)
+		       (sb-ext:compare-and-swap (sb-kernel:%instance-ref x (+ (record-field-start) i)) old new))
+		   old))
+  #-sbcl (bool (when (eq (record-field x i) old)
+		 (setf (record-field x i) new)
+		 t)))
 
 (defprim "chez:sys-sealed-record?" (x rtd)
   (check-rtd "$sealed-record?" rtd)
@@ -1908,16 +1957,18 @@ reaches it goes to the invoker.")
   (multiple-value-bind (q r) (truncate n m) (cons q r)))
 
 (defprim "chez:sys-active-threads" ()
-  (max 1 (count-if #'sb-thread:thread-alive-p (sb-thread:list-all-threads))))
+  (max 1 (count-if #'bt:thread-alive-p (bt:all-threads))))
 
 (defprim "chez:sys-bytes-deallocated" ()
-  (max 0 (- (sb-ext:get-bytes-consed) (sb-kernel:dynamic-usage))))
+  #+sbcl (max 0 (- (sb-ext:get-bytes-consed) (sb-kernel:dynamic-usage)))
+  #-sbcl 0)
 
 ;;; Procedures: a procedure is its own code object here
 
 (defun procedure-name-string (f)
   (let* ((name (ignore-errors
-		(sb-kernel:%fun-name (if (sb-kernel:closurep f) (sb-kernel:%closure-fun f) f))))
+		#+sbcl (sb-kernel:%fun-name (if (sb-kernel:closurep f) (sb-kernel:%closure-fun f) f))
+		#-sbcl (nth-value 2 (function-lambda-expression f))))
 	 (name (cond ((and name (symbolp name)) name)
 		     ((and (consp name) (member (car name) '(flet labels)) (symbolp (cadr name)))
 		      (cadr name)))))
@@ -2026,16 +2077,19 @@ same MARKS, so that eq? says whether two continuations' agree."
   (unless (typep n '(integer 0))
     (r6rs-assertion-violation (qs:intern-scheme-symbol "set-timer") "~s is not a nonnegative integer" n))
   (let ((old (timer-remaining-ticks)))
-    (when *timer*
-      (sb-ext:unschedule-timer *timer*)
-      (setf *timer* nil *timer-deadline* nil))
-    (setf *timer-pending* nil)
-    (when (plusp n)
-      (let ((seconds (max 0.000001d0 (* n *tick-seconds*))))
-	(setf *timer* (sb-ext:make-timer #'fire-timer :name "chez timer" :thread sb-thread:*current-thread*)
-	      *timer-deadline* (+ (get-internal-real-time)
-				  (ceiling (* seconds internal-time-units-per-second))))
-	(sb-ext:schedule-timer *timer* seconds)))
+    #+sbcl
+    (progn
+      (when *timer*
+	(sb-ext:unschedule-timer *timer*)
+	(setf *timer* nil *timer-deadline* nil))
+      (setf *timer-pending* nil)
+      (when (plusp n)
+	(let ((seconds (max 0.000001d0 (* n *tick-seconds*))))
+	  (setf *timer* (sb-ext:make-timer #'fire-timer :name "chez timer" :thread (bt:current-thread))
+		*timer-deadline* (+ (get-internal-real-time)
+				    (ceiling (* seconds internal-time-units-per-second))))
+	  (sb-ext:schedule-timer *timer* seconds))))
+    #-sbcl (when (plusp n) (unsupported "set-timer"))
     old))
 
 (defprim "chez:sys-disable-interrupts" () (incf *interrupt-level*))
@@ -2218,9 +2272,23 @@ same MARKS, so that eq? says whether two continuations' agree."
 (defun chez-radix-prefix (radix)
   (case radix (10 "") (2 "#b") (8 "#o") (16 "#x") (t (format nil "#~Dr" radix))))
 
+(defun flonum-to-digits (x)
+  "Positive X's shortest digits and the point's place k: X = 0.d1...dn * 10^k.
+Elsewhere than SBCL, from how the Lisp prints X (its shortest digits)."
+  #+sbcl (sb-impl::flonum-to-digits x)
+  #-sbcl (let* ((s (let ((*read-default-float-format* 'double-float)) (prin1-to-string x)))
+		(e (position-if (lambda (c) (find c "eEdD")) s))
+		(mantissa (subseq s 0 e))
+		(exponent (if e (parse-integer s :start (1+ e)) 0))
+		(point (or (position #\. mantissa) (length mantissa)))
+		(digits (remove #\. mantissa))
+		(lead (or (position #\0 digits :test-not #'char=) 0))
+		(d (string-right-trim "0" (subseq digits lead))))
+	   (values (+ point exponent (- lead)) (if (string= d "") "0" d))))
+
 (defun chez-flonum-string (x radix exponent-sign)
-  (cond ((sb-ext:float-nan-p x) "+nan.0")
-	((sb-ext:float-infinity-p x) (if (plusp x) "+inf.0" "-inf.0"))
+  (cond ((qs:nan-p x) "+nan.0")
+	((qs:infinite-p x) (if (plusp x) "+inf.0" "-inf.0"))
 	((zerop x) (if (minusp (float-sign x)) "-0.0" "0.0"))
 	((/= radix 10)
 	 ;; the exact expansion: digits of the integer part, then the
@@ -2240,7 +2308,7 @@ same MARKS, so that eq? says whether two continuations' agree."
 	(t
 	 ;; shortest digits d1...dn and the point's place k: x = 0.d1...dn * 10^k.
 	 ;; Chez writes 10000000.0 and 0.001 but 1e10 and 1e-4.
-	 (multiple-value-bind (k digits) (sb-impl::flonum-to-digits (abs x))
+	 (multiple-value-bind (k digits) (flonum-to-digits (abs x))
 	   (let ((n (length digits)) (e (1- k)))
 	     (with-output-to-string (s)
 	       (when (minusp x) (write-char #\- s))
@@ -2269,13 +2337,13 @@ same MARKS, so that eq? says whether two continuations' agree."
 (defun chez-number-string (x cp)
   (let ((radix (cp-radix cp)) (es (cp-exponent-sign cp)))
     (concatenate 'string
-		 (if (and (/= radix 10) (not (cp-display cp)) (not (and (floatp x) (or (sb-ext:float-nan-p x) (sb-ext:float-infinity-p x)))))
+		 (if (and (/= radix 10) (not (cp-display cp)) (not (and (floatp x) (or (qs:nan-p x) (qs:infinite-p x)))))
 		     (chez-radix-prefix radix)
 		     "")
 		 (if (complexp x)
 		     (let ((im (imagpart x)))
 		       (format nil "~A~A~Ai" (chez-real-string (realpart x) radix es)
-			       (if (or (and (floatp im) (or (sb-ext:float-nan-p im) (sb-ext:float-infinity-p im)))
+			       (if (or (and (floatp im) (or (qs:nan-p im) (qs:infinite-p im)))
 				       (minusp (if (floatp im) (float-sign im) im)))
 				   "" "+")
 			       (chez-real-string im radix es)))
@@ -2698,30 +2766,36 @@ writer of that kind, for what this doesn't know."
 
 (defprim "chez:car-cas!" (p old new)
   (unless (consp p) (r6rs-assertion-violation "car-cas!" "not a pair" p))
-  (bool (eq (sb-ext:compare-and-swap (car p) old new) old)))
+  #+sbcl (bool (eq (sb-ext:compare-and-swap (car p) old new) old))
+  #-sbcl (bool (when (eq (car p) old) (setf (car p) new) t)))
 (defprim "chez:cdr-cas!" (p old new)
   (unless (consp p) (r6rs-assertion-violation "cdr-cas!" "not a pair" p))
-  (bool (eq (sb-ext:compare-and-swap (cdr p) old new) old)))
+  #+sbcl (bool (eq (sb-ext:compare-and-swap (cdr p) old new) old))
+  #-sbcl (bool (when (eq (cdr p) old) (setf (cdr p) new) t)))
 (defprim "chez:string-truncate!" (s n)
   ;; in place, as Chez's: the same string, shorter
-  (if (= n (length s)) s (sb-kernel:%shrink-vector s n)))
+  (if (= n (length s)) s #+sbcl (sb-kernel:%shrink-vector s n) #-sbcl (subseq s 0 n)))
 
-;;; Grapheme clusters, by SBCL's Unicode rules (UAX #29)
+;;; Grapheme clusters, by SBCL's Unicode rules (UAX #29); elsewhere each
+;;; character is one
+(defun graphemes (string)
+  #+sbcl (graphemes string)
+  #-sbcl (map 'list #'string string))
 (defun grapheme-ends (string start end)
   "The ends of the grapheme clusters of STRING from START to END."
   (let ((i start))
-    (mapcar (lambda (g) (incf i (length g))) (sb-unicode:graphemes (subseq string start end)))))
+    (mapcar (lambda (g) (incf i (length g))) (graphemes (subseq string start end)))))
 (defprim "chez:string-grapheme-span" (string start end)
   (if (>= start end) 0 (- (first (grapheme-ends string start end)) start)))
 (defprim "chez:string-grapheme-count" (string start end)
   (length (grapheme-ends string start end)))
 (defprim "chez:grapheme-break?" (a b)
   ;; whether a cluster ends between characters A and B
-  (bool (= 2 (length (sb-unicode:graphemes (coerce (list a b) 'string))))))
+  (bool (= 2 (length (graphemes (coerce (list a b) 'string))))))
 
 ;;; How many collections there have been
 (defvar *chez-collections* 0)
-(pushnew (lambda () (incf *chez-collections*)) sb-ext:*after-gc-hooks*)
+#+sbcl (pushnew (lambda () (incf *chez-collections*)) sb-ext:*after-gc-hooks*)
 (defprim "chez:collections" () *chez-collections*)
 
 ;;; compute-size and compute-composition: what an object reaches, each
@@ -2738,11 +2812,12 @@ writer of that kind, for what this doesn't know."
 	       (unless (or (typep o '(or fixnum character)) (gethash o seen)
 			   (eq o qs:unspecific) (eq o t) (eq o qs:false) (null o))
 		 (setf (gethash o seen) t)
-		 (funcall visit o (sb-ext:primitive-object-size o))
+		 (funcall visit o #+sbcl (sb-ext:primitive-object-size o) #-sbcl 16)
 		 (typecase o
 		   (cons (push (car o) stack) (push (cdr o) stack))
 		   (simple-vector (loop for e across o do (push e stack)))
 		   (qs:box (push (qs:box-contents o) stack))
+		   #+sbcl
 		   (structure-object
 		    (loop for i from sb-vm:instance-data-start below (sb-kernel:%instance-length o)
 			  do (push (sb-kernel:%instance-ref o i) stack)))))))))
@@ -2767,15 +2842,17 @@ writer of that kind, for what this doesn't know."
     (setf (peeked port) :eof))
   qs:unspecific)
 (defprim "chez:port-bol?" (port)
-  (let ((c (ignore-errors (sb-kernel:charpos port)))) (bool (or (null c) (zerop c)))))
+  (let ((c (ignore-errors #+sbcl (sb-kernel:charpos port) #-sbcl (trivial-gray-streams:stream-line-column port))))
+    (bool (or (null c) (zerop c)))))
 (defprim "chez:truncate-port" (port &optional (position 0))
   (finish-output port)
   (let ((s (loop for p = port then (symbol-value (synonym-stream-symbol p))
 		 while (typep p 'synonym-stream) finally (return p))))
-    (if (sb-sys:fd-stream-p s)
-	(progn (sb-posix:ftruncate (sb-sys:fd-stream-fd s) position)
-	       (file-position s position))
-	(r6rs-assertion-violation "truncate-port" "not a file port" port)))
+    #+sbcl (if (sb-sys:fd-stream-p s)
+	       (progn (sb-posix:ftruncate (sb-sys:fd-stream-fd s) position)
+		      (file-position s position))
+	       (r6rs-assertion-violation "truncate-port" "not a file port" port))
+    #-sbcl (progn s position (unsupported "truncate-port")))
   qs:unspecific)
 (defprim "chez:input-port-ready?" (port)
   ;; a binary port but a byte string's: ready, as a blocking read would return
@@ -2873,7 +2950,7 @@ writer of that kind, for what this doesn't know."
       0
       (or (gethash x *reference-handles*)
 	  ;; 16-byte aligned past 1 MB, as an address would be
-	  (let ((a (+ #x100000 (* 16 (sb-ext:atomic-incf (car *reference-next*))))))
+	  (let ((a (+ #x100000 (* 16 #+sbcl (sb-ext:atomic-incf (car *reference-next*)) #-sbcl (incf (car *reference-next*))))))
 	    (setf (gethash a *reference-objects*) x
 		  (gethash x *reference-handles*) a)))))
 

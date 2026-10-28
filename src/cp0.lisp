@@ -275,7 +275,7 @@ arguments' effects kept).")
     (fixnum t)
     (integer (<= (integer-length x) 128))
     (ratio (and (<= (integer-length (numerator x)) 128) (<= (integer-length (denominator x)) 128)))
-    (double-float (and (not (sb-ext:float-infinity-p x)) (not (sb-ext:float-nan-p x))))
+    (double-float (and (not (qs:infinite-p x)) (not (qs:nan-p x))))
     (character t)
     (t (or (eq x t) (eq x qs:false) (null x)))))
 

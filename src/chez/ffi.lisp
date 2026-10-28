@@ -70,6 +70,8 @@ start: N for (__varargs_after N), 1 for __varargs; else NIL."
 ;;; alone (a request to block them does nothing).
 
 (defparameter *emulated-signals*
+  #-sbcl '()
+  #+sbcl
   (loop for name in '("SIGHUP" "SIGINT" "SIGQUIT" "SIGTERM" "SIGALRM" "SIGTSTP" "SIGCHLD" "SIGWINCH" "SIGIO")
 	for symbol = (find-symbol name "SB-UNIX")
 	when (and symbol (boundp symbol)) collect (symbol-value symbol)))
@@ -77,7 +79,7 @@ start: N for (__varargs_after N), 1 for __varargs; else NIL."
 (defvar *pending-signals* (make-array 64 :initial-element nil)
   "Signal -> whether it arrived while blocked (set by a handler).")
 (defvar *blocked-signals* '() "(signal . the handler it had) of each blocked signal.")
-(defvar *signal-mask-lock* (sb-thread:make-mutex :name "signal mask"))
+(defvar *signal-mask-lock* (bt:make-recursive-lock "signal mask"))
 
 (defun signal-set-members (address)
   (loop for signal from 1 below 32
@@ -85,6 +87,7 @@ start: N for (__varargs_after N), 1 for __varargs; else NIL."
 					:int signal :int))
 	  collect signal))
 
+#+sbcl
 (defun block-emulated-signal (signal)
   (unless (assoc signal *blocked-signals*)
     (push (cons signal (sb-sys:enable-interrupt
@@ -93,6 +96,7 @@ start: N for (__varargs_after N), 1 for __varargs; else NIL."
 				 (setf (svref *pending-signals* sig) t))))
 	  *blocked-signals*)))
 
+#+sbcl
 (defun unblock-emulated-signal (signal)
   (let ((entry (assoc signal *blocked-signals*)))
     (when entry
@@ -104,7 +108,7 @@ start: N for (__varargs_after N), 1 for __varargs; else NIL."
 
 (defun emulated-sigmask (how set old)
   "pthread_sigmask(HOW, SET, OLD), and sigprocmask's, for *EMULATED-SIGNALS*."
-  (sb-thread:with-recursive-lock (*signal-mask-lock*)
+  (bt:with-recursive-lock-held (*signal-mask-lock*)
     (unless (zerop old)
       (cffi:foreign-funcall "sigemptyset" :pointer (cffi:make-pointer old) :int)
       (dolist (entry *blocked-signals*)

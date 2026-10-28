@@ -904,7 +904,7 @@ SBCL's interpreter is sb-eval, or, in an SBCL built with
 it has no LAMBDA, FUNCTION, FLET, LABELS or the like."
   (labels ((walk (x)
 	     (cond ((symbolp x)
-		    (not (member x '(lambda function flet labels macrolet sb-int:named-lambda))))
+		    (not (member x '(lambda function flet labels macrolet #+sbcl sb-int:named-lambda))))
 		   ((atom x) t)
 		   ((eq (car x) 'quote) t)
 		   (t (loop for y on x
@@ -1060,7 +1060,8 @@ transformation makes them state machines."
 			  (let ((body (if (marker-p (car body))
 					  (cdr body)
 					  (cons (cons 'progn (cddr (car body))) (cdr body)))))
-			    `(function (sb-int:named-lambda (:racket ,(cdr (cadr m))) ,(cadr l) ,@(mapcar #'walk body))))
+			    #+sbcl `(function (sb-int:named-lambda (:racket ,(cdr (cadr m))) ,(cadr l) ,@(mapcar #'walk body)))
+			    #-sbcl `(function (lambda ,(cadr l) ,@(mapcar #'walk body))))
 			  (cons (car x) (walk (cdr x))))))
 		   (t (let ((a (walk (car x))) (d (walk (cdr x))))
 			(if (and (eq a (car x)) (eq d (cdr x))) x (cons a d)))))))
@@ -1282,13 +1283,15 @@ the command line and exits; DROP-LAST skips it.)"
     ;; object: one with the header flag of src/chez/host.lisp
     ("chez:vector-set!" (v k obj)
      (if (and (simple-vector-p v) (typep k 'fixnum) (< -1 k (length v))
-	      (not (logtest (ash sb-vm:+vector-shareable-nonstd+ 8) (sb-kernel:get-header-data v))))
+	      #+sbcl (not (logtest (ash sb-vm:+vector-shareable-nonstd+ 8) (sb-kernel:get-header-data v)))
+	      #-sbcl nil)
 	 (progn (setf (svref v k) obj) qs:unspecific)
 	 :call))
     ("chez:string-set!" (s k c)
      (if (and (typep s '(simple-array character (*))) (typep k 'fixnum) (< -1 k (length s))
 	      (characterp c)
-	      (not (logtest (ash sb-vm:+vector-shareable-nonstd+ 8) (sb-kernel:get-header-data s))))
+	      #+sbcl (not (logtest (ash sb-vm:+vector-shareable-nonstd+ 8) (sb-kernel:get-header-data s)))
+	      #-sbcl nil)
 	 (progn (setf (schar s k) c) qs:unspecific)
 	 :call))
     ;; the Chez mode's comparisons, which check their arguments' types

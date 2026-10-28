@@ -155,7 +155,7 @@ compiled (a literal with no load form, say)."
 	   (ensure-directories-exist dir)
 	   (with-open-file (out temp :direction :output :element-type '(unsigned-byte 8) :if-exists :supersede)
 	     (when header
-	       (write-sequence (sb-ext:string-to-octets (format nil "~A~%" header) :external-format :utf-8) out))
+	       (write-sequence (babel:string-to-octets (format nil "~A~%" header) :encoding :utf-8) out))
 	     (loop for chunk in chunks
 		   for i from 0
 		   do (let ((lisp (merge-pathnames (format nil "c~D.lisp" i) dir))

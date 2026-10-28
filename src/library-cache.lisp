@@ -135,7 +135,7 @@ recently used one, are deleted."
     (or (gethash key *generations*)
 	(setf (gethash key *generations*) (cache-generation-1 parent signature)))))
 
-(pushnew (lambda () (clrhash *generations*) (setq *pruned-generations* '())) sb-ext:*init-hooks*)
+#+sbcl (pushnew (lambda () (clrhash *generations*) (setq *pruned-generations* '())) sb-ext:*init-hooks*)
 
 (defun cache-generation-1 (parent signature)
   (let* ((parent (uiop:ensure-directory-pathname parent))

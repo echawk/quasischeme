@@ -327,7 +327,7 @@ the same side of every finite OTHER."
   "True while a number is read whose value is to be exact (#e): PARSE-DECIMAL
 then makes the exact rational, not a double.")
 
-(sb-ext:defglobal +exact-powers-of-ten+
+(#+sbcl sb-ext:defglobal #-sbcl defparameter +exact-powers-of-ten+
     (coerce (loop for k from 0 to 22 collect (float (expt 10 k) 1d0)) 'simple-vector)
   "10^0 to 10^22, each exactly a double.")
 

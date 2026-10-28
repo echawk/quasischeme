@@ -29,19 +29,19 @@
   (ready '()))		; representatives found inaccessible, to give back
 
 (defvar *guardians* '() "Weak pointers to the guardians.")
-(defvar *guardian-lock* (sb-thread:make-mutex :name "guardians"))
+(defvar *guardian-lock* (bt:make-lock "guardians"))
 (defvar *collections* 0 "Collections, SBCL's own and those Scheme asked for.")
 (defvar *guardians-checked-at* 0 "*COLLECTIONS* when guardians were last checked.")
 (defvar *asked-collection* nil "Has Scheme asked for a collection since then?")
 (defvar *last-search-time* 0 "GET-INTERNAL-REAL-TIME of the last search.")
 
 (defun count-collection () (incf *collections*))
-(pushnew 'count-collection sb-ext:*after-gc-hooks*)
+#+sbcl (pushnew 'count-collection sb-ext:*after-gc-hooks*)
 
 (defun note-full-collection ()
   "After a full collection that Scheme asked for: guardians look for
 inaccessible objects the next time they're asked."
-  (sb-thread:with-mutex (*guardian-lock*)
+  (bt:with-lock-held (*guardian-lock*)
     (setq *asked-collection* t)))
 
 (defun search-due-p ()
@@ -51,8 +51,8 @@ inaccessible objects the next time they're asked."
 
 (defun new-guardian (&optional ordered)
   (let ((g (%make-guardian ordered)))
-    (sb-thread:with-mutex (*guardian-lock*)
-      (push (sb-ext:make-weak-pointer g) *guardians*))
+    (bt:with-lock-held (*guardian-lock*)
+      (push (tg:make-weak-pointer g) *guardians*))
     g))
 
 (defun heap-object-p (x)
@@ -60,13 +60,13 @@ inaccessible objects the next time they're asked."
   (not (or (typep x 'fixnum) (characterp x) (typep x 'single-float))))
 
 (defun guardian-register (g object &optional (representative object))
-  (sb-thread:with-mutex (*guardian-lock*)
+  (bt:with-lock-held (*guardian-lock*)
     (push (list object representative *collections*) (guardian-entries g)))
   qs:unspecific)
 
 (defun live-guardians ()
-  (setq *guardians* (delete-if-not #'sb-ext:weak-pointer-value *guardians*))
-  (mapcar #'sb-ext:weak-pointer-value *guardians*))
+  (setq *guardians* (delete-if-not #'tg:weak-pointer-value *guardians*))
+  (mapcar #'tg:weak-pointer-value *guardians*))
 
 (declaim (notinline guarded-weak-pointers))
 (defun candidate-p (entry)
@@ -80,11 +80,12 @@ registered before the last collection?"
     (dolist (g guardians pointers)
       (dolist (entry (guardian-entries g))
 	(when (candidate-p entry)
-	  (push (sb-ext:make-weak-pointer (first entry)) pointers))))))
+	  (push (tg:make-weak-pointer (first entry)) pointers))))))
 
 (defun find-inaccessible-objects ()
   "Move the entries of objects that only guardians reach to their
 guardians' ready lists."
+  #+sbcl
   (let* ((guardians (live-guardians))
 	 (pointers (guarded-weak-pointers guardians)))
     (when pointers
@@ -113,7 +114,7 @@ guardians' ready lists."
 (defun guardian-next (g)
   "The representative of an object G guards that has become inaccessible,
 or false."
-  (sb-thread:with-mutex (*guardian-lock*)
+  (bt:with-lock-held (*guardian-lock*)
     (when (search-due-p)
       (setq *guardians-checked-at* *collections*
 	    *asked-collection* nil)
@@ -123,6 +124,6 @@ or false."
 
 (defun guardian-unregister (g)
   "Stop G guarding its objects: a list of them (not yet inaccessible)."
-  (sb-thread:with-mutex (*guardian-lock*)
+  (bt:with-lock-held (*guardian-lock*)
     (prog1 (mapcar #'first (guardian-entries g))
       (setf (guardian-entries g) '()))))

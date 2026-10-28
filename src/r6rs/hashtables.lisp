@@ -29,7 +29,7 @@
 (defun cell-key (cell)
   "The key of CELL, and whether it is alive."
   (let ((k (car cell)))
-    (if (sb-ext:weak-pointer-p k) (sb-ext:weak-pointer-value k) (values k t))))
+    (if (tg:weak-pointer-p k) (tg:weak-pointer-value k) (values k t))))
 
 (defun cell-value (h cell)
   (if (eq (hashtable-weakness h) :ephemeron)
@@ -43,7 +43,7 @@
 
 (defun make-cell (h key value)
   (if (hashtable-weakness h)
-      (let ((cell (cons (sb-ext:make-weak-pointer key) value)))
+      (let ((cell (cons (tg:make-weak-pointer key) value)))
 	(when (eq (hashtable-weakness h) :ephemeron)
 	  (setf (cdr cell) nil (gethash key (hashtable-side h)) value))
 	cell)

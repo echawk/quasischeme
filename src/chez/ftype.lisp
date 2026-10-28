@@ -12,7 +12,7 @@
 
 (in-package "QUASISCHEME-R6RS")
 
-(defvar *ftype-lock* (sb-thread:make-mutex :name "ftypes")
+(defvar *ftype-lock* (bt:make-lock "ftypes")
   "What makes the lock procedures' reads and writes of memory atomic.")
 
 (defun ftype-read-uint (base offset n big)
@@ -20,9 +20,9 @@
 first if BIG."
   (let ((v 0))
     (if (integerp base)
-	(let ((sap (sb-sys:int-sap (+ base offset))))
+	(let ((sap (qsffi::address-pointer (+ base offset))))
 	  (dotimes (i n)
-	    (setq v (logior (ash v 8) (sb-sys:sap-ref-8 sap (if big i (- n 1 i)))))))
+	    (setq v (logior (ash v 8) (cffi:mem-ref sap :uint8 (if big i (- n 1 i)))))))
 	(dotimes (i n)
 	  (setq v (logior (ash v 8) (aref base (+ offset (if big i (- n 1 i))))))))
     v))
@@ -30,9 +30,9 @@ first if BIG."
 (defun ftype-write-uint (base offset n big value)
   "Store the unsigned integer VALUE, of N bytes, at BASE + OFFSET."
   (if (integerp base)
-      (let ((sap (sb-sys:int-sap (+ base offset))))
+      (let ((sap (qsffi::address-pointer (+ base offset))))
 	(dotimes (i n)
-	  (setf (sb-sys:sap-ref-8 sap (if big i (- n 1 i)))
+	  (setf (cffi:mem-ref sap :uint8 (if big i (- n 1 i)))
 		(ldb (byte 8 (* 8 (- n 1 i))) value))))
       (dotimes (i n)
 	(setf (aref base (+ offset (if big i (- n 1 i))))
@@ -40,22 +40,26 @@ first if BIG."
 
 (defun ftype-float-from-bits (bits n)
   "The flonum whose N-byte IEEE representation is the integer BITS."
-  (sb-int:with-float-traps-masked (:invalid :overflow :divide-by-zero :inexact)
+  (float-features:with-float-traps-masked (:invalid :overflow :divide-by-zero :inexact)
     (if (= n 4)
-	(coerce (sb-kernel:make-single-float (if (logbitp 31 bits) (- bits (ash 1 32)) bits))
+	(coerce #+sbcl (sb-kernel:make-single-float (if (logbitp 31 bits) (- bits (ash 1 32)) bits))
+		#-sbcl (float-features:bits-single-float bits)
 		'double-float)
-	(sb-kernel:make-double-float
-	 (let ((hi (ldb (byte 32 32) bits))) (if (logbitp 31 hi) (- hi (ash 1 32)) hi))
-	 (ldb (byte 32 0) bits)))))
+	#+sbcl (sb-kernel:make-double-float
+		(let ((hi (ldb (byte 32 32) bits))) (if (logbitp 31 hi) (- hi (ash 1 32)) hi))
+		(ldb (byte 32 0) bits))
+	#-sbcl (float-features:bits-double-float bits))))
 
 (defun ftype-float-to-bits (x n)
   "The integer that is the N-byte IEEE representation of the real X."
-  (sb-int:with-float-traps-masked (:invalid :overflow :divide-by-zero :inexact)
+  (float-features:with-float-traps-masked (:invalid :overflow :divide-by-zero :inexact)
     (if (= n 4)
-	(ldb (byte 32 0) (sb-kernel:single-float-bits (coerce x 'single-float)))
+	(ldb (byte 32 0) (#+sbcl sb-kernel:single-float-bits #-sbcl float-features:single-float-bits
+			  (coerce x 'single-float)))
 	(let ((d (coerce x 'double-float)))
-	  (logior (ash (ldb (byte 32 0) (sb-kernel:double-float-high-bits d)) 32)
-		  (sb-kernel:double-float-low-bits d))))))
+	  #+sbcl (logior (ash (ldb (byte 32 0) (sb-kernel:double-float-high-bits d)) 32)
+			 (sb-kernel:double-float-low-bits d))
+	  #-sbcl (ldb (byte 64 0) (float-features:double-float-bits d))))))
 
 (defprim "chez:ftype-read-uint" (base offset n big)
   (ftype-read-uint base offset n (qs:truep big)))
@@ -75,24 +79,24 @@ first if BIG."
 
 (defprim "chez:ftype-atomic-add!" (base offset n delta)
   "Add DELTA to the N-byte integer at BASE + OFFSET: its new value."
-  (sb-thread:with-mutex (*ftype-lock*)
+  (bt:with-lock-held (*ftype-lock*)
     (let ((new (ldb (byte (* 8 n) 0) (+ (ftype-read-uint base offset n nil) delta))))
       (ftype-write-uint base offset n nil new)
       new)))
 
 (defprim "chez:ftype-cas!" (base offset n old new)
   "If the N-byte integer at BASE + OFFSET is OLD, make it NEW: whether it was."
-  (bool (sb-thread:with-mutex (*ftype-lock*)
+  (bool (bt:with-lock-held (*ftype-lock*)
 	  (when (= (ftype-read-uint base offset n nil) old)
 	    (ftype-write-uint base offset n nil new)
 	    t))))
 
 (defprim "chez:ftype-spin-lock!" (base offset n)
-  (loop until (sb-thread:with-mutex (*ftype-lock*)
+  (loop until (bt:with-lock-held (*ftype-lock*)
 		(when (zerop (ftype-read-uint base offset n nil))
 		  (ftype-write-uint base offset n nil 1)
 		  t))
-	do (sb-thread:thread-yield))
+	do (bt:thread-yield))
   qs:unspecific)
 
 ;;; The address of a bytevector's data: where it is now, as the collector
@@ -101,5 +105,4 @@ first if BIG."
 (defprim "chez:ftype-object-address" (object)
   (unless (typep object '(simple-array (unsigned-byte 8) (*)))
     (qs:scheme-error "ftype-pointer-address: a pointer into ~S has no address" object))
-  (sb-sys:with-pinned-objects (object)
-    (sb-sys:sap-int (sb-sys:vector-sap object))))
+  (qsffi:vector-address object))

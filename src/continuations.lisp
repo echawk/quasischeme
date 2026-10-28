@@ -202,17 +202,23 @@ calls."
 use from START-ADDRESS before CALL-WITH-ASSIGNED-FSTACK signals
 STACK-LIMIT-REACHED (Guile's call-with-stack-overflow-handler).")
 
-(sb-ext:define-load-time-global **stack-limits** 0
+(#+sbcl sb-ext:define-load-time-global #-sbcl defparameter **stack-limits** 0
   "How many *STACK-LIMIT*s are in force, in any thread: what the checks
 of frameless code read (a global's one load, not a special's lookup).")
 (declaim (type fixnum **stack-limits**))
 
+(defmacro stack-limits-incf (delta)
+  #+sbcl (if (plusp delta) '(sb-ext:atomic-incf **stack-limits**) '(sb-ext:atomic-decf **stack-limits**))
+  #-sbcl (progn delta `(bt:with-lock-held (*stack-limits-lock*) (incf **stack-limits** ,delta))))
+
+#-sbcl (defvar *stack-limits-lock* (bt:make-lock "stack limits"))
+
 (defmacro with-stack-limit ((limit) &body body)
   "BODY with *STACK-LIMIT* LIMIT, counted in **STACK-LIMITS**."
   `(let ((*stack-limit* ,limit))
-     (sb-ext:atomic-incf **stack-limits**)
+     (stack-limits-incf 1)
      (unwind-protect (progn ,@body)
-       (sb-ext:atomic-decf **stack-limits**))))
+       (stack-limits-incf -1))))
 
 (defmacro %no-stack-limit ()
   "True (a Scheme boolean) unless a *STACK-LIMIT* may be in force."
