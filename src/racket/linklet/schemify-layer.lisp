@@ -91,6 +91,9 @@ VARS (if given), which must then be defined."
 		   *primitive-instances*)
 	  (add "call-with-module-prompt" #'call-with-module-prompt)
 	  (add "#%call-with-values" (primitive "call-with-values"))
+	  ;; Racket CS's (cs/linklet.sls): a reference to V in VR's instance
+	  (add "make-instance-variable-reference"
+	       (lambda (vr v) (make-variable-reference (variable-reference-instance vr) v)))
 	  (add "unbox/check-undefined"
 	       (lambda (b name)
 		 (let ((x (box-ref* b)))
