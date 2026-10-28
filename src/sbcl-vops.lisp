@@ -210,9 +210,13 @@ where its source is."
 		      (:args ,@(loop for a in args
 				     collect `(,a :scs (descriptor-reg any-reg control-stack)
 						  :load-if (not (sc-is ,a control-stack)))))
-		      ;; on the stack past the registers
+		      ;; on the stack past the registers; live from the start, so
+		      ;; that no result shares an argument's register (the moves
+		      ;; are one by one: a result written over a later argument
+		      ;; would copy the result)
 		      (:results ,@(loop for r in results
-					collect `(,r :scs (descriptor-reg any-reg control-stack) :load-if nil)))
+					collect `(,r :scs (descriptor-reg any-reg control-stack) :load-if nil
+						     :from :load)))
 		      (:temporary (:sc descriptor-reg) temp)
 		      (:generator 1
 			,@(loop for a in args for r in results

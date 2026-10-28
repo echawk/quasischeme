@@ -204,6 +204,10 @@ ending in a newline, or NIL at end of file."
     (qsg::make-port
      :kind "quasischeme-repl" :input t :output nil :encoding "UTF-8"
      :buffering :none
+     ;; char-ready? (Guile's REPL flushes to the newline after a form):
+     ;; only what was typed, not the editor's next line, which would be
+     ;; read under the prompt before the one Guile is about to set
+     :ready (lambda () (plusp (length pending)))
      :read (lambda (buf start count)
 	     (when (zerop (length pending))
 	       (let ((text (guile-input)))

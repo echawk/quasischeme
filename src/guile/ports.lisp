@@ -38,6 +38,9 @@
    (seek-fn :initarg :seek :initform nil :accessor port-seek-fn)
    (close-fn :initarg :close :initform nil :accessor port-close-fn)
    (truncate-fn :initarg :truncate :initform nil :accessor port-truncate-fn)
+   ;; whether reading wouldn't wait (char-ready?), if READ-FN can't say
+   ;; without waiting; NIL: reading never waits
+   (ready-fn :initarg :ready :initform nil :accessor port-ready-fn)
    (fd :initarg :fd :initform nil :accessor port-fd)
    (data :initarg :data :initform nil :accessor port-data)
    ;; the buffers, as Guile's: #(bytevector cur end has-eof? position),
@@ -646,7 +649,9 @@ there and no buffered input, its line and column kept: true if so."
 (defmethod trivial-gray-streams:stream-listen ((p gport))
   (or (< (port-rpos p) (port-rend p))
       (and (port-fd p) (sb-sys:wait-until-fd-usable (port-fd p) :input 0) t)
-      (and (not (port-fd p)) (port-input-p p) (fill-input p))))
+      (and (not (port-fd p)) (port-input-p p)
+	   (or (null (port-ready-fn p)) (funcall (port-ready-fn p)))
+	   (fill-input p))))
 
 (defmethod trivial-gray-streams:stream-clear-input ((p gport))
   (setf (port-rpos p) 0 (port-rend p) 0)
