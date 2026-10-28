@@ -147,11 +147,15 @@ without goes together, whatever this process makes."
 	   (and mark (sb-int:info :function :info mark) t))
   #-sbcl nil)
 
-(defun stack-sites-here-p ()
-  "Whether the machine or site being expanded makes stack sites: not in
-code SBCL's interpreter runs (a form too big to compile), whose frames
-have no marks."
-  (and (stack-sites-p) #+sbcl (eq sb-ext:*evaluator-mode* :compile))))
+(defun stack-sites-here-p (env)
+  "Whether the machine or site being expanded in ENV makes stack sites:
+not in code SBCL's interpreter runs (a form too big to compile), whose
+frames have no marks.  ENV tells, not *EVALUATOR-MODE*: the interpreter
+expands a function's body when it's first called, after the EVAL that
+made it has returned (and *EVALUATOR-MODE* is :COMPILE again)."
+  (and (stack-sites-p)
+       #+sbcl (and (typep env 'sb-kernel:lexenv) (not (typep env 'sb-eval::eval-lexenv)))
+       #-sbcl env)))
 
 (defmacro %in-machine () nil)
 
@@ -971,7 +975,7 @@ SRFI 226's sample implementation tells tail calls so."
   "Make CALL with FRAME, a (vector machine '() site n live ...) form,
 pushed: both on the stack.  Or, for a stack site (see \"Stack sites\"),
 make CALL and mark where FRAME's values are."
-  (if (and (stack-sites-here-p) (macroexpand-1 '(%in-machine) env)
+  (if (and (stack-sites-here-p env) (macroexpand-1 '(%in-machine) env)
 	   (consp frame) (eq (car frame) 'vector) (>= (length frame) 5)
 	   (typep (fourth frame) 'fixnum) (typep (fifth frame) 'fixnum)
 	   ;; a mark takes the machine, its cache and the live variables
@@ -996,7 +1000,7 @@ make CALL and mark where FRAME's values are."
 	   (declare (dynamic-extent ,f))
 	   (with-pushed-frame (,f) ,call)))))
 
-(defmacro %machine (entry dispatch &rest statements)
+(defmacro %machine (entry dispatch &rest statements &environment env)
   "A machine's body: STATEMENTS (expressions, and quoted symbols as
 labels), entered at the start if ENTRY is 0, else at the label
 DISPATCH, '((site . label) ...), gives for site ENTRY, where statements
@@ -1009,7 +1013,7 @@ restore the site's live variables and continue after it."
 		    ,@(mapcar (lambda (s)
 				(if (and (consp s) (eq (car s) 'quote)) (second s) s))
 			      statements)))))
-    (if (stack-sites-here-p)
+    (if (stack-sites-here-p env)
 	`(macrolet ((%in-machine () t))
 	   ,body)
 	body)))
