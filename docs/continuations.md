@@ -20,10 +20,249 @@ mean of the 57 benchmarks (1.37× Chez's time against 1.30×). 39 of the
 57 run within 5% of escape-only. The cost is in closure-heavy programs
 (`lattice` 1.76×, `matrix` 1.75×, `conform` 1.70×, `quicksort` 1.66×).
 
-This document shows what you get, how a program is transformed (with
+This document first gives the idea in pictures, then shows what you
+get, how a program is transformed (with
 the transformation's real output), what makes it fast, what the runtime
 does for Lisp code that calls Scheme, what is built on it, and what is
 left.
+
+## The idea, in pictures
+
+This section is the overview. The rest of the document is the detail,
+with the transformation's real output.
+
+### The problem
+
+Common Lisp has no first-class continuations. A continuation is "the
+rest of the computation", and in a direct-style implementation that is
+the Lisp control stack. The stack can't be copied or reinstated
+portably: a `catch`/`throw` can only unwind it, never bring a piece of
+it back. Scheme needs both: `(k v)` after the `call/cc` that made `k`
+has returned must run the rest of that computation again, as often as
+it is called.
+
+We can't switch to CPS without giving up ordinary Lisp calls (see "How
+we chose"). So the stack must be rebuilt by hand from saved
+descriptions.
+
+### The idea: procedures that can describe and re-enter themselves
+
+Compile every procedure that may be on the stack during a capture so
+that it can
+
+1. **describe its frame**: which call it is waiting for, and the values
+   it will need after that call returns (its live variables); and
+2. **be re-entered in the middle**: called with "you are at call number
+   *n*, here is the value that call returned, here are your variables",
+   it continues as if the call had just returned.
+
+A procedure with those two abilities is a **machine**. It is a state
+machine: its states are the points just after each non-tail call that
+might capture (the **sites**), plus its entry. A dispatch on entry
+jumps to the right state.
+
+The running example is a non-tail-recursive procedure that captures at
+the bottom:
+
+```scheme
+(define saved #f)
+(define (f n)
+  (if (= n 0)
+      (call/cc (lambda (k) (set! saved k) 0))
+      (+ 1 (f (- n 1)))))
+(f 2)            ; => 2
+(saved 10)       ; => 12: f's two pending (+ 1 []) run again
+```
+
+`(f (- n 1))` is a site: `f` is a variable bound to a lambda that
+reaches `call/cc`, so the call may capture. Simplified, `f` becomes the
+machine below. (It is the shape of the real output in "A call that
+might capture: a state machine", with the hoisted locals and the
+`%ignorable` and cache details left out.)
+
+```lisp
+(defun f-machine (entry value frame n)     ; entry 0 = normal call
+  (let ((tmp nil))
+    (%machine entry ((1 . resume-1))       ; dispatch: entry -> label
+      (go start)                           ; entry 0
+     resume-1                              ; re-entered at site 1
+      (setq n (%frame-ref frame 4))        ;   restore the live variable
+      (setq tmp value)                     ;   the call's value
+      (go after-1)
+     start
+      (if (not (= n 0)) (go else))
+      (return (full-call/cc ...))          ; the call/cc
+     else
+      (setq tmp (%site (vector #'f-machine nil 1 1 n)   ; frame, then
+                       (f (- n 1))))                    ; the call
+     after-1
+      (return (+ 1 tmp)))))
+```
+
+```
+        entry 0                    entry 1 (resume at site 1)
+           |                              |
+           v                              v
+        +-------+   n = frame[4]; tmp = value
+        | start |                         |
+        +-------+                         |
+           | n = 0 ?                      |
+     yes   |      \ no                    |
+  (call/cc)|       v                      |
+           |   +----------------+         |
+           |   | site 1: (f (- n 1)) |    |
+           |   | frame #(f-machine nil 1 1 n)
+           |   +--------+-------+         |
+           |            | returns value   |
+           |            v                 v
+           |        +--------- after-1 ----------+
+           |        |   (return (+ 1 tmp))       |
+           v        +----------------------------+
+        (return ...)
+```
+
+Each site records, as it makes its call, a **frame**:
+
+```
+#( machine   promoted   site   n   live-variable ... )
+     0          1         2     3        4 ...
+```
+
+`machine` is the function to re-enter, `promoted` is a cache slot
+(`nil` until a capture copies the frame), `site` is the state number,
+`n` is the machine's parameter count, and the live variables follow.
+For site 1 of `f` the frame is `#(f-machine nil 1 1 n)`. Frames of the
+run time's own constructs (a `dynamic-wind`, a `map` loop, a prompt)
+are vectors of the same shape, with a keyword in slot 0 ("Frames for
+Lisp code").
+
+### Capture
+
+Take `(f 2)`. Normal calls run at full speed. Each site makes its call
+as an ordinary Lisp call, and, on the portable path, pushes its frame
+on `*fstack*`, a list of frames in a special variable:
+
+```
+ Lisp control stack (grows down)                *fstack*  (innermost first)
+ +-------------------------------+
+ | base (a catch per top-level   |              (... :base)
+ |       evaluation)             |
+ +-------------------------------+
+ | f-machine  n=2   at site 1    |   <------    #(f-machine nil 1 1 2)
+ +-------------------------------+
+ | f-machine  n=1   at site 1    |   <------    #(f-machine nil 1 1 1)
+ +-------------------------------+
+ | f-machine  n=0                |
+ +-------------------------------+
+ | full-call/cc                  |
+ +-------------------------------+
+```
+
+`full-call/cc` calls `capture-frames`, which copies the frames from the
+innermost out to the base (or to the first one an earlier capture
+already copied) into a heap list, **innermost first**, and gives each
+copy's `promoted` slot the list from it outward. `k` holds that list
+and the current `dynamic-wind` list:
+
+```
+ k  -->  ( #(f-machine (...) 1 1 1)       ; innermost
+           #(f-machine (...) 1 1 2)       ; outermost
+           ... )                          ; up to the base
+```
+
+On the SBCL/arm64 **stack-sites** path nothing was pushed. The capture
+walks the real stack instead, from its own frame outward by frame
+pointer. A return address that has a site's mark after it identifies
+the caller as a machine at that site. The mark says, for each live
+value, which stack slot (or constant) holds it. The walk reads the
+values and builds the same frame vectors. From here on the two paths
+are one: the frames, and everything below, are identical.
+
+### Resume
+
+`(saved 10)` after `(f 2)` has returned is not a `throw` to a live
+`catch`, so it **re-enters**. It throws to the base with a thunk, and
+the base runs it. The thunk runs any needed `dynamic-wind` befores
+and calls `rebuild-frames`, which takes the frames **outermost first**.
+Each frame's machine is called again, at its site, with the value its
+inner call will return. That value is computed by rebuilding the frames
+inside it first:
+
+```
+ rebuild-frames  ( F2  F1 )  v=10      F2 = #(f-machine .. 1 1 2)  outer
+                                       F1 = #(f-machine .. 1 1 1)  inner
+
+ resume F2:  push F2; inner thunk = rebuild (F1)        <- not run yet
+   resume F1:  push F1; inner thunk = return 10         <- the value
+     returns 10
+   (f-machine 1 10 F1) : n = 1, tmp = 10, (return (+ 1 tmp))  -> 11
+ (f-machine 1 11 F2) : n = 2, tmp = 11, (return (+ 1 tmp))    -> 12
+```
+
+```
+ rebuilt Lisp control stack
+ +------------------------------+
+ | base                         |
+ | resume F2 (f-machine, n=2)   |   waiting for its inner thunk
+ | resume F1 (f-machine, n=1)   |   waiting for its inner thunk
+ | value 10                     |   innermost: just returns it
+ +------------------------------+
+```
+
+The stack is the same shape as before, built by ordinary Lisp calls,
+and the value flows out through the machines as it did the first time.
+`k` keeps its frames, so it can be called again.
+
+### Why machines, not CPS
+
+- **No closure per call.** A CPS conversion, or the paper's per-site
+  closures, makes one or two closures for every call. A site here makes
+  none: the frame is a stack-allocated vector, and a resume point is a
+  label in the machine.
+- **Ordinary calls and returns.** A machine is one Lisp function that
+  other Lisp code can call with ordinary arguments and that returns
+  ordinary values. There is no continuation argument and no trampoline.
+  `sort`, `mapcar` and CLOS methods call Scheme procedures directly
+  (docs/interop.md).
+- **Nothing to pay until it happens.** When no one captures, a site
+  costs a stack-allocated vector and cons and one special binding; with
+  stack sites, a few instructions. The work (copying frames, rebuilding
+  the stack) happens only at a capture and a re-entry. Most calls
+  aren't sites at all ("What makes it fast").
+- **Compilable.** SBCL's compile time is superlinear in closures that
+  share variables. One flat `tagbody` per procedure compiles well
+  ("What makes it fast").
+
+### Winders and prompts
+
+`dynamic-wind` pushes a `:winder` frame and keeps the list of active
+winders in `*winders*`. A continuation remembers its list. Invoking it
+runs the afters of the winders it leaves (the `throw` does, through
+`unwind-protect`) and, as frames are rebuilt, the befores of those it
+enters. Winders both continuations share don't run.
+
+A prompt (`call-with-prompt`, `reset`) is one more frame, `#(:prompt
+promoted catch-tag handler winders)`. `abort-to-prompt` copies only the
+frames from the abort out to the prompt, and throws to the prompt. The
+copy is a *delimited* continuation. Calling it rebuilds those frames on
+top of the caller's stack with the same `rebuild-frames`, with no
+throw to a base. See "Delimited continuations".
+
+### Two implementations
+
+| | portable | stack sites |
+|---|---|---|
+| Lisps | any Common Lisp | SBCL on arm64 |
+| a site | pushes its frame vector on `*fstack*` | records nothing; a mark after the call says where the values are |
+| capture | copy `*fstack*` | walk the stack, read marks, build the same frames |
+| resume | `rebuild-frames` | the same |
+
+The portable path is the reference and **must stay**: it is what
+Quasischeme on another Lisp uses, and what SBCL uses with
+`QUASISCHEME_STACK_SITES=0` or `QUASISCHEME_FAST=0`, and for code that
+SBCL's interpreter runs or sites with more than 18 live variables. Both
+kinds of code can be mixed in one program ("Stack sites (SBCL on
+arm64)").
 
 ## What you get
 
