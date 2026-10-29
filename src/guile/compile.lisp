@@ -278,7 +278,7 @@ references to these."
     ("null?" 1 1) ("not" 1 1) ("vector-length" 1 1) ("string-length" 1 1)
     ("cons" 2 2) ("eq?" 2 2) ("eqv?" 2 2) ("vector-ref" 2 2) ("string-ref" 2 2)
     ("set-car!" 2 2) ("set-cdr!" 2 2) ("char=?" 2 2) ("vector-set!" 3 3)
-    ("memq" 2 2) ("memv" 2 2) ("length" 1 1) ("append" 2 2) ("list" 0 nil)
+    ("memq" 2 2) ("memv" 2 2) ("length" 1 1) ("append" 2 nil) ("list" 0 nil)
     ;; the host's, which the continuation transformation sees: an escape
     ;; (call/cc (lambda (k) ...)) of a K only called isn't a capture
     ("call-with-current-continuation" 1 1) ("call/cc" 1 1))
@@ -336,7 +336,13 @@ calls, if F is a reference to the root module's variable of a primitive in
 	  (when (and (string= string "not") (boolean-node-p (first args)))
 	    (setq helper nil))
 	  (cond ((and (string= string "append") (not (goops-generic-primitive-p string)))
-		 (setq helper "%guile-append2"))
+		 (setq helper "%guile-append2")
+		 ;; more lists: (append a (append b c)), each copied as
+		 ;; append's are, the last shared, in the same order
+		 (when (> (length args) 2)
+		   (return-from compile-resolved-primitive
+		     (reduce (lambda (x rest) (list (core helper) x rest))
+			     (mapcar #'compile-tree-il args) :from-end t))))
 		((and (member string '("memq" "memv") :test #'string=)
 		      (constant-member-list-p (second args) (string= string "memv")))
 		 (return-from compile-resolved-primitive

@@ -758,13 +758,18 @@ bytevector mutators read-only bytevectors."
 (defguile "substring/read-only" (s start &optional (end (length s)))
   (read-only-string (subseq s start end)))
 
-(defvar *symbol-strings* (trivial-garbage:make-weak-hash-table :weakness :key :test 'eq :synchronized t)
-  "Symbol -> its name, read-only, as symbol->string gives it each time.")
-
 (defguile "symbol->string" (sym)
+  ;; its name, read-only, the same each time: kept on the symbol's
+  ;; property list (it goes with the symbol), added by compare-and-swap
+  ;; (two threads asking at once get one string)
   (unless (qs:scheme-symbol-p sym) (wrong-type "symbol->string" 1 sym))
-  (or (gethash sym *symbol-strings*)
-      (setf (gethash sym *symbol-strings*) (read-only-string (copy-seq (qs:scheme-symbol-name sym))))))
+  (loop
+    (let* ((old (symbol-plist sym))
+	   (string (getf old 'symbol-string)))
+      (when string (return string))
+      (let ((new (read-only-string (copy-seq (qs:scheme-symbol-name sym)))))
+	(when (eq (sb-ext:compare-and-swap (symbol-plist sym) old (list* 'symbol-string new old)) old)
+	  (return new))))))
 
 (defguile "string-append/shared" (&rest strings) (apply #'concatenate 'string strings))
 (defguile "string-bytes-per-char" (s) (if (every (lambda (c) (< (char-code c) 256)) s) 1 4))
