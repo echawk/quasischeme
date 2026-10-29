@@ -192,16 +192,20 @@ with full continuations: no rest lists, no APPLY, no second check."
 	    (t (apply original f list more))))))
 
 (defun fast-map-wrapper (original)
-  (fast-list-procedure-wrapper original "map" (lambda (f list) (qsx::map1-loop f list '() nil))))
+  (let ((map (fast-list-procedure-wrapper original "map" (lambda (f list) (qsx::map1-loop f list '() nil)))))
+    (push map *fast-maps*)
+    map))
 
 (defun fast-for-each-wrapper (original)
-  (let ((fast (fast-list-procedure-wrapper original "for-each")))
-    (lambda (f list &rest more)
-      (if (and (null more) qsx::*full-continuations* (functionp f) (proper-list-p list))
-	  (progn (qsx::for-each1-loop f list) *unspecified*)
-	  (let ((value (apply fast f list more)))
-	    (declare (ignore value))
-	    *unspecified*)))))
+  (let* ((fast (fast-list-procedure-wrapper original "for-each"))
+	 (for-each (lambda (f list &rest more)
+		     (if (and (null more) qsx::*full-continuations* (functionp f) (proper-list-p list))
+			 (progn (qsx::for-each1-loop f list) *unspecified*)
+			 (let ((value (apply fast f list more)))
+			   (declare (ignore value))
+			   *unspecified*)))))
+    (push for-each *fast-for-eachs*)
+    for-each))
 
 (defun host-procedure (name)
   "The host's procedure NAME, or with full continuations its frame-aware

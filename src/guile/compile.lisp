@@ -856,8 +856,13 @@ taken as safe (procedures that call each other, each guarded).")
 			       (and sites
 				    (let ((*safety-in-progress* (cons v *safety-in-progress*)))
 				      (every (lambda (site)
-					       (let ((w (resolve-site-for-guard site)))
-						 (and w (gvariable-safe-p w))))
+					       (if (consp site)
+						   ;; (site . name): holding a fast NAME
+						   (let ((w (resolve-site-for-guard (car site))))
+						     (and w (member (gvariable-value w) (fast-list-procedures (cdr site))
+								    :test #'eq)))
+						   (let ((w (resolve-site-for-guard site)))
+						     (and w (gvariable-safe-p w)))))
 					     sites)))))
 			 t)))
 	  ;; kept only if nothing changed meanwhile, and not while judging a
@@ -933,9 +938,15 @@ downward, as are the parameters it passes it to."
 
 (defun guarded-note-form (value checks)
   "For QSX::*GUARDED-NOTE-HOOK*: VALUE, a guarded W, recorded with the
-sites of CHECKS, its guards (GUARD-REFERENCE-FORM's)."
+sites of CHECKS, its guards: GUARD-REFERENCE-FORM's, a site whose
+variable must hold a safe procedure, and GUARDED-CALLING-FORM's, (site .
+name), one that must hold the root's procedure NAME."
   (list (core "%guile-note-guarded") value
-	(list (core "quote") (mapcar (lambda (c) (cadr (cadr c))) checks))))
+	(list (core "quote")
+	      (mapcar (lambda (c)
+			(let ((name (guarded-calling-check-name c)))
+			  (if name (cons (cadr (cadr c)) name) (cadr (cadr c)))))
+		      checks))))
 
 (defun resolve-site-for-guard (site)
   "SITE's variable, found now if it's a top-level one not yet referenced
@@ -963,6 +974,27 @@ is (%guile-ref 'site), a top-level variable's reference."
        (consp (cdr operator)) (qsx::quote-form-p (cadr operator))
        (site-p (cadr (cadr operator)))
        (list (core "%guile-holds-p") (cadr operator) w)))
+
+(defparameter *guarded-calling-procedures*
+  '(("map" "%guile-map1" "%guile-holds-map-p") ("for-each" "%guile-for-each1" "%guile-holds-for-each-p"))
+  "Procedures (FAST-LIST-PROCEDURES') a guarded procedure's call of
+which, with a safe procedure and one list, is a host primitive's
+(QSX::*GUARD-CALLING-HOOK*): the name, the primitive's, and its guard's.")
+
+(defun guarded-calling-form (operator nargs)
+  "For QSX::*GUARD-CALLING-HOOK*: ((%guile-holds-map-p 'site) .
+\"%guile-map1\") if OPERATOR is (%guile-ref 'site), SITE's variable holds
+one of FAST-LIST-PROCEDURES' maps, and NARGS is 2; for-each's likewise."
+  (let* ((site (reference-site operator))
+	 (v (and site (= nargs 2) (ignore-errors (known-site-variable site)))))
+    (when v
+      (loop for (name primitive guard) in *guarded-calling-procedures*
+	    when (member (gvariable-value v) (fast-list-procedures name) :test #'eq)
+	      return (cons (list (core guard) (cadr operator)) primitive)))))
+
+(defun guarded-calling-check-name (check)
+  "The procedure's name of a GUARDED-CALLING-FORM's CHECK, or NIL."
+  (car (find (car check) *guarded-calling-procedures* :key (lambda (p) (core (third p))))))
 
 (defun safe-operator-form-p (form)
   "(%guile-ref 'site), SITE being a SAFE-SITE-P."
@@ -997,6 +1029,7 @@ is (%guile-set! 'site value) or defines the same variable
 	qsx::*frameless-stack-checks* t
 	qsx::*guard-reference-hook* 'guard-reference-form
 	qsx::*self-test-hook* 'self-test-form
+	qsx::*guard-calling-hook* 'guarded-calling-form
 	qsx::*guarded-note-hook* 'guarded-note-form
 	qsx::*downward-operator-hook* 'downward-operator-flags
 	qsx::*downward-datum-hook* 'reference-site
@@ -1008,8 +1041,29 @@ is (%guile-set! 'site value) or defines the same variable
   (qsx:defhost "%guile-note-guarded" (f sites)
     (setf (gethash f *guarded-procedures*) sites)
     f)
+  (dolist (name '("%guile-map1" "%guile-for-each1"))
+    (pushnew name qsx::*calling-primitives* :test #'string=)
+    (pushnew (list name 0) qsx::*procedure-arguments* :test #'equal))
+  ;; map and for-each on a proper list (else the root's, for its error),
+  ;; calling F directly: no frame (F can't capture)
+  ;; the guards find a variable not yet referenced, as %guile-safe-ref-p does:
+  ;; only they read it
+  (qsx:defhost "%guile-holds-map-p" (site)
+    (let ((v (resolve-site-for-guard site)))
+      (bool (and v (member (gvariable-value v) *fast-maps* :test #'eq)))))
+  (qsx:defhost "%guile-holds-for-each-p" (site)
+    (let ((v (resolve-site-for-guard site)))
+      (bool (and v (member (gvariable-value v) *fast-for-eachs* :test #'eq)))))
+  (qsx:defhost "%guile-map1" (f list)
+    (if (and (functionp f) (proper-list-p list))
+	(mapcar f list)
+	(funcall (root-value "map") f list)))
+  (qsx:defhost "%guile-for-each1" (f list)
+    (if (and (functionp f) (proper-list-p list))
+	(progn (dolist (x list) (funcall f x)) *unspecified*)
+	(funcall (root-value "for-each") f list)))
   (qsx:defhost "%guile-holds-p" (site f)
-    (let ((v (site-variable site)))
+    (let ((v (resolve-site-for-guard site)))
       (bool (and v (eq (gvariable-value v) f)))))
   (qsx:defhost "%guile-safe-ref-p" (site)
     (let ((v (resolve-site-for-guard site)))
@@ -1097,7 +1151,7 @@ is (%guile-set! 'site value) or defines the same variable
    '("%guile-append2" "%guile-nil:memq" "%guile-nil:memv" "%guile-nil:assq" "%guile-nil:assv"
      "%guile-nil:length" "%guile-nil:list?" "%guile-nil:reverse" "%guile-nil:last-pair"
      "%guile-nil:append"
-     "%guile-ref" "%guile-holds-p" "%guile-safe-ref-p" "%guile-downward-p" "%guile-note-guarded" "%guile-sub2" "%guile-<" "%guile->" "%guile-<=" "%guile->=" "%guile-=" "%guile-null?" "%guile-symbol?" "%guile-not" "%guile-true" "%guile-set!" "%guile-define!" "%guile-unsupported" "%guile-arity-error"
+     "%guile-ref" "%guile-holds-p" "%guile-holds-map-p" "%guile-holds-for-each-p" "%guile-map1" "%guile-for-each1" "%guile-safe-ref-p" "%guile-downward-p" "%guile-note-guarded" "%guile-sub2" "%guile-<" "%guile->" "%guile-<=" "%guile->=" "%guile-=" "%guile-null?" "%guile-symbol?" "%guile-not" "%guile-true" "%guile-set!" "%guile-define!" "%guile-unsupported" "%guile-arity-error"
      "%guile-with-meta" "%guile-inline"
      "%guile-nargs>=" "%guile-nargs-between" "%guile-keywords-fit?" "%guile-positional?" "%guile-check-no-more"
      "%guile-check-keywords" "%guile-keyword-ref")))
@@ -1118,9 +1172,19 @@ is (%guile-set! 'site value) or defines the same variable
 	   :call)))
     ("%guile-holds-p" (s f)
      (let ((v (site-variable (sb-ext:truly-the site s))))
-       (if (and v (eq (gvariable-value (sb-ext:truly-the gvariable v)) f))
-	   (load-time-value qs:true t)
-	   (load-time-value qs:false t))))
+       (if v
+	   (if (eq (gvariable-value (sb-ext:truly-the gvariable v)) f)
+	       (load-time-value qs:true t)
+	       (load-time-value qs:false t))
+	   :call)))
+    ,@(loop for (guard list) in '(("%guile-holds-map-p" *fast-maps*) ("%guile-holds-for-each-p" *fast-for-eachs*))
+	    collect `(,guard (s)
+		      (let ((v (site-variable (sb-ext:truly-the site s))))
+			(if v
+			    (if (member (gvariable-value (sb-ext:truly-the gvariable v)) ,list :test #'eq)
+				(load-time-value qs:true t)
+				(load-time-value qs:false t))
+			    :call))))
     ("%guile-safe-ref-p" (s)
      (let ((v (or (site-variable (sb-ext:truly-the site s)) (resolve-site-for-guard s))))
        (bool (and v (gvariable-safe-p (sb-ext:truly-the gvariable v))))))

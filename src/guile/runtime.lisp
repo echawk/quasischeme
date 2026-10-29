@@ -47,6 +47,15 @@
 
 (defvar *unspecified* qs:unspecific)
 
+(defvar *fast-maps* '()
+  "The maps FAST-MAP-WRAPPER made (the root's, (scheme base)'s, (srfi
+srfi-1)'s), which a guarded procedure's %guile-map1 stands for.")
+
+(defvar *fast-for-eachs* '() "The same for FAST-FOR-EACH-WRAPPER's for-each.")
+
+(defun fast-list-procedures (name)
+  (if (string= name "map") *fast-maps* *fast-for-eachs*))
+
 (defvar *program-arguments* '() "What Guile's (program-arguments) returns.")
 
 (defun guile-error (key subr message args &optional (rest qs:false))

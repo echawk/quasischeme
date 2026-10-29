@@ -2744,6 +2744,16 @@ capture (Guile mode's (%guile-safe-ref-p 'site)), if it reads one; else
 NIL.  GUARD-DEFINITION guards the calls of such variables as it guards a
 procedure's calls of itself.")
 
+(defvar *guard-calling-hook* nil
+  "NIL, or a function of an operator form and an argument count: (CHECK
+. NAME) if the operator reads a top-level variable holding the mode's
+procedure that the host primitive NAME (one of *PROCEDURE-ARGUMENTS*)
+does the work of with those arguments, CHECK a form true while it still
+does (Guile mode's map: %guile-map1); else NIL.  In a guarded F, such a
+call passing it safe procedures (lambdas, safe operators, the procedure
+itself) is NAME's call while CHECK holds: no frame for each call of the
+procedure.")
+
 (defvar *guarded-note-hook* nil
   "With *GUARD-REFERENCE-HOOK*: a function of a guarded definition's W (a
 form) and its guards, a form that records W as safe while they hold.
@@ -2863,6 +2873,21 @@ and inert primitives (with lambdas applied in place: lets)."
 		   (t nil))))
     (inert e)))
 
+(defun guarded-calling-call (e definition)
+  "(CHECK . NAME), if call E is one GUARD-DEFINITION makes NAME's call
+(*GUARD-CALLING-HOOK*), else NIL."
+  (and *guard-calling-hook* (consp e) (consp (car e)) (listp (cdr e))
+       (let ((hook (funcall *guard-calling-hook* (car e) (length (cdr e)))))
+	 (and hook
+	      (let ((positions (cdr (assoc (cdr hook) *procedure-arguments* :test #'string=))))
+		(and positions
+		     (every (lambda (i)
+			      (let ((a (nth i (cdr e))))
+				(or (lambda-form-p a) (safe-operator-p a)
+				    (eq (funcall *self-reference-hook* a definition) :reads))))
+			    positions)
+		     hook))))))
+
 (defun guard-definition (definition note &optional dispatch-reference)
   "DEFINITION's value made W, F and M as above, if the defined lambda
 calls itself through its variable, with F passed to NOTE; else NIL.
@@ -2903,6 +2928,34 @@ place of the reference the lambda makes."
 					       (,f ,@temps)
 					       (%self-call-barrier ,g ,@temps)))
 					     ,(car e) ,@(mapcar #'guard (cdr e))))))
+				    ;; a call of a top-level variable that holds a
+				    ;; calling primitive's procedure, passed safe ones
+				    ((guarded-calling-call e definition)
+				     (destructuring-bind (check . name) (guarded-calling-call e definition)
+				       (let* ((positions (cdr (assoc name *procedure-arguments* :test #'string=)))
+					      ;; a procedure argument as it is (a lambda, a safe
+					      ;; operator: the analysis sees it safe), the
+					      ;; procedure's own reference read once, compared
+					      (args (loop for a in (cdr e) for i from 0
+							  collect (cond ((not (member i positions)) (cons :value (fresh)))
+									((eq (funcall *self-reference-hook* a definition) :reads)
+									 (cons :self (fresh)))
+									(t (cons :inline (guard a))))))
+					      (temps (loop for (kind . x) in args unless (eq kind :inline) collect x))
+					      (fast `(,(sym name) ,@(loop for (kind . x) in args
+									  collect (if (eq kind :self) f x))))
+					      ;; a lambda again, its binders fresh (each binds once)
+					      (slow `(%self-call-barrier ,(car e)
+									 ,@(loop for (kind . x) in args
+										 collect (if (eq kind :inline) (rename-binders x) x))))
+					      (tests (cons check (loop for (kind . x) in args
+								       when (eq kind :self) collect `(,(sym "eq?") ,x ,w)))))
+					 (pushnew check checks :test #'equal)
+					 `((,(sym "lambda") ,temps
+					    ,(reduce (lambda (test inner) `(,(sym "if") ,test ,inner ,slow))
+						     tests :from-end t :initial-value fast))
+					   ,@(loop for a in (cdr e) for arg in args
+						   unless (eq (car arg) :inline) collect (guard a))))))
 				    ;; a call of another top-level variable that holds
 				    ;; a safe procedure while CHECK is true
 				    ((and *guard-reference-hook* (consp (car e)) (listp (cdr e))
