@@ -956,6 +956,14 @@ is (%guile-ref 'site), a top-level variable's reference."
        (not (safe-operator-form-p operator))
        (list (core "%guile-safe-ref-p") (cadr operator))))
 
+(defun self-test-form (operator w)
+  "For QSX::*SELF-TEST-HOOK*: (%guile-holds-p 'site W) if OPERATOR is
+(%guile-ref 'site)."
+  (and (consp operator) (eq (car operator) (core "%guile-ref"))
+       (consp (cdr operator)) (qsx::quote-form-p (cadr operator))
+       (site-p (cadr (cadr operator)))
+       (list (core "%guile-holds-p") (cadr operator) w)))
+
 (defun safe-operator-form-p (form)
   "(%guile-ref 'site), SITE being a SAFE-SITE-P."
   (and (consp form) (eq (car form) (core "%guile-ref"))
@@ -988,14 +996,21 @@ is (%guile-set! 'site value) or defines the same variable
 	qsx::*self-reference-hook* 'self-reference-form-p
 	qsx::*frameless-stack-checks* t
 	qsx::*guard-reference-hook* 'guard-reference-form
+	qsx::*self-test-hook* 'self-test-form
 	qsx::*guarded-note-hook* 'guarded-note-form
 	qsx::*downward-operator-hook* 'downward-operator-flags
 	qsx::*downward-datum-hook* 'reference-site
 	qsx::*downward-guard-hook* 'downward-guard-form)
+  (qsx::register-inert-primitives
+   '("%guile-<" "%guile->" "%guile-<=" "%guile->=" "%guile-=" "%guile-sub2"
+     "%guile-null?" "%guile-not" "%guile-true" "%guile-symbol?"))
   (qsx:defhost "%guile-downward-p" (site i) (bool (site-downward-p site i)))
   (qsx:defhost "%guile-note-guarded" (f sites)
     (setf (gethash f *guarded-procedures*) sites)
     f)
+  (qsx:defhost "%guile-holds-p" (site f)
+    (let ((v (site-variable site)))
+      (bool (and v (eq (gvariable-value v) f)))))
   (qsx:defhost "%guile-safe-ref-p" (site)
     (let ((v (resolve-site-for-guard site)))
       (bool (and v (gvariable-safe-p v)))))
@@ -1082,7 +1097,7 @@ is (%guile-set! 'site value) or defines the same variable
    '("%guile-append2" "%guile-nil:memq" "%guile-nil:memv" "%guile-nil:assq" "%guile-nil:assv"
      "%guile-nil:length" "%guile-nil:list?" "%guile-nil:reverse" "%guile-nil:last-pair"
      "%guile-nil:append"
-     "%guile-ref" "%guile-safe-ref-p" "%guile-downward-p" "%guile-note-guarded" "%guile-sub2" "%guile-<" "%guile->" "%guile-<=" "%guile->=" "%guile-=" "%guile-null?" "%guile-symbol?" "%guile-not" "%guile-true" "%guile-set!" "%guile-define!" "%guile-unsupported" "%guile-arity-error"
+     "%guile-ref" "%guile-holds-p" "%guile-safe-ref-p" "%guile-downward-p" "%guile-note-guarded" "%guile-sub2" "%guile-<" "%guile->" "%guile-<=" "%guile->=" "%guile-=" "%guile-null?" "%guile-symbol?" "%guile-not" "%guile-true" "%guile-set!" "%guile-define!" "%guile-unsupported" "%guile-arity-error"
      "%guile-with-meta" "%guile-inline"
      "%guile-nargs>=" "%guile-nargs-between" "%guile-keywords-fit?" "%guile-positional?" "%guile-check-no-more"
      "%guile-check-keywords" "%guile-keyword-ref")))
@@ -1101,6 +1116,11 @@ is (%guile-set! 'site value) or defines the same variable
 	   (let ((value (gvariable-value (sb-ext:truly-the gvariable v))))
 	     (if (eq value **unbound**) :call value))
 	   :call)))
+    ("%guile-holds-p" (s f)
+     (let ((v (site-variable (sb-ext:truly-the site s))))
+       (if (and v (eq (gvariable-value (sb-ext:truly-the gvariable v)) f))
+	   (load-time-value qs:true t)
+	   (load-time-value qs:false t))))
     ("%guile-safe-ref-p" (s)
      (let ((v (or (site-variable (sb-ext:truly-the site s)) (resolve-site-for-guard s))))
        (bool (and v (gvariable-safe-p (sb-ext:truly-the gvariable v))))))
@@ -1131,7 +1151,8 @@ is (%guile-set! 'site value) or defines the same variable
 (defun install-guile-inline-primitives ()
   (loop for (name params body) in *guile-inline-primitives*
 	for global = (qsx:location (ssym name))
-	do (let ((global global) (params params) (body body))
+	do (setf (get global 'qsx::inline-primitive) t)
+	   (let ((global global) (params params) (body body))
 	     (setf (compiler-macro-function global)
 		   (lambda (form env)
 		     (declare (ignore env))

@@ -42,6 +42,8 @@
 ;; reads of the special variables, each with its check that it's bound
 (defun bool (x) (if x (load-time-value qs:true t) (load-time-value qs:false t)))
 (defun truthy (x) (not (eq x (load-time-value qs:false t))))
+;; (truep (bool x)) is x (src/psyntax.lisp, PUSH-TRUEP)
+(setf (get 'bool 'qsx::truep-of) t)
 
 (defvar *unspecified* qs:unspecific)
 

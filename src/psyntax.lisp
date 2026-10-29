@@ -1343,10 +1343,48 @@ the command line and exits; DROP-LAST skips it.)"
 variables of LAMBDA-LIST, is the inline code, in which :CALL stands for
 calling the primitive itself.")
 
+;;; A test of an inline primitive's value, (truep (f x)): the inline
+;;; code with the test pushed into its branches, so that SBCL sees (if (<
+;;; x y) t nil) rather than a boolean made and compared with #f.  Only the
+;;; forms known to be values are gone through: an inline primitive's
+;;; expansion (marked INLINE-PRIMITIVE), IF, LET, LET*, PROGN, COND, WHEN,
+;;; UNLESS, a constant, and a call of a function marked TRUEP-OF, whose
+;;; value is #t if its argument is true, else #f.
+
+(defun push-truep (form env)
+  "(truep FORM) made, and whether it's anything but that."
+  (flet ((constant (value) (values (not (eq value qs:false)) t))
+	 (tail (head forms)
+	   (multiple-value-bind (new changed) (push-truep (car (last forms)) env)
+	     (values `(,@head ,@(butlast forms) ,new) changed))))
+    (cond ((and (atom form) (or (not (symbolp form)) (eq form t) (null form) (keywordp form)))
+	   (constant form))
+	  ((atom form) (values `(qs:truep ,form) nil))
+	  ((eq (car form) 'quote) (constant (cadr form)))
+	  ((and (eq (car form) 'load-time-value) (member (cadr form) '(qs:true qs:false)))
+	   (constant (symbol-value (cadr form))))
+	  ((and (eq (car form) 'if) (<= 3 (length form) 4))
+	   (values `(if ,(cadr form) ,(push-truep (caddr form) env) ,(push-truep (cadddr form) env)) t))
+	  ((and (member (car form) '(let let*)) (cddr form)) (tail (list (car form) (cadr form)) (cddr form)))
+	  ((and (eq (car form) 'progn) (cdr form)) (tail '(progn) (cdr form)))
+	  ((member (car form) '(cond when unless)) (push-truep (macroexpand-1 form env) env))
+	  ((and (symbolp (car form)) (get (car form) 'truep-of) (= (length form) 2))
+	   (values (cadr form) t))
+	  ((and (symbolp (car form)) (get (car form) 'inline-primitive)
+		(compiler-macro-function (car form)))
+	   (let ((expansion (funcall (compiler-macro-function (car form)) form env)))
+	     (if (eq expansion form) (values `(qs:truep ,form) nil) (push-truep expansion env))))
+	  (t (values `(qs:truep ,form) nil)))))
+
+(define-compiler-macro qs:truep (&whole whole test &environment env)
+  (multiple-value-bind (new changed) (push-truep test env)
+    (if changed new whole)))
+
 (defun install-inline-primitives ()
   (loop for (name params body) in *inline-primitives*
 	for global = (location (sym name))
-	do (let ((global global) (params params) (body body))
+	do (setf (get global 'inline-primitive) t)
+	   (let ((global global) (params params) (body body))
 	     (setf (compiler-macro-function global)
 		   (lambda (form env)
 		     (declare (ignore env))

@@ -2714,11 +2714,28 @@ procedure in *SAFE-FUNCTIONS*."
 ;;; captured in it, re-entered once its extent is over, is an error
 ;;; rather than a re-entry that skips F's frameless calls.  No program
 ;;; that doesn't do that sees a difference.
+;;;
+;;; An F whose body calls nothing but itself and inert primitives
+;;; (*INERT-PRIMITIVES*: no procedure of the program's, and no variable
+;;; assigned) can't change the variable in its own extent, and calls
+;;; itself as (F a), unguarded: W's test, at the call from outside, holds
+;;; for all of them.  Only another thread, an interrupt's handler, or a
+;;; method a mode's primitive dispatches to (Guile's comparisons call
+;;; their root procedure, which GOOPS can make generic, past the numbers)
+;;; could change the variable during such a call; its calls of itself
+;;; then go on with the old value until the outermost returns.
 
 (defvar *self-reference-hook* nil
   "NIL, or a function of a form (or an operator's variable) and a top-level definition
 (by one of *DEFINITION-OPERATORS*): :READS if the form reads the variable
 the definition defines, :ASSIGNS if it assigns or defines it, else NIL.")
+
+(defvar *self-test-hook* nil
+  "NIL, or a function of an operator form that reads a definition's
+variable and of W's name: a form true while the variable holds W, read
+without the reference's checks (Guile mode's (%guile-holds-p 'site W)),
+or NIL.  A guarded call made with it reads the operator only in the
+barrier, after the operands, rather than before them to compare it.")
 
 (defvar *guard-reference-hook* nil
   "NIL, or a function of an operator form: a form true while the
@@ -2741,9 +2758,28 @@ capture, when one doesn't.")
   "The biggest procedure, in conses, whose calls of itself are guarded:
 it is compiled twice.")
 
+(defun self-call-barrier (f &rest args)
+  "F called with ARGS in a barrier frame.  Out of line: the barrier's
+frame and binding in a guarded procedure would keep its variables in
+memory, rather than registers, on its fast path too."
+  (declare (dynamic-extent args))
+  (%barrier (:reason . "a continuation captured in a call of a top-level procedure's new value, made by its old one while it ran, can't be re-entered")
+	    (apply f args)))
+
+(defun self-call-barrier-via (reference datum &rest args)
+  "SELF-CALL-BARRIER of (REFERENCE DATUM)'s value: the operator's read
+out of line too."
+  (declare (dynamic-extent args))
+  (apply #'self-call-barrier (funcall reference datum) args))
+
 (defmacro %self-call-barrier (f &rest args)
-  `(%barrier (:reason . "a continuation captured in a call of a top-level procedure's new value, made by its old one while it ran, can't be re-entered")
-	     (funcall ,f ,@args)))
+  ;; F a global's call with a quoted argument, (%guile-ref 'site): read
+  ;; in the barrier's call, for the fewest calls in the procedure
+  (if (and (consp f) (symbolp (car f)) (not (special-operator-p (car f)))
+	   (not (macro-function (car f)))
+	   (consp (cdr f)) (null (cddr f)) (consp (cadr f)) (eq (car (cadr f)) 'quote))
+      `(self-call-barrier-via #',(car f) ,(cadr f) ,@args)
+      `(self-call-barrier ,f ,@args)))
 
 (defun guard-self-calls (form)
   "FORM with the top-level definitions of procedures that call themselves
@@ -2776,6 +2812,57 @@ as safe (%note-safe) as NOTE-SAFE-DEFINITIONS records a lambda."
 			((= (length keep) (length guarded)) new)
 			(t (walk form keep))))))))))
 
+(defparameter *inert-primitives*
+  '("+" "-" "*" "=" "<" ">" "<=" ">=" "zero?" "positive?" "negative?" "odd?" "even?"
+    "quotient" "remainder" "modulo" "max" "min" "abs" "not" "null?" "pair?" "eq?" "eqv?"
+    "number?" "integer?" "rational?" "real?" "complex?" "exact?" "inexact?" "exact-integer?"
+    "char?" "boolean?" "symbol?" "string?" "vector?" "procedure?" "fixnum?" "flonum?"
+    "char=?" "char<?" "char>?" "char<=?" "char>=?" "char->integer" "integer->char"
+    "1+" "1-" "cons" "car" "cdr" "caar" "cadr" "cdar" "cddr" "set-car!" "set-cdr!"
+    "vector-ref" "vector-set!" "vector-length" "string-ref" "string-length"
+    "fx+" "fx-" "fx*" "fx=?" "fx<?" "fx>?" "fx<=?" "fx>=?" "fxzero?"
+    "fl+" "fl-" "fl*" "fl/" "fl=?" "fl<?" "fl>?" "fl<=?" "fl>=?")
+  "Primitives that call no procedure of the program's, whatever their
+arguments, and assign no variable (an error they raise doesn't return):
+a guarded F that calls only them and itself needs no guards (see above).
+A mode adds its own (REGISTER-INERT-PRIMITIVES).")
+
+(defvar *inert-primitive-table* nil)
+
+(defun register-inert-primitives (names)
+  (setq *inert-primitives* (union names *inert-primitives* :test #'string=)
+	*inert-primitive-table* nil))
+
+(defun inert-primitive-p (x)
+  (let ((name (primitive-name x)))
+    (and name
+	 (gethash name (or *inert-primitive-table*
+			   (let ((h (make-hash-table :test 'equal)))
+			     (dolist (n *inert-primitives* h) (setf (gethash n h) t))
+			     (setq *inert-primitive-table* h)))))))
+
+(defun inert-body-p (e definition arity)
+  "Whether E calls nothing but DEFINITION's variable, with ARITY arguments,
+and inert primitives (with lambdas applied in place: lets)."
+  (labels ((inert (e)
+	     (cond ((atom e) t)
+		   ((quote-form-p e) t)
+		   ((lambda-form-p e) nil)
+		   ((or (keyword-p (car e) "IF") (keyword-p (car e) "BEGIN"))
+		    (every #'inert (cdr e)))
+		   ((keyword-p (car e) "SET!")
+		    (and (scheme-symbol-p (cadr e)) (inert (caddr e))))
+		   ((not (listp (cdr e))) nil)
+		   ((lambda-form-p (car e))
+		    (and (listp (cadr (car e))) (every #'inert (cddr (car e))) (every #'inert (cdr e))))
+		   ((or (consp (car e)) (scheme-symbol-p (car e)))
+		    (and (or (and (eq (funcall *self-reference-hook* (car e) definition) :reads)
+				  (= (length (cdr e)) arity))
+			     (and (scheme-symbol-p (car e)) (inert-primitive-p (car e))))
+			 (every #'inert (cdr e))))
+		   (t nil))))
+    (inert e)))
+
 (defun guard-definition (definition note &optional dispatch-reference)
   "DEFINITION's value made W, F and M as above, if the defined lambda
 calls itself through its variable, with F passed to NOTE; else NIL.
@@ -2789,6 +2876,7 @@ place of the reference the lambda makes."
     (when (and l (listp formals) (null (cdr (last formals))) (every #'symbolp formals)
 	       (<= (tree-size l) *self-call-size-limit*))
       (let* ((f (fresh)) (w (fresh)) (m (fresh))
+	     (inert (inert-body-p (caddr l) definition (length formals)))
 	     (body (labels ((guard (e)
 			      (cond ((atom e) e)
 				    ((quote-form-p e) e)
@@ -2800,12 +2888,21 @@ place of the reference the lambda makes."
 					  (eq (funcall *self-reference-hook* (car e) definition) :reads)
 					  (listp (cdr e)) (= (length (cdr e)) (length formals)))
 				     (incf calls)
-				     (let ((g (fresh)) (temps (mapcar (lambda (a) (declare (ignore a)) (fresh)) (cdr e))))
-				       `((,(sym "lambda") (,g ,@temps)
-					  (,(sym "if") (,(sym "eq?") ,g ,w)
-					   (,f ,@temps)
-					   (%self-call-barrier ,g ,@temps)))
-					 ,(car e) ,@(mapcar #'guard (cdr e)))))
+				     (when inert
+				       (return-from guard `(,f ,@(mapcar #'guard (cdr e)))))
+				     (let ((g (fresh)) (temps (mapcar (lambda (a) (declare (ignore a)) (fresh)) (cdr e)))
+					   (test (and *self-test-hook* (funcall *self-test-hook* (car e) w))))
+				       (if test
+					   `((,(sym "lambda") ,temps
+					      (,(sym "if") ,test
+					       (,f ,@temps)
+					       (%self-call-barrier ,(car e) ,@temps)))
+					     ,@(mapcar #'guard (cdr e)))
+					   `((,(sym "lambda") (,g ,@temps)
+					      (,(sym "if") (,(sym "eq?") ,g ,w)
+					       (,f ,@temps)
+					       (%self-call-barrier ,g ,@temps)))
+					     ,(car e) ,@(mapcar #'guard (cdr e))))))
 				    ;; a call of another top-level variable that holds
 				    ;; a safe procedure while CHECK is true
 				    ((and *guard-reference-hook* (consp (car e)) (listp (cdr e))
