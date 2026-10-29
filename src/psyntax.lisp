@@ -999,7 +999,12 @@ form bigger than *INTERPRET-LIMIT* is interpreted, and so is one
 		  (let ((f (or (compiled-or-nil form)
 			       (call-without-jump-tables (lambda () (compiled-or-nil form))))))
 		    (and f (return-from eval-compiled-or-interpreted (funcall f))))))
-	    (t (let ((sb-ext:*evaluator-mode* :interpret))
+	    (t (when (uiop:getenv "QUASISCHEME_WARN_INTERPRETED")
+		 ;; the build sets it (contrib/cli/build.lisp): boot code
+		 ;; interpreted runs many times slower, and silently
+		 (format *error-output* "~&;; interpreted, SBCL failing to compile it (~D conses): ~A~%"
+			 (tree-size form) *compile-error*))
+	       (let ((sb-ext:*evaluator-mode* :interpret))
 		 (eval form))))))
   #-sbcl (eval form))
 

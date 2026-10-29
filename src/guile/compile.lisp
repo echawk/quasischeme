@@ -472,6 +472,29 @@ apart as eqv? does if EQV."
     (:letrec (compile-letrec (node-field x 3) (node-field x 4) (node-field x 5)
 			     (eq (node-field x 1) qs:false)))))
 
+(defun assigned-gensyms (x)
+  "The gensyms of the lexical variables Tree-IL X (a node, or a list of
+them) assigns."
+  (let ((assigned '())
+	(seen (make-hash-table :test 'eq)))
+    (labels ((walk (x)
+	       ;; each cons and node once: shared or circular structure in a
+	       ;; field isn't walked again
+	       (unless (or (atom x) (gethash x seen))
+		 (setf (gethash x seen) t)
+		 (walk (car x)) (walk (cdr x)))
+	       (let ((type (and (not (consp x)) (node-type x))))
+		 (when (and type (not (eq type :const)) (not (gethash x seen)))
+		   (setf (gethash x seen) t)
+		   (when (eq type :lexical-set)
+		     (pushnew (node-field x 2) assigned :test #'eq))
+		   ;; not the source (field 0) nor a lambda's meta (field 1)
+		   (loop for i from (if (eq type :lambda) 2 1)
+			   below (if (grecord-p x) (grecord-field-count x) (length (gstruct-slots x)))
+			 do (walk (node-field x i)))))))
+      (walk x))
+    assigned))
+
 (defun compile-letrec (gensyms vals body &optional parallel)
   ;; as psyntax's letrec* for the translator: ((lambda (v ...) (set! v e) ... body) #f ...),
   ;; which src/psyntax.lisp makes a LABELS when the e are lambdas.  A
@@ -492,6 +515,38 @@ apart as eqv? does if EQV."
 					       (list (compile-tree-il body)))))
 			  vals))
 	      (mapcar (constantly (quoted qs:unassigned)) vars)))))
+  ;; letrec* of lambdas and other inits (a body defining procedures and
+  ;; variables): the lambdas never assigned made a LABELS, as Guile's
+  ;; fix-letrec does, and the other variables bound outside it and
+  ;; assigned in order after it (a lambda made early has no effect).
+  ;; Not past QSX::*LETREC-DEFINITIONS-LIMIT*, as psyntax's bodies: one
+  ;; LABELS of psyntax-pp's hundreds of procedures is past arm64's branch
+  ;; reach, and was interpreted
+  (when (and (not parallel) (notevery (lambda (v) (eq (node-type v) :lambda)) vals))
+    (let* ((assigned (assigned-gensyms (cons body vals)))
+	   (fixed (loop for g in gensyms for v in vals
+			collect (and (eq (node-type v) :lambda) (not (member g assigned :test #'eq))))))
+      (when (some #'identity fixed)
+	(let* ((vars (mapcar #'bind-lexical gensyms))
+	       ;; each init compiled once, for either layout: an init reads
+	       ;; the variables from its own on checked, as below
+	       (inits (loop for v in vals for rest on gensyms
+			    collect (let ((*unassigned* (append rest *unassigned*)))
+				      (compile-tree-il v))))
+	       (sets (mapcar (lambda (v e) (list (core "set!") v e)) vars inits)))
+	  (flet ((part (keep) (loop for s in sets for f in fixed when (eq (and f t) keep) collect s)))
+	    (return-from compile-letrec
+	      (if (<= (qsx::tree-size inits) qsx::*letrec-definitions-limit*)
+		  (let ((lambda-sets (part t)) (other-sets (part nil)))
+		    (cons (list (core "lambda") (mapcar #'second other-sets)
+				(cons (list (core "lambda") (mapcar #'second lambda-sets)
+					    (list* (core "begin")
+						   (append lambda-sets other-sets (list (compile-tree-il body)))))
+				      (mapcar (constantly (quoted qs:false)) lambda-sets)))
+			  (mapcar (constantly (quoted qs:unassigned)) other-sets)))
+		  (cons (list (core "lambda") vars
+			      (list* (core "begin") (append sets (list (compile-tree-il body)))))
+			(mapcar (constantly (quoted qs:unassigned)) vars)))))))))
   (let* ((vars (mapcar #'bind-lexical gensyms))
 	 (all-lambdas (every (lambda (v) (eq (node-type v) :lambda)) vals))
 	 ;; letrec*: an init may read the variables before it, not the
