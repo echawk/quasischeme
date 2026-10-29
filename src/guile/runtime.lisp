@@ -457,7 +457,12 @@ variable stands while this hasn't changed.")
   ;; as found for SAFE-FOR in SAFE-EPOCH (GVARIABLE-SAFE-P)
   (safe-for +unbound+)
   (safe-epoch -1 :type fixnum)
-  (safe nil))
+  (safe nil)
+  ;; the positions of DOWNWARD-FOR's parameters found downward in
+  ;; DOWNWARD-EPOCH, a bit each (SITE-DOWNWARD-P)
+  (downward-for +unbound+)
+  (downward-epoch -1 :type fixnum)
+  (downward 0 :type fixnum))
 
 (declaim (inline gvariable-value))
 (defun gvariable-value (v) (gvariable-%value v))

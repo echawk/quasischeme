@@ -805,20 +805,24 @@ return to their caller, so a call of one needn't be a capture site, as
 	   (loop for name in '("error" "throw" "scm-error")
 		 thereis (eq value (root-value name))))))
 
+(defun known-site-variable (site)
+  "SITE's variable, if it exists already."
+  ;; only what's resolved already: resolving a module may load it, and
+  ;; compile, and come back here
+  (or (site-variable site)
+      (and (eq (site-kind site) :toplevel)
+	   (or (eq (site-module site) :root) (module-p* (site-module site)))
+	   (module-variable* (site-module site) (site-name site)))
+      (and (eq (site-kind site) :module)
+	   (let ((m (existing-module (site-module site) (site-public site))))
+	     (and m (module-variable* m (site-name site)))))))
+
 (defun safe-site-p (site)
   "Whether SITE's variable holds a procedure that can't capture, and
 will: a primitive (Guile's compiler, too, takes the root module's
 primitives as they are), or a procedure the continuation transformation
 proved safe, defined in a declarative module."
-  ;; only what's resolved already: resolving a module may load it, and
-  ;; compile, and come back here
-  (let ((v (or (site-variable site)
-	       (and (eq (site-kind site) :toplevel)
-		    (or (eq (site-module site) :root) (module-p* (site-module site)))
-		    (module-variable* (site-module site) (site-name site)))
-	       (and (eq (site-kind site) :module)
-		    (let ((m (existing-module (site-module site) (site-public site))))
-		      (and m (module-variable* m (site-name site))))))))
+  (let ((v (known-site-variable site)))
     (and v
 	 (let ((value (gvariable-value v)))
 	   (and (functionp value)
@@ -872,6 +876,60 @@ procedure-valued variable has changed since, else found again."
     (if (and (eq x (gvariable-safe-for v)) (= (gvariable-safe-epoch v) *procedure-epoch*))
 	(gvariable-safe v)
 	(gvariable-safe-p-slowly v x))))
+
+;;; Downward parameters across top-level definitions (src/continuations.lisp,
+;;; *DOWNWARD-FUNCTIONS*): what a call/cc's escape-only continuation
+;;; assumed of a variable's procedure, checked as the call/cc is made.
+
+(defun reference-site (operator)
+  "SITE, if OPERATOR is (%guile-ref 'site), else NIL."
+  (and (consp operator) (eq (car operator) (core "%guile-ref"))
+       (consp (cdr operator)) (qsx::quote-form-p (cadr operator))
+       (site-p (cadr (cadr operator)))
+       (cadr (cadr operator))))
+
+(defun downward-operator-flags (operator)
+  "For QSX::*DOWNWARD-OPERATOR-HOOK*: the downward flags of the procedure
+OPERATOR's variable holds now, if it's already resolved."
+  (let* ((site (reference-site operator))
+	 (v (and site (ignore-errors (known-site-variable site))))
+	 (x (and v (gvariable-value v))))
+    (and (functionp x) (car (gethash x qsx::*downward-functions*)))))
+
+(defun downward-guard-form (operator i)
+  (let ((site (reference-site operator)))
+    (and site (list (core "%guile-downward-p") (list (core "quote") site) i))))
+
+(defvar *downward-in-progress* '()
+  "(procedure . position) pairs SITE-DOWNWARD-P is judging: one met again
+is taken as downward (procedures that pass it to each other).")
+
+(defun site-downward-p (site i)
+  "Whether SITE's variable holds a procedure whose parameter I is
+downward, as are the parameters it passes it to."
+  (let* ((v (resolve-site-for-guard site))
+	 (x (and v (gvariable-value v))))
+    (and (functionp x)
+	 (let ((entry (gethash x qsx::*downward-functions*)))
+	   (and entry (nth i (car entry))
+		(cond ((and (eq (gvariable-downward-for v) x)
+			    (= (gvariable-downward-epoch v) *procedure-epoch*)
+			    (logbitp i (gvariable-downward v)))
+		       t)
+		      ((member (cons x i) *downward-in-progress* :test #'equal) t)
+		      (t (let* ((epoch *procedure-epoch*)
+				(ok (let ((*downward-in-progress* (cons (cons x i) *downward-in-progress*)))
+				      (loop for (s . j) in (nth i (cdr entry))
+					    always (site-downward-p s j)))))
+			   ;; kept only if nothing changed meanwhile, and not
+			   ;; while judging a cycle (what it found assumed something)
+			   (when (and ok (null *downward-in-progress*) (= epoch *procedure-epoch*)
+				      (< i (integer-length most-positive-fixnum)))
+			     (unless (and (eq (gvariable-downward-for v) x) (= (gvariable-downward-epoch v) epoch))
+			       (setf (gvariable-downward-for v) x (gvariable-downward-epoch v) epoch
+				     (gvariable-downward v) 0))
+			     (setf (gvariable-downward v) (logior (gvariable-downward v) (ash 1 i))))
+			   ok))))))))
 
 (defun guarded-note-form (value checks)
   "For QSX::*GUARDED-NOTE-HOOK*: VALUE, a guarded W, recorded with the
@@ -930,7 +988,11 @@ is (%guile-set! 'site value) or defines the same variable
 	qsx::*self-reference-hook* 'self-reference-form-p
 	qsx::*frameless-stack-checks* t
 	qsx::*guard-reference-hook* 'guard-reference-form
-	qsx::*guarded-note-hook* 'guarded-note-form)
+	qsx::*guarded-note-hook* 'guarded-note-form
+	qsx::*downward-operator-hook* 'downward-operator-flags
+	qsx::*downward-datum-hook* 'reference-site
+	qsx::*downward-guard-hook* 'downward-guard-form)
+  (qsx:defhost "%guile-downward-p" (site i) (bool (site-downward-p site i)))
   (qsx:defhost "%guile-note-guarded" (f sites)
     (setf (gethash f *guarded-procedures*) sites)
     f)
@@ -1020,7 +1082,7 @@ is (%guile-set! 'site value) or defines the same variable
    '("%guile-append2" "%guile-nil:memq" "%guile-nil:memv" "%guile-nil:assq" "%guile-nil:assv"
      "%guile-nil:length" "%guile-nil:list?" "%guile-nil:reverse" "%guile-nil:last-pair"
      "%guile-nil:append"
-     "%guile-ref" "%guile-safe-ref-p" "%guile-note-guarded" "%guile-sub2" "%guile-<" "%guile->" "%guile-<=" "%guile->=" "%guile-=" "%guile-null?" "%guile-symbol?" "%guile-not" "%guile-true" "%guile-set!" "%guile-define!" "%guile-unsupported" "%guile-arity-error"
+     "%guile-ref" "%guile-safe-ref-p" "%guile-downward-p" "%guile-note-guarded" "%guile-sub2" "%guile-<" "%guile->" "%guile-<=" "%guile->=" "%guile-=" "%guile-null?" "%guile-symbol?" "%guile-not" "%guile-true" "%guile-set!" "%guile-define!" "%guile-unsupported" "%guile-arity-error"
      "%guile-with-meta" "%guile-inline"
      "%guile-nargs>=" "%guile-nargs-between" "%guile-keywords-fit?" "%guile-positional?" "%guile-check-no-more"
      "%guile-check-keywords" "%guile-keyword-ref")))
@@ -1042,6 +1104,14 @@ is (%guile-set! 'site value) or defines the same variable
     ("%guile-safe-ref-p" (s)
      (let ((v (or (site-variable (sb-ext:truly-the site s)) (resolve-site-for-guard s))))
        (bool (and v (gvariable-safe-p (sb-ext:truly-the gvariable v))))))
+    ("%guile-downward-p" (s i)
+     (let ((v (site-variable (sb-ext:truly-the site s))))
+       (if (and v
+		(eq (gvariable-value (sb-ext:truly-the gvariable v)) (gvariable-downward-for v))
+		(= (gvariable-downward-epoch v) *procedure-epoch*)
+		(logbitp i (gvariable-downward v)))
+	   (load-time-value qs:true t)
+	   :call)))
     ("%guile-sub2" (x y)
      (cond ((and (typep x 'fixnum) (typep y 'fixnum)) (- x y))
 	   ((and (typep x 'double-float) (typep y 'double-float)) (- x y))

@@ -1201,7 +1201,7 @@ run a little faster in code that calls unknown procedures in loops.")
     "call-with-values" "map" "for-each" "%full-call/cc" "%full-dynamic-wind" "%full-call-with-values"
     "%full-map" "%full-for-each" "%call-with-frame"
     "%full-vector-map" "%full-vector-for-each" "%full-string-map" "%full-string-for-each"
-    "%escape-call/cc" "call-with-prompt" "abort-to-prompt"
+    "%escape-call/cc" "%guarded-escape-call/cc" "call-with-prompt" "abort-to-prompt"
     "vector-map" "vector-for-each" "string-map" "string-for-each"
     "with-exception-handler" "raise" "raise-continuable" "force"
     "call-with-port" "call-with-input-file" "call-with-output-file"
@@ -1252,6 +1252,7 @@ MAKE-LEXICAL made."
 	(dolist (p *full-replacements*)
 	  (setf (gethash (car p) table) t (gethash (cdr p) table) t))
 	(setf (gethash "%call-with-frame" table) t (gethash "%escape-call/cc" table) t
+	      (gethash "%guarded-escape-call/cc" table) t (gethash "%note-downward" table) t
 	      (gethash "call-with-prompt" table) t (gethash "abort-to-prompt" table) t)
 	(dolist (name *adapter-primitives*) (setf (gethash name table) t))
 	(dolist (name *registered-primitive-names*) (setf (gethash name table) t))
@@ -1285,6 +1286,19 @@ transformed, bound once and for all to a lambda, to the lambda; or NIL.")
   "A hash table of the known procedures' variables to a list saying, for
 each parameter, whether the procedure only calls it or passes it on to
 such a parameter (see FIND-DOWNWARD-PARAMETERS); or NIL.")
+
+(defvar *downward-parameter-uses* nil
+  "With *DOWNWARD-PARAMETERS*: a hash table of the known procedures'
+variables to a list saying, for each downward parameter, the top-level
+procedures' parameters it is passed to ((operator . position) ...).")
+
+(defvar *downward-uses* :none
+  "While a list, the top-level procedures' parameters ONLY-CALLED-P found
+the variable passed to.")
+
+(defvar *top-level-downward* '()
+  "While the definitions in a top-level form are transformed, ((definition
+. flags) ...): their procedures' downward parameters.")
 
 (defvar *safe-procedures* nil
   "A hash table of the lexical variables, in the top-level form being
@@ -1557,7 +1571,18 @@ procedure that is itself only called."
 		   ((and (symbolp (car e)) *downward-parameters* (gethash (car e) *downward-parameters*))
 		    (let ((flags (gethash (car e) *downward-parameters*)))
 		      (loop for a in (cdr e) for i from 0
-			    always (if (eq a x) (nth i flags) (ok a)))))
+			    always (if (eq a x)
+				       (and (nth i flags)
+					    (note-downward-uses (and *downward-parameter-uses*
+								    (nth i (gethash (car e) *downward-parameter-uses*)))))
+				       (ok a)))))
+		   ((and (consp (car e)) (listp (cdr e)) (operator-downward-flags (car e)))
+		    (let ((flags (operator-downward-flags (car e))))
+		      (and (ok (car e))
+			   (loop for a in (cdr e) for i from 0
+				 always (if (eq a x)
+					    (and (nth i flags) (note-downward-uses (list (cons (car e) i))))
+					    (ok a))))))
 		   ((procedure-positions e)
 		    (let ((positions (procedure-positions e)))
 		      (and (ok (car e))
@@ -1607,15 +1632,17 @@ procedure arguments."
 (defun find-downward-parameters ()
   "Fill *DOWNWARD-PARAMETERS* for *KNOWN-PROCEDURES*: assume every
 parameter downward, and strike out those whose procedure lets them
-escape, until none changes."
-  (let ((table (make-hash-table :test 'eq)))
+escape, until none changes.  Second value: *DOWNWARD-PARAMETER-USES*'s."
+  (let ((table (make-hash-table :test 'eq))
+	(uses nil))
     (when *known-procedures*
       (maphash (lambda (v l)
 		 (let ((formals (cadr l)))
 		   (when (and (listp formals) (null (cdr (last formals))))
 		     (setf (gethash v table) (make-list (length formals) :initial-element t)))))
 	       *known-procedures*)
-      (let ((*downward-parameters* table))
+      (let ((*downward-parameters* table)
+	    (*downward-parameter-uses* (make-hash-table :test 'eq)))
 	(loop while (let ((changed nil))
 		      (maphash (lambda (v flags)
 				 (let ((l (gethash v *known-procedures*)))
@@ -1623,18 +1650,176 @@ escape, until none changes."
 					 when (and (car cell) (not (only-called-p x (caddr l))))
 					   do (setf (car cell) nil changed t))))
 			       table)
-		      changed))))
-    table))
+		      changed))
+	;; the top-level procedures each downward parameter reaches
+	(maphash (lambda (v flags)
+		   (let ((l (gethash v *known-procedures*)))
+		     (setf (gethash v *downward-parameter-uses*)
+			   (loop for f in flags for x in (cadr l)
+				 collect (and f (downward-uses x (caddr l)))))))
+		 table)
+	(setq uses *downward-parameter-uses*)))
+    (values table uses)))
+
+;;; Across top-level forms: a top-level procedure's parameters that are
+;;; downward, as FIND-DOWNWARD-PARAMETERS finds a known procedure's.
+;;; fibc passes its call/cc's K to fibc, which passes it to addc, which
+;;; only calls it or passes it to itself: none of them in one form (each
+;;; a Guile top-level definition, --racket's being a linklet's), each
+;;; reached through a form the transformation can't see into.  A
+;;; definition's value is recorded with its downward parameters as it
+;;; runs (%note-downward), and a language mode says, through
+;;; *DOWNWARD-OPERATOR-HOOK*, which an operator form's procedure has.
+;;; Where a top-level variable can be defined again (Guile's), what was
+;;; found holds only while the variables hold those procedures: the
+;;; escape-only call/cc is guarded by checks the mode makes
+;;; (*DOWNWARD-GUARD-HOOK*), and a full call/cc is made when one fails.
+;;; A redefinition during the call/cc's extent that keeps its K makes a
+;;; re-entry of it an error.
+
+(defvar *downward-functions* (make-hash-table :test 'eq :weakness :key :synchronized t)
+  "Procedures a top-level definition made -> (flags . uses): for each
+parameter, whether it is downward, and if so the parameters of other
+top-level procedures it is passed to, (datum . position) with datum
+what *DOWNWARD-DATUM-HOOK* made of their operator.")
+
+(defvar *downward-operator-hook* nil
+  "NIL, or a function of an operator form (not a symbol): the downward
+flags of the procedure it evaluates to, if known, else NIL.")
+
+(defvar *downward-datum-hook* nil
+  "With *DOWNWARD-OPERATOR-HOOK*: a function of an operator form, a datum
+that names its variable for the runtime (a Guile site), or NIL.")
+
+(defvar *downward-guard-hook* nil
+  "NIL, or a function of an operator form and a parameter's position: a
+form true while the procedure the operator evaluates to has that
+parameter downward, or NIL if it always will.")
 
 (defun escape-call/cc-p (call)
-  "Whether CALL is (call/cc (lambda (k) body)) with K only called."
-  (and (member (primitive-name (car call)) '("call-with-current-continuation" "call/cc")
-	       :test #'equal)
+  "Whether CALL is (call/cc (lambda (k) body)) with K only called: T, or
+the top-level procedures' parameters (operator . position) it is passed
+to, whose being downward a guard checks (ESCAPE-CALL/CC-FORM)."
+  (and (or (member (primitive-name (car call)) '("call-with-current-continuation" "call/cc")
+		   :test #'equal)
+	   ;; --racket's, given no prompt tag (src/racket/native/more.lisp)
+	   (and (scheme-symbol-p (car call))
+		(member (qs:scheme-symbol-name (car call))
+			'("racket:call-with-current-continuation" "racket:call/cc")
+			:test #'string=)))
        (= (length call) 2)
        (lambda-form-p (cadr call))
        (let ((formals (cadr (cadr call))))
 	 (and (consp formals) (null (cdr formals)) (symbolp (car formals))
-	      (only-called-p (car formals) (caddr (cadr call)))))))
+	      (let ((*downward-uses* '()))
+		(and (only-called-p (car formals) (caddr (cadr call)))
+		     (or *downward-uses* t)))))))
+
+(defun escape-call/cc-form (escape args)
+  "The call of ARGS' procedure with an escape-only continuation, ESCAPE
+being ESCAPE-CALL/CC-P's: guarded, where top-level procedures' being
+downward may change, by the checks *DOWNWARD-GUARD-HOOK* makes."
+  (let ((checks (and (listp escape) *downward-guard-hook*
+		     (remove-duplicates (loop for (operator . i) in escape
+					      for check = (funcall *downward-guard-hook* operator i)
+					      when check collect check)
+					:test #'equal))))
+    (if checks
+	`(,(sym "%guarded-escape-call/cc")
+	  ,(reduce (lambda (c rest) `(,(sym "if") ,c ,rest (,(sym "quote") ,qs:false)))
+		   checks :from-end t)
+	  ,@args)
+	`(,(sym "%escape-call/cc") ,@args))))
+
+(defun note-downward-uses (uses)
+  (when (listp *downward-uses*)
+    (dolist (u uses) (pushnew u *downward-uses* :test #'equal)))
+  t)
+
+(defun downward-uses (x body)
+  "The top-level procedures' parameters BODY passes X to."
+  (let ((*downward-uses* '()))
+    (only-called-p x body)
+    *downward-uses*))
+
+(defun operator-downward-flags (operator)
+  (or (and *self-reference-hook*
+	   (loop for (definition . flags) in *top-level-downward*
+		 when (eq (funcall *self-reference-hook* operator definition) :reads)
+		   return flags))
+      (and *downward-operator-hook* (funcall *downward-operator-hook* operator))))
+
+(defun definition-formals (definition)
+  (let* ((l (defined-lambda (fourth definition))) (formals (and l (cadr l))))
+    (and formals (listp formals) (null (cdr (last formals))) (every #'symbolp formals)
+	 l)))
+
+(defun find-top-level-downward (form)
+  "((definition . flags) ...) for FORM's top-level definitions (by
+*DEFINITION-OPERATORS*) of lambdas with fixed parameters: assume each
+parameter downward, and strike out those the lambda lets escape."
+  (let ((out '()))
+    (labels ((walk (e)
+	       (cond ((or (atom e) (quote-form-p e) (lambda-form-p e)))
+		     ((and (scheme-symbol-p (car e))
+			   (member (qs:scheme-symbol-name (car e)) *definition-operators* :test #'string=)
+			   (= (length e) 4))
+		      (let ((l (definition-formals e)))
+			(when l
+			  (push (cons e (make-list (length (cadr l)) :initial-element t)) out))))
+		     ((or (keyword-p (car e) "BEGIN") (keyword-p (car e) "IF"))
+		      (mapc #'walk (cdr e))))))
+      (when (and *definition-operators* *downward-datum-hook*)
+	(walk form)))
+    (when out
+      (let ((*top-level-downward* out))
+	(loop while (let ((changed nil))
+		      (loop for (definition . flags) in out
+			    for l = (definition-formals definition)
+			    do (loop for cell on flags for x in (cadr l)
+				     when (and (car cell) (not (only-called-p x (caddr l))))
+				       do (setf (car cell) nil changed t)))
+		      changed))))
+    (remove-if (lambda (d) (notany #'identity (cdr d))) out)))
+
+(defun note-downward-definitions (form)
+  "FORM with each top-level definition in *TOP-LEVEL-DOWNWARD* wrapped in
+%note-downward, which records its procedure's downward parameters (the
+definitions found before GUARD-SELF-CALLS made some others)."
+  (if (null *top-level-downward*)
+      form
+      (labels ((note (definition)
+		 ;; the original definition of the variable DEFINITION defines
+		 (let ((d (find-if (lambda (d) (and (equal (second (car d)) (second definition))
+						     (equal (third (car d)) (third definition))))
+				   *top-level-downward*)))
+		   (and d
+			(let* ((l (definition-formals (car d)))
+			       (uses (loop for f in (cdr d) for x in (cadr l)
+					   collect (and f (downward-uses x (caddr l)))))
+			       (data (loop for us in uses
+					   collect (loop for (operator . i) in us
+							 for datum = (funcall *downward-datum-hook* operator)
+							 unless datum do (return :none)
+							 collect (cons datum i))))
+			       (flags (loop for f in (cdr d) for ds in data collect (and f (listp ds)))))
+			  (and (some #'identity flags)
+			       (list (first definition) (second definition) (third definition)
+				     (list (sym "%note-downward") (fourth definition)
+					   (list (sym "quote") flags)
+					   (list (sym "quote") (mapcar (lambda (ds) (if (listp ds) ds '())) data)))))))))
+	       (walk (e)
+		 (cond ((atom e) e)
+		       ((quote-form-p e) e)
+		       ((lambda-form-p e) e)
+		       ((and (scheme-symbol-p (car e))
+			     (member (qs:scheme-symbol-name (car e)) *definition-operators* :test #'string=)
+			     (= (length e) 4))
+			(or (note e) e))
+		       ((or (keyword-p (car e) "BEGIN") (keyword-p (car e) "IF"))
+			(cons (car e) (mapcar #'walk (cdr e))))
+		       (t e))))
+	(walk form))))
 
 (defparameter *procedure-arguments*
   '(("map" 0) ("for-each" 0) ("vector-map" 0) ("vector-for-each" 0)
@@ -1925,7 +2110,7 @@ primitives in *FULL-REPLACEMENTS* replaced."
 	((or (keyword-p (car e) "SET!") (keyword-p (car e) "DEFINE"))
 	 `(,(car e) ,(cadr e) ,(simple (caddr e))))
 	((plain-primitive-call-p e) (cons (car e) (mapcar #'simple (cdr e))))
-	((escape-call/cc-p e) (cons (sym "%escape-call/cc") (mapcar #'simple (cdr e))))
+	((escape-call/cc-p e) (escape-call/cc-form (escape-call/cc-p e) (mapcar #'simple (cdr e))))
 	(t (wrap-barrier (mapcar #'simple e)))))
 
 (defun tail-simple-p (e)
@@ -2131,7 +2316,7 @@ before, not what comes after."
   (let ((xs (cond ((plain-primitive-call-p e)
 		   ;; the primitive itself, not its frame-aware version
 		   (cons (car e) (cdr (operands e))))
-		  ((escape-call/cc-p e) (cons (sym "%escape-call/cc") (cdr (operands e))))
+		  ((escape-call/cc-p e) (escape-call/cc-form (escape-call/cc-p e) (cdr (operands e))))
 		  (t (wrap-barrier (operands e))))))
     (cond ((not (capturing-call-p e))
 	   (finish xs k))
@@ -2455,9 +2640,16 @@ a procedure, of 350,000 conses, code past arm64's branch reach."
 	 (*safe-procedures* nil)
 	 (*known-procedures* nil)
 	 (*downward-parameters* nil)
-	 (form (guard-top-level-self-calls (guard-self-calls form)))
-	 (*safe-procedures* (find-safe-procedures form))
-	 (*downward-parameters* (find-downward-parameters)))
+	 (*downward-parameter-uses* nil)
+	 (*top-level-downward* '())
+	 (original form)
+	 (form (guard-top-level-self-calls (guard-self-calls form))))
+    (setq *safe-procedures* (find-safe-procedures form))
+    (multiple-value-setq (*downward-parameters* *downward-parameter-uses*) (find-downward-parameters))
+    ;; the original's definitions: GUARD-SELF-CALLS made some others
+    (setq *top-level-downward* (let ((*known-procedures* nil) (*downward-parameters* nil))
+				 (find-top-level-downward original)))
+    (setq form (note-downward-definitions form))
     (find-safe-locations form)
     (cc-transform-1 (note-safe-definitions form))))
 
@@ -2841,6 +3033,11 @@ compiled on its own)."
   (defhost "%full-call-with-values" (producer consumer) (full-call-with-values producer consumer))
   (defhost "%guard-reraise" (k thunk) (guard-reraise k thunk))
   (defhost "%escape-call/cc" (f) (escape-call/cc f))
+  (defhost "%guarded-escape-call/cc" (test f)
+    (if (eq test qs:false) (full-call/cc f) (escape-call/cc f)))
+  (defhost "%note-downward" (f flags uses)
+    (setf (gethash f *downward-functions*) (cons flags uses))
+    f)
   (defhost "%note-safe" (f) (setf (gethash f *safe-functions*) t) f)
   (register-primitive-names '("%note-safe"))
   (defhost "call-with-prompt" (tag thunk handler) (call-with-prompt tag thunk handler))
