@@ -1842,6 +1842,8 @@ safe procedures can't capture.")
 procedure's variable, a primitive that calls no procedure, or a lambda
 whose body can't capture."
   (cond ((lambda-form-p e) (not (may-capture-p (caddr e))))
+	;; a guard's checked procedure (GUARDED-REFERENCE-P)
+	((and (consp e) (consp (cdr e)) (equal (primitive-name (car e)) "%safe-procedure")) t)
 	;; cpdx's mark on a lambda (src/cpdx.lisp)
 	((and (consp e) (consp (cdr e)) (equal (primitive-name (car e)) "%cp-dx"))
 	 (safe-procedure-p (cadr e)))
@@ -2918,6 +2920,15 @@ and inert primitives (with lambdas applied in place: lets)."
 		   (t nil))))
     (inert e)))
 
+(defun guarded-reference-p (a definition)
+  "Whether A reads a top-level variable other than DEFINITION's that
+*GUARD-REFERENCE-HOOK* can check holds a safe procedure: an argument a
+guarded call may pass as one, (%safe-procedure a), once checked."
+  (and *guard-reference-hook* (consp a)
+       (not (eq (funcall *self-reference-hook* a definition) :reads))
+       (funcall *guard-reference-hook* a)
+       t))
+
 (defun guarded-calling-call (e definition)
   "(CHECK . NAME), if call E is one GUARD-DEFINITION makes NAME's call
 (*GUARD-CALLING-HOOK*), else NIL."
@@ -2931,7 +2942,9 @@ and inert primitives (with lambdas applied in place: lets)."
 			      ;; analysis keeps F only if it's safe
 			      (let ((a (nth i (cdr e))))
 				(or (lambda-form-p a) (safe-operator-p a) (scheme-symbol-p a)
-				    (eq (funcall *self-reference-hook* a definition) :reads))))
+				    (eq (funcall *self-reference-hook* a definition) :reads)
+				    ;; another top-level procedure, checked safe
+				    (guarded-reference-p a definition))))
 			    positions)
 		     hook))))))
 
@@ -3034,7 +3047,8 @@ place of the reference the lambda makes."
 	     (candidates (append (mapcar (lambda (i) (nth i formals)) assumed) (local-procedures renamed)))
 	     (body (labels ((candidate-p (a)
 			      (or (lambda-form-p a) (safe-operator-p a)
-				  (and (symbolp a) (member a candidates :test #'eq))))
+				  (and (symbolp a) (member a candidates :test #'eq))
+				  (guarded-reference-p a definition)))
 			    (guard (e)
 			      (cond ((atom e) e)
 				    ((quote-form-p e) e)
@@ -3076,17 +3090,25 @@ place of the reference the lambda makes."
 							  collect (cond ((not (member i positions)) (cons :value (fresh)))
 									((eq (funcall *self-reference-hook* a definition) :reads)
 									 (cons :self (fresh)))
+									((guarded-reference-p a definition) (cons :reference (fresh)))
 									(t (cons :inline (guard a))))))
 					      (temps (loop for (kind . x) in args unless (eq kind :inline) collect x))
 					      (fast `(,(sym name) ,@(loop for (kind . x) in args
-									  collect (if (eq kind :self) f x))))
+									  collect (case kind
+										    (:self f)
+										    (:reference `(,(sym "%safe-procedure") ,x))
+										    (t x)))))
 					      ;; a lambda again, its binders fresh (each binds once)
 					      (slow `(%self-call-barrier ,(car e)
 									 ,@(loop for (kind . x) in args
 										 collect (if (eq kind :inline) (rename-binders x) x))))
-					      (tests (cons check (loop for (kind . x) in args
-								       when (eq kind :self) collect `(,(sym "eq?") ,x ,w)))))
-					 (pushnew check checks :test #'equal)
+					      (references (loop for arg in args for a in (cdr e)
+								when (eq (car arg) :reference)
+								  collect (funcall *guard-reference-hook* a)))
+					      (tests (append (list check) references
+							     (loop for (kind . x) in args
+								   when (eq kind :self) collect `(,(sym "eq?") ,x ,w)))))
+					 (dolist (test (cons check references)) (pushnew test checks :test #'equal))
 					 `((,(sym "lambda") ,temps
 					    ,(reduce (lambda (test inner) `(,(sym "if") ,test ,inner ,slow))
 						     tests :from-end t :initial-value fast))
@@ -3105,18 +3127,25 @@ place of the reference the lambda makes."
 					    (hook (funcall *parametric-check-hook* (car e) positions (length (cdr e))))
 					    (check (car hook))
 					    (args (loop for a in (cdr e) for i from 0
-							collect (if (member i positions) (cons :inline (guard a)) (cons :value (fresh)))))
-					    (temps (loop for (kind . x) in args when (eq kind :value) collect x))
+							collect (cond ((not (member i positions)) (cons :value (fresh)))
+								      ((guarded-reference-p a definition) (cons :reference (fresh)))
+								      (t (cons :inline (guard a))))))
+					    (temps (loop for (kind . x) in args unless (eq kind :inline) collect x))
 					    (fast `(,(sym "%parametric-call") (,(sym "quote") ,positions) ,(cdr hook)
-						    ,@(mapcar #'cdr args)))
+						    ,@(loop for (kind . x) in args
+							    collect (if (eq kind :reference) `(,(sym "%safe-procedure") ,x) x))))
+					    (references (loop for arg in args for a in (cdr e)
+							      when (eq (car arg) :reference) collect (funcall *guard-reference-hook* a)))
 					    ;; a lambda again, its binders fresh (each binds once)
 					    (slow `(%self-call-barrier ,(car e)
 								       ,@(loop for (kind . x) in args
 									       collect (if (eq kind :inline) (rename-binders x) x)))))
-				       (pushnew check checks :test #'equal)
-				       `((,(sym "lambda") ,temps (,(sym "if") ,check ,fast ,slow))
+				       (dolist (test (cons check references)) (pushnew test checks :test #'equal))
+				       `((,(sym "lambda") ,temps
+					  ,(reduce (lambda (test inner) `(,(sym "if") ,test ,inner ,slow))
+						   (cons check references) :from-end t :initial-value fast))
 					 ,@(loop for a in (cdr e) for arg in args
-						 when (eq (car arg) :value) collect (guard a)))))
+						 unless (eq (car arg) :inline) collect (guard a)))))
 				    ;; a call of another top-level variable that holds
 				    ;; a safe procedure while CHECK is true
 				    ((and *guard-reference-hook* (consp (car e)) (listp (cdr e))
@@ -3380,8 +3409,13 @@ compiled on its own)."
 	  (if (and (not (eq (car form) 'funcall)) (cddr form))
 	      `(funcall ,(third form) ,@(cdddr form))
 	      form)))
+  ;; (%safe-procedure x): X, a procedure a guard found safe (the analysis
+  ;; takes it so: SAFE-PROCEDURE-P)
+  (defhost "%safe-procedure" (x) x)
+  (setf (compiler-macro-function (location (sym "%safe-procedure")))
+	(lambda (form env) (declare (ignore env)) (if (and (not (eq (car form) 'funcall)) (= (length form) 2)) (cadr form) form)))
   (defhost "%note-frameless" (w f nargs) (setf (gethash w *frameless-entries*) (cons f nargs)) w)
-  (register-primitive-names '("%note-safe" "%parametric-call" "%note-frameless"))
+  (register-primitive-names '("%note-safe" "%parametric-call" "%note-frameless" "%safe-procedure"))
   (defhost "call-with-prompt" (tag thunk handler) (call-with-prompt tag thunk handler))
   (defhost "abort-to-prompt" (tag &rest values) (apply #'abort-to-prompt tag values))
   (defhost "%full-map" (f list &rest lists) (apply #'full-map f list lists))
