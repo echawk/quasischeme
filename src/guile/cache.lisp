@@ -101,7 +101,10 @@ ones are pruned."
 ;;; ------------------------------------------------------------------
 ;;; Evaluating a file's forms, keeping their code
 
-(defun translate-top-level (core) (qsx::translate-top-level core))
+(defun translate-top-level (core)
+  ;; Guile's code checks a stack limit (call-with-stack-overflow-handler)
+  (let ((qsx::*frameless-stack-checks* t))
+    (qsx::translate-top-level core)))
 
 (defun run-cached (thunk) (qsx::run-top-level thunk))
 

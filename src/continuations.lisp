@@ -2181,7 +2181,9 @@ known procedure."
   "True if a procedure without sites checks *STACK-LIMIT* as it's entered,
 as a machine's frames do (Guile mode: call-with-stack-overflow-handler;
 recursion that makes no frames otherwise runs to the control stack's
-end, which the condition handlers have no stack left for).")
+end, which the condition handlers have no stack left for).  Bound while
+Guile's code is translated (src/guile/boot.lisp, cache.lisp): other
+modes have no stack limits, and the check cost fib a fifth of its time.")
 
 (defvar *guarded-frameless* (make-hash-table :test 'eq :weakness :key :synchronized t)
   "The F variables of GUARD-DEFINITION: they check no stack limit, their

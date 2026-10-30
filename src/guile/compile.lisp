@@ -1180,7 +1180,6 @@ is (%guile-set! 'site value) or defines the same variable
   (setq qsx::*definition-operators* '("%guile-define!")
 	qsx::*safe-operator-hook* 'safe-operator-form-p
 	qsx::*self-reference-hook* 'self-reference-form-p
-	qsx::*frameless-stack-checks* t
 	qsx::*guard-reference-hook* 'guard-reference-form
 	qsx::*self-test-hook* 'self-test-form
 	qsx::*guard-calling-hook* 'guarded-calling-form

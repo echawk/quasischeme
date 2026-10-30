@@ -339,7 +339,9 @@ constructs of *INTERPRETABLE-HEADS* or functions."
     (let ((sb-ext:*evaluator-mode* (if (and *interpret-trivial-forms* (trivial-core-p core))
 				       :interpret
 				       :compile)))
-      (qsx:host-eval core))))
+      ;; Guile's code checks a stack limit (call-with-stack-overflow-handler)
+      (let ((qsx::*frameless-stack-checks* t))
+	(qsx:host-eval core)))))
 
 ;;; A big top-level form is compiled in pieces: src/psyntax.lisp hoists
 ;;; the definitions of a top-level letrec* (each procedure its own
