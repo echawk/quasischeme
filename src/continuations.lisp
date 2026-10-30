@@ -1282,6 +1282,11 @@ primitive's name (psyntax renames everything else), or (primitive x)."
   "NIL, or a hash table of the variables, a parametric F's parameters,
 taken to hold safe procedures (callers check it: %parametric-call).")
 
+(defvar *assume-safe-parameters* nil
+  "True while FIND-SAFE-PROCEDURES takes every safe parameter candidate as
+holding a safe procedure, whatever its calls pass (CLONE-PARAMETRIC-
+PROCEDURES).")
+
 (defvar *known-procedures* nil
   "A hash table of the lexical variables, in the top-level form being
 transformed, bound once and for all to a lambda, to the lambda; or NIL.")
@@ -1491,7 +1496,9 @@ are Lisp symbols are the transformation's own, or the translator's."
 	;; procedure in its place; a call through it then can't capture.
 	;; quicksort's LESS?, passed down from QUICK-1 to PARTITION's
 	;; loops, made each comparison a site.
-	(let ((params (safe-parameter-candidates form known assignments)))
+	(let ((params (if *assume-safe-parameters*
+			  (all-parameter-candidates known assignments)
+			  (safe-parameter-candidates form known assignments))))
 	  (loop for (p) in params do (setf (gethash p safe) t))
 	  (let ((*safe-procedures* safe))
 	    (loop while (loop with changed = nil
@@ -1500,10 +1507,25 @@ are Lisp symbols are the transformation's own, or the translator's."
 				do (remhash v safe) (setq changed t)
 			      finally
 				 (loop for (p . args) in params
-				       when (and (gethash p safe) (notevery #'safe-procedure-p args))
+				       when (and (gethash p safe) (not *assume-safe-parameters*)
+						 (notevery #'safe-procedure-p args))
 					 do (remhash p safe) (setq changed t))
-				 (return changed)))))
-	safe))))
+				 (return changed))))
+	  (values safe params))))))
+
+(defun all-parameter-candidates (known assignments)
+  "((parameter) ...): the fixed parameters of KNOWN's procedures (variable
+-> lambda) that are never assigned, whatever their calls (a parametric
+procedure's W checks what it is passed)."
+  (let ((out '()))
+    (maphash (lambda (v l)
+	       (declare (ignore v))
+	       (loop for f = (cadr l) then (cdr f)
+		     while (consp f)
+		     when (and (symbolp (car f)) (zerop (gethash (car f) assignments 0)))
+		       do (push (list (car f)) out)))
+	     known)
+    out))
 
 (defun safe-parameter-candidates (form known assignments)
   "((parameter . arguments) ...): the fixed parameters of KNOWN's procedures
@@ -1520,6 +1542,11 @@ are what its calls pass in that place."
 		     ((keyword-p (car e) "LETREC")
 		      (dolist (b (cadr e)) (walk (cadr b)))
 		      (mapc #'walk (cddr e)))
+		     ;; a definition (letrec*'s set! of its placeholder) isn't a
+		     ;; use of the variable
+		     ((and (or (keyword-p (car e) "SET!") (keyword-p (car e) "DEFINE"))
+		           (consp (cdr e)) (symbolp (cadr e)) (consp (cddr e)))
+		      (walk (caddr e)))
 		     ((and (symbolp (car e)) (gethash (car e) known))
 		      (push (cdr e) (gethash (car e) calls))
 		      (mapc #'walk (cdr e)))
@@ -1539,6 +1566,228 @@ are what its calls pass in that place."
 		     do (push (cons p (mapcar (lambda (args) (nth i args)) (gethash v calls))) out)))))
        known)
       out)))
+
+;;; Parametric procedures.  A known procedure that is safe only while its
+;;; procedure parameters hold safe procedures, which its calls don't
+;;; show (quicksort's QUICK-1, given a LESS? another procedure returned),
+;;; is compiled twice: F, a copy that takes those parameters as safe (and
+;;; so makes no frames), and M, as it is.  Its variable holds W, which
+;;; calls F when the procedures passed are safe as it is called, else M:
+;;; a procedure is safe if its lambda couldn't capture
+;;; (RUNTIME-SAFE-PROCEDURE-P).  In F, a call of another parametric
+;;; procedure passing safe procedures in its positions is a
+;;; %parametric-call, no site; it runs that procedure's W.
+
+(defparameter *parametric-size-limit* 4000
+  "The biggest procedure, in conses, that is cloned as parametric.")
+
+(defun procedure-parameters (form known candidates)
+  "The CANDIDATES (variables) that hold procedures: those FORM calls, and
+those it passes to KNOWN's procedures (variable -> lambda) in the place
+of one that does."
+  (let ((called (make-hash-table :test 'eq))
+	(passes '()))			; (variable callee . position)
+    (labels ((walk (e)
+	       (cond ((atom e))
+		     ((quote-form-p e))
+		     ((lambda-form-p e) (walk (caddr e)))
+		     (t (when (and (symbolp (car e)) (member (car e) candidates :test #'eq))
+			  (setf (gethash (car e) called) t))
+			(when (and (symbolp (car e)) (gethash (car e) known))
+			  (loop for a in (cdr e) for i from 0
+				when (and (symbolp a) (member a candidates :test #'eq))
+				  do (push (list* a (car e) i) passes)))
+			(loop for x on e
+			      do (walk (car x))
+			      while (consp (cdr x)))))))
+      (walk form))
+    (loop while (loop with changed = nil
+		      for (v callee . i) in passes
+		      unless (gethash v called)
+			do (let ((formal (loop for f = (cadr (gethash callee known)) then (cdr f)
+					       for j from 0
+					       while (consp f)
+					       when (= j i) return (car f))))
+			     (when (and formal (symbolp formal) (gethash formal called))
+			       (setf (gethash v called) t changed t)))
+		      finally (return changed)))
+    called))
+
+(defvar *parametric-clones* (equal (uiop:getenv "QUASISCHEME_PARAMETRIC") "1")
+  "Whether CLONE-PARAMETRIC-PROCEDURES clones (QUASISCHEME_PARAMETRIC=1 at
+load; opt-in for now).  quicksort gains a sixth, but a W in place of a
+known procedure costs its direct calls a closure's and the check's
+synchronized weak lookup: peval took 1.8 times as long, compiler 1.2.")
+
+(defun clone-parametric-procedures (form)
+  "FORM with its parametric procedures' lambdas made W, F and M, if
+*PARAMETRIC-CLONES*."
+  (unless (or *parametric-clones* (equal (uiop:getenv "QUASISCHEME_PARAMETRIC") "1"))
+    (return-from clone-parametric-procedures form))
+  (let ((real (find-safe-procedures form)))
+    (when (loop for v being the hash-keys of *known-procedures* always (gethash v real))
+      (return-from clone-parametric-procedures form))
+    (multiple-value-bind (all params)
+	(let ((*assume-safe-parameters* t)) (find-safe-procedures form))
+      (let* ((known *known-procedures*)
+	     (procedure-parameters (procedure-parameters form known (mapcar #'car params)))
+	     (parametric (make-hash-table :test 'eq))) ; variable -> positions
+	(maphash (lambda (v l)
+		   (let ((formals (cadr l)))
+		     (when (and (gethash v all) (not (gethash v real))
+				(listp formals) (null (cdr (last formals)))
+				(<= (tree-size l) *parametric-size-limit*))
+		       (let ((positions (loop for p in formals for i from 0
+					      when (gethash p procedure-parameters) collect i)))
+			 (when positions (setf (gethash v parametric) positions))))))
+		 known)
+	(when (zerop (hash-table-count parametric))
+	  (return-from clone-parametric-procedures form))
+	(labels ((calls (e)
+		   ;; E with its calls of parametric procedures %parametric-calls
+		   (cond ((atom e) e)
+			 ((quote-form-p e) e)
+			 ((lambda-form-p e) (list* (car e) (cadr e) (mapcar #'calls (cddr e))))
+			 ((keyword-p (car e) "LETREC")
+			  (list* (car e)
+				 (mapcar (lambda (b) (if (consp b) (cons (car b) (mapcar #'calls (cdr b))) b))
+					 (cadr e))
+				 (mapcar #'calls (cddr e))))
+			 (t (let ((new (loop for x on e
+					     collect (calls (car x)) into new
+					     unless (listp (cdr x)) do (return (nconc new (cdr x)))
+					     finally (return new))))
+			      (if (and (symbolp (car e)) (gethash (car e) parametric))
+				  `(,(sym "%parametric-call") (,(sym "quote") ,(gethash (car e) parametric)) ,@new)
+				  new)))))
+		 (clone (l positions)
+		   ;; W, for lambda L: (letrec ((F copy) (M L)) (lambda ...))
+		   (let* ((copy (rename-binders (calls l)))
+			  (f (fresh)) (m (fresh))
+			  (formals (mapcar (lambda (p) (declare (ignore p)) (fresh)) (cadr l))))
+		     (dolist (i positions) (setf (gethash (nth i (cadr copy)) *assumed-safe-variables*) t))
+		     `(,(sym "letrec") ((,f ,copy) (,m ,l))
+		       (,(sym "lambda") ,formals
+			,(reduce (lambda (i inner)
+				   `(,(sym "if") (,(sym "%runtime-safe-procedure-p") ,(nth i formals))
+				     ,inner (,m ,@formals)))
+				 positions :from-end t :initial-value `(,f ,@formals))))))
+		 (walk (e)
+		   (cond ((atom e) e)
+			 ((quote-form-p e) e)
+			 ((keyword-p (car e) "LETREC")
+			  (list* (car e)
+				 (mapcar (lambda (b)
+					   (let ((positions (and (consp b) (gethash (car b) parametric))))
+					     (if (and positions (eq (cadr b) (gethash (car b) known)))
+						 (list (car b) (clone (cadr b) positions))
+						 (list (car b) (walk (cadr b))))))
+					 (cadr e))
+				 (mapcar #'walk (cddr e))))
+			 ((or (keyword-p (car e) "SET!") (keyword-p (car e) "DEFINE"))
+			  (let ((positions (gethash (cadr e) parametric)))
+			    (if (and positions (eq (caddr e) (gethash (cadr e) known)))
+				(list (car e) (cadr e) (clone (caddr e) positions))
+				(list (car e) (cadr e) (walk (caddr e))))))
+			 ((let-form-p e)
+			  (cons (walk (car e))
+				(loop for v in (cadr (car e)) for a in (cdr e)
+				      collect (let ((positions (gethash v parametric)))
+						(if (and positions (eq a (gethash v known)))
+						    (clone a positions)
+						    (walk a))))))
+			 ((lambda-form-p e) (list (car e) (cadr e) (walk (caddr e))))
+			 (t (loop for x on e
+				  collect (walk (car x)) into new
+				  unless (listp (cdr x)) do (return (nconc new (cdr x)))
+				  finally (return new))))))
+	  (walk form))))))
+
+;;; A lambda that can't capture, passed to a procedure other than a
+;;; primitive, is marked so as its closures are made (once for its code:
+;;; %note-safe-code), for a parametric procedure's W to find it safe.
+
+(defun mark-safe-lambdas (form)
+  "FORM with the lambdas it passes to calls of non-primitives that can't
+capture marked: '(:safe-code) first in their bodies, which TRANSFORM-
+LAMBDA takes off; and the variables of safe procedures it passes so,
+(%note-safe-code variable).  Only with parametric clones (*PARAMETRIC-
+CLONES*), whose Ws read the marks."
+  (labels ((mark (a)
+	     (cond ((and (lambda-form-p a) (null (cdddr a)) (not (may-capture-p (caddr a))))
+		    (list (car a) (cadr a) `(,(sym "begin") (,(sym "quote") (:safe-code)) ,(walk (caddr a)))))
+		   ;; a known safe procedure's variable passed on (a let's
+		   ;; lambda): its one lambda's code
+		   ((and (symbolp a) *safe-procedures* (gethash a *safe-procedures*)
+			 *known-procedures* (gethash a *known-procedures*))
+		    `(,(sym "%note-safe-code") ,a))
+		   (t (walk a))))
+	   (walk (e)
+	     (cond ((atom e) e)
+		   ((quote-form-p e) e)
+		   ((lambda-form-p e) (list* (car e) (cadr e) (mapcar #'walk (cddr e))))
+		   ((keyword-p (car e) "LETREC")
+		    (list* (car e)
+			   (mapcar (lambda (b) (if (consp b) (cons (car b) (mapcar #'walk (cdr b))) b)) (cadr e))
+			   (mapcar #'walk (cddr e))))
+		   ((and (consp e) (listp (cdr e)) (null (cdr (last e)))
+			 (not (lambda-form-p (car e)))
+			 (or (scheme-symbol-p (car e)) (consp (car e)))
+			 (notany (lambda (k) (keyword-p (car e) k))
+				 '("IF" "BEGIN" "SET!" "DEFINE" "LETREC" "LAMBDA" "QUOTE" "PRIMITIVE"))
+			 (not (primitive-name (car e))))
+		    (cons (walk (car e)) (mapcar #'mark (cdr e))))
+		   (t (loop for x on e
+			    collect (walk (car x)) into new
+			    unless (listp (cdr x)) do (return (nconc new (cdr x)))
+			    finally (return new))))))
+    (if (or *parametric-clones* (equal (uiop:getenv "QUASISCHEME_PARAMETRIC") "1"))
+	(walk form)
+	form)))
+
+(defun safe-code-marker (body)
+  "BODY's leading '(:safe-code), and BODY without it."
+  (if (and (consp body) (keyword-p (car body) "BEGIN") (consp (cdr body))
+	   (equal (cadr body) `(,(sym "quote") (:safe-code))))
+      (values t (if (cdddr body) (cons (car body) (cddr body)) (caddr body)))
+      (values nil body)))
+
+(defvar *safe-codes* (make-hash-table :test 'eq :weakness :key :synchronized t)
+  "The code of lambdas that can't capture (closures' functions), as
+their closures are first made (%note-safe-code).")
+
+(defun function-code (f)
+  #+sbcl (if (sb-kernel:closurep f) (sb-kernel:%closure-fun f) f)
+  #-sbcl f)
+
+(defun note-safe-code (f)
+  (setf (gethash (function-code f) *safe-codes*) t)
+  f)
+
+(defvar *safe-primitives-noted* nil
+  "True once the primitives that call no procedure are in *SAFE-CODES*.")
+
+(defun note-safe-primitives ()
+  "Note the host primitives (qs-r6rs:*primitives*, which looking them up
+by name would make locations for) that call no procedure as safe: those
+that are functions of their own (a closure's code may be another's too)."
+  (setq *safe-primitives-noted* t)
+  (loop for (name . f) in qs-r6rs:*primitives*
+	when (and (functionp f) #+sbcl (not (sb-kernel:closurep f))
+		  (not (member name *calling-primitives* :test #'string=)))
+	  do (setf (gethash f *safe-codes*) t)))
+
+(defun runtime-safe-procedure-p (f)
+  "Whether F is a procedure that can't capture: its lambda's code was
+marked so, it is one of *SAFE-FUNCTIONS*, or a primitive that calls no
+procedure."
+  (and (functionp f)
+       (or (gethash (function-code f) *safe-codes*)
+	   (gethash f *safe-functions*)
+	   (and (not *safe-primitives-noted*)
+		(progn (note-safe-primitives)
+		       (gethash (function-code f) *safe-codes*))))
+       t))
 
 ;;; Continuations that are only ever invoked during the extent of their
 ;;; call/cc.  In (call/cc (lambda (k) body)), if BODY only calls K, or
@@ -2126,7 +2375,12 @@ primitives in *FULL-REPLACEMENTS* replaced."
 	((and (consp e) (keyword-p (car e) "PRIMITIVE")) (replacement e))
 	((symbolp e) (if (scheme-symbol-p e) (replacement e) e))
 	((atom e) e)
-	((lambda-form-p e) (transform-lambda e))
+	((lambda-form-p e)
+	 ;; a lambda MARK-SAFE-LAMBDAS marked: its closures noted safe
+	 (multiple-value-bind (safe body) (safe-code-marker (caddr e))
+	   (if safe
+	       `(,(sym "%note-safe-code") ,(transform-lambda (list (car e) (cadr e) body)))
+	       (transform-lambda e))))
 	((keyword-p (car e) "LETREC")
 	 `(,(car e) ,(mapcan (lambda (b) (letrec-bindings (car b) (transform-bound-lambda (car b) (cadr b))))
 			     (cadr e))
@@ -2166,6 +2420,8 @@ procedure with such a body needs no machine."
   "Lambda E transformed, a --racket name marker kept first in the result's
 body.  SELF: the variable a letrec or definition binds to E, if E is a
 known procedure."
+  (multiple-value-bind (safe body) (safe-code-marker (caddr e))
+    (when safe (setq e (list (car e) (cadr e) body))))
   (multiple-value-bind (marker body) (racket-name-marker (caddr e))
     (let ((l (transform-lambda-1 (if marker (list (car e) (cadr e) body) e) self)))
       (labels ((named (l)
@@ -2670,7 +2926,7 @@ a procedure, of 350,000 conses, code past arm64's branch reach."
 	 (*top-level-downward* '())
 	 (*assumed-safe-variables* (make-hash-table :test 'eq))
 	 (original form)
-	 (form (guard-top-level-self-calls (guard-self-calls form))))
+	 (form (clone-parametric-procedures (guard-top-level-self-calls (guard-self-calls form)))))
     (setq *safe-procedures* (find-safe-procedures form))
     (multiple-value-setq (*downward-parameters* *downward-parameter-uses*) (find-downward-parameters))
     ;; the original's definitions: GUARD-SELF-CALLS made some others
@@ -2678,7 +2934,7 @@ a procedure, of 350,000 conses, code past arm64's branch reach."
 				 (find-top-level-downward original)))
     (setq form (note-downward-definitions form))
     (find-safe-locations form)
-    (cc-transform-1 (note-safe-definitions form))))
+    (cc-transform-1 (note-safe-definitions (mark-safe-lambdas form)))))
 
 (defun defined-lambda (value)
   "The lambda VALUE is, possibly under (%guile-with-meta lambda props)."
@@ -3426,7 +3682,22 @@ compiled on its own)."
   (setf (compiler-macro-function (location (sym "%safe-procedure")))
 	(lambda (form env) (declare (ignore env)) (if (and (not (eq (car form) 'funcall)) (= (length form) 2)) (cadr form) form)))
   (defhost "%note-frameless" (w f nargs) (setf (gethash w *frameless-entries*) (cons f nargs)) w)
-  (register-primitive-names '("%note-safe" "%parametric-call" "%note-frameless" "%safe-procedure"))
+  ;; (%note-safe-code lambda): its closure, its code noted safe the
+  ;; first time (MARK-SAFE-LAMBDAS); (%runtime-safe-procedure-p x): a
+  ;; parametric procedure's W's test
+  (defhost "%note-safe-code" (f) (note-safe-code f))
+  (setf (compiler-macro-function (location (sym "%note-safe-code")))
+	(lambda (form env)
+	  (declare (ignore env))
+	  (if (and (not (eq (car form) 'funcall)) (= (length form) 2))
+	      (let ((f (gensym "F")) (cell (gensym "CELL")))
+		`(let ((,f ,(cadr form)) (,cell (load-time-value (list nil))))
+		   (unless (car ,cell) (note-safe-code ,f) (setf (car ,cell) t))
+		   ,f))
+	      form)))
+  (defhost "%runtime-safe-procedure-p" (f) (qs:true? (runtime-safe-procedure-p f)))
+  (register-primitive-names '("%note-safe" "%parametric-call" "%note-frameless" "%safe-procedure"
+			      "%note-safe-code" "%runtime-safe-procedure-p"))
   (defhost "call-with-prompt" (tag thunk handler) (call-with-prompt tag thunk handler))
   (defhost "abort-to-prompt" (tag &rest values) (apply #'abort-to-prompt tag values))
   (defhost "%full-map" (f list &rest lists) (apply #'full-map f list lists))
