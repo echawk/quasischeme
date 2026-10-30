@@ -765,7 +765,10 @@ it.
 - **R6RS `guard`** re-raises in the dynamic environment of the `raise`
   (`%guard-reraise`). Escape-only, it re-raises from the guard's own
   context instead, which is one of the two R6RS tests that mode fails
-  (the other re-enters a `dynamic-wind`).
+  (the other re-enters a `dynamic-wind`). Its exit to the clauses is an
+  escape (`%escape-call/cc`), whose catch a re-entered body
+  re-establishes: entering a guard copies no frames, which in a deep
+  stack cost a copy of it per guard.
 
 ## Delimited continuations
 

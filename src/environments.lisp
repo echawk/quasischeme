@@ -156,7 +156,8 @@ built in rather than libraries: 0 (cond-expand), 22 (scheme-r5rs and
 the other script interpreters), 30 (#| |# comments), 46 (syntax-rules
 with a custom ellipsis), 62 (#; comments), 97 (R6RS names for SRFI
 libraries), 105 (curly infix), 138 (compile-r7rs) and 169 (underscores
-in numbers)."
+in numbers).  Not 262: withdrawn, its directory holds only the
+pattern matcher SRFI 275 uses (src/srfi/262/match.sls)."
   (let ((numbers (append '(0 22 30 46 62 97 105 138 169)
 			 (loop for path in (directory (merge-pathnames
 						       (make-pathname :name :wild :type "sld")
@@ -170,7 +171,7 @@ in numbers)."
 			       for n = (ignore-errors (parse-integer (car (last (pathname-directory dir)))))
 			       when n collect n))))
     (mapcar (lambda (n) (format nil "srfi-~D" n))
-	    (sort (remove-duplicates numbers) #'<))))
+	    (sort (remove 262 (remove-duplicates numbers)) #'<))))
 
 (defparameter *scheme-features*
   (remove-duplicates

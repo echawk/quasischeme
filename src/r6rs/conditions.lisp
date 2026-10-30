@@ -287,7 +287,9 @@ function (#f is a symbol) or as a type error expecting a function."
 			 (if (symbolp w) (qs:scheme-symbol-name w) w)))
 	      (if message (record-field message 0) "")
 	      (if irritants (record-field irritants 0) '())
-	      (and syntax (record-field syntax 0))
+	      (and syntax (let ((form (record-field syntax 0)))
+			    (or (ignore-errors (funcall (r6rs-global "psyntax:syntax->datum") form))
+				form)))
 	      (mapcar (lambda (s) (qs:scheme-symbol-name (rtd-name (record-rtd s)))) (components c))))
     t))
 

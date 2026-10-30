@@ -8,8 +8,9 @@
 # QUASISCHEME is the command-line program (default bin/quasischeme);
 # N ... the SRFIs to test (default: all).  Each test runs in a scratch
 # directory of its own (SRFI 64 writes a log file in the current one),
-# at most $SRFI_TEST_TIMEOUT seconds (default 120); a failure's output
-# is kept there, as N.out.
+# at most $SRFI_TEST_TIMEOUT seconds (default 120), or the seconds a
+# ";;; Timeout: S" line in the test gives; a failure's output is kept
+# there, as N.out.
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 ps=${1:-$root/bin/quasischeme}
@@ -43,10 +44,12 @@ for n in $numbers; do
     continue
   fi
   start=$(now)
+  own=$(sed -n 's/^;;; Timeout: \([0-9][0-9]*\)$/\1/p' "$root/src/srfi/tests/$n.scm" | head -1)
+  this_limit=${own:-$limit}
   # the test in the background, and a watchdog that kills it
   (cd "$work" && exec "$ps" "$root/src/srfi/tests/$n.scm") > "$work/$n.out" 2>&1 &
   pid=$!
-  (sleep "$limit"; kill -9 $pid 2>/dev/null) > /dev/null 2>&1 &
+  (sleep "$this_limit"; kill -9 $pid 2>/dev/null) > /dev/null 2>&1 &
   watchdog=$!
   wait $pid; code=$?
   kill $watchdog 2>/dev/null; wait $watchdog 2>/dev/null
@@ -60,7 +63,7 @@ for n in $numbers; do
     printf '%sok%s    %s%5ss  %s%s\n' "$green" "$off" "$dim" "$seconds" "$tally" "$off"
   else
     fail=$((fail+1)); failed="$failed $n"
-    case $code in 137) why="killed after ${limit}s" ;; *) why="exit $code" ;; esac
+    case $code in 137) why="killed after ${this_limit}s" ;; *) why="exit $code" ;; esac
     printf '%sFAIL%s  %s%5ss  %s%s  (%s; %s)\n' "$red" "$off" "$dim" "$seconds" "$tally" "$off" "$why" "$work/$n.out"
   fi
 done

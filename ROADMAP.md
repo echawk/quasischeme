@@ -12,7 +12,7 @@ The project was renamed from Pseudoscheme on 2026-10-18
 | 1.0 requirement | state |
 |---|---|
 | Every Revised Report, R1RS to R7RS | **done**: R7RS, R6RS, R5RS suites pass in full; R4RS, IEEE, R3RS, R2RS and the Revised Report have modes of their own, with all 993 of the reports' examples passing (docs/reports.md) |
-| All the SRFIs | **done**: every final, unwithdrawn SRFI through 274 (209 of them), with 122 test programs (`make test-srfi`) |
+| All the SRFIs | **done**: every final, unwithdrawn SRFI through 279 (217 of them), with 130 test programs (`make test-srfi`) |
 | Guile | **done in substance**: Guile 3.0's own boot-9, psyntax and modules; its test suite with 3 failures and 1 error left (docs/guile.md); `.go` files on a VM in Lisp; Guix computes the same `hello` derivation as real Guix; a libguile that LilyPond typesets on |
 | Chez | **done in substance**: 1257 of `(chezscheme)`'s 1715 names (the missing ones are mostly Chez's internals, docs/chez.md, "Not planned"); Chez's mats; Idris 2 bootstraps and compiles programs; the e editor starts and edits |
 | Emacs through SLY/Slynk and SLIME/Swank | **done** (docs/emacs.md) |

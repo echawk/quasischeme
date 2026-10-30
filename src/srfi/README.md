@@ -1,7 +1,7 @@
 # SRFIs
 
 The SRFI libraries that ship with Quasischeme: every final SRFI that
-hasn't been withdrawn, as of SRFI 274. Each `N.sld` is an R7RS
+hasn't been withdrawn, as of SRFI 279. Each `N.sld` is an R7RS
 `define-library` for `(srfi N)` (a few are R6RS `library` forms). psyntax finds them with no setup:
 `qsx:*system-library-path*` roots every name that starts with `srfi` here.
 That root is searched after the user's `qsx:*library-path*`, so a project
@@ -241,12 +241,14 @@ throughout:
 | 261 | The library system's names (`src/r7rs/front.lisp`) | Quasischeme's |
 | 263 | Daniel Ziltener's reference implementation, with fixes | MIT |
 | 264 | Sergei Egorov's sample implementation, on SRFI 115 | MIT |
+| 265 | Marc Nieper-Wißkirchen's R6RS sample implementation (`265.sls`, `265/`), its Chez variant of `syntax-types` beside the generic one | MIT |
 | 267 | Peter McGoron's sample implementation; the `#"X"..."X"` syntax in `src/read.scm` (not in Racket mode, where `#"..."` is a byte string) | MIT; Quasischeme's |
 | 269 | Quasischeme's, from the SRFI's text (the sample it points to is GPL); no runner of its own | Quasischeme's |
 | 270 | Peter McGoron's `write-hexadecimal-float`; hexadecimal floats in `string->number` | MIT; Quasischeme's |
 | 271 | Wolfgang Corcoran-Mathe's sample implementation; xoshiro256++ moved from Gauche classes to R6RS custom ports | MIT |
 | 273 | Artyom Bologov's sample implementation, on SRFI 253 | MIT |
 | 274 | Peter McGoron's sample implementation | MIT |
+| 275 | D. Guthrie's R6RS sample implementation (`275/`), on the `(srfi :262 match)` of Daphne Preston-Kendal's extensible-match (`262/`, its libraries renamed `(srfi :262 extensible-match ...)`; withdrawn SRFI 262 is not a feature); its `cset-elem` tests `char?` before `char-set-contains?` (it expected Chez's error for a non-character) | MIT; CC0 (extensible-match) |
 | 277 | Wolfgang Corcoran-Mathe's R6RS sample implementation, its definitions in an R7RS library | MIT |
 | 278 | Peter McGoron's sample implementation (on SRFIs 144 and 151) | MIT; BSD-3-Clause (its exact-integer-nth-root, from CHICKEN) |
 | 279 | Artyom Bologov's sample implementation, its portable branch, with stand-ins for the Chibi procedures it calls | MIT |

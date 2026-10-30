@@ -555,10 +555,11 @@ that identifier's symbol."
     (let ((c (qs-r7rs::uncaught-payload e)))
       (when (qs-r6rs::condition-p* c)
 	(let ((message (qs-r6rs::component-of c "&message"))
-	      (irritants (qs-r6rs::component-of c "&irritants")))
-	  (when (and message irritants
+	      (syntax (qs-r6rs::component-of c "&syntax")))
+	  (when (and message syntax
 		     (equal (qs-r6rs::record-field message 0) "unbound identifier"))
-	    (let ((form (first (qs-r6rs::record-field irritants 0))))
+	    (let ((form (funcall (qs-r6rs::r6rs-global "psyntax:syntax->datum")
+				 (qs-r6rs::record-field syntax 0))))
 	      (and (consp form) (symbolp (car form)) (car form)))))))))
 
 (defun scheme-bound-p (symbol environment)

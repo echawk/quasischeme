@@ -505,7 +505,7 @@
        (unless (and (id? id) (id? key))
          (assertion-violation 'lookup "not an identifier" (if (id? id) key id)))
        (let ((label (id->label id)) (key-label (property-key key)))
-         (unless label (error 'lookup "unbound identifier" (strip id '())))
+         (unless label (syntax-violation 'lookup "unbound identifier" id))
          (let loop ((label label))
            (let ((entry (hashtable-ref property-table label #f)))
              (cond
@@ -712,9 +712,10 @@
   (define-syntax stx-error
     (lambda (x)
       (syntax-case x ()
+        ;; QUASISCHEME: a syntax violation (R6RS 12.1), as in Chez
         ((_ stx)
-         (syntax (error 'expander "invalid syntax" (stx->datum stx))))
-        ((_ stx msg) (syntax (error 'expander msg (strip stx '())))))))
+         (syntax (syntax-violation 'expander "invalid syntax" stx)))
+        ((_ stx msg) (syntax (syntax-violation 'expander msg stx))))))
   
   ;;; when the rhs of a syntax definition is evaluated, it should be
   ;;; either a procedure, an identifier-syntax transformer or an
@@ -1216,6 +1217,10 @@
   ;;; back to re-raising from the guard's own context where that
   ;;; continuation can't be re-entered (escape-only continuations).  A
   ;;; normal return from the body returns its values' thunk directly.
+  ;;; The outer continuation is only called by the handler, which runs
+  ;;; only inside the body: %escape-call/cc's catch, which a continuation
+  ;;; captured in the body re-establishes when it's re-entered, instead
+  ;;; of a capture of the whole stack at every guard (src/continuations.lisp).
   (define guard-macro
     (lambda (x)
       (define (gen-clauses con outerk handlerk clause*) 
@@ -1246,7 +1251,7 @@
          (id? con)
          (let ((outerk (gensym)) (handlerk (gensym)))
            (bless
-             `((call/cc
+             `((%escape-call/cc
                  (lambda (,outerk)
                    (with-exception-handler
                      (lambda (,con)
@@ -1556,8 +1561,11 @@
                            tmp*)))
              (bless `(lambda (x)
                        (syntax-case x ,lits
+                         ;; QUASISCHEME: (syntax tmp #t) is a
+                         ;; syntax-rules template, which SRFI 149 extends
+                         ;; (see syntax-transformer).
                          ,@(map (lambda (pat tmp)
-                                  `(,pat (syntax ,tmp)))
+                                  `(,pat (syntax ,tmp #t)))
                                 pat* tmp*))))))))))
   
   (define quasiquote-macro
@@ -2402,9 +2410,10 @@
                              (gen-syntax src ls r maps ellipsis? #t)))
                  (values (gen-vector e ls lsnew) maps)))
               (_ (values `(quote ,e) maps)))))
-        ;; QUASISCHEME: SRFI 149: a pattern variable under more
-        ;; ellipses than in its pattern is repeated for the innermost
-        ;; excess ones, so it iterates in the outermost maps.  Other
+        ;; QUASISCHEME: SRFI 149: in a syntax-rules template, a pattern
+        ;; variable under more ellipses than in its pattern is repeated
+        ;; for the innermost excess ones, so it iterates in the outermost
+        ;; maps.  Other
         ;; expanders (and code written for them) iterate it in the
         ;; innermost; a template that has no meaning SRFI 149's way gets
         ;; that one (see the syntax transformer below).
@@ -2504,7 +2513,13 @@
                  (map regen (cdr x)))))))
         (lambda (e r mr)
           (syntax-match e ()
+            ;; QUASISCHEME: a syntax-case template iterates an excess
+            ;; pattern variable innermost, as Chez and Guile do: code
+            ;; written for them relies on it.
             ((_ x)
+             (let-values (((e maps) (gen-syntax e x r '() ellipsis? #f)))
+               (regen e)))
+            ((_ x srfi-149)
              ;; QUASISCHEME: SRFI 149's way, else the other (above)
              (let ((first (call-with-current-continuation
                            (lambda (k)
@@ -3500,6 +3515,11 @@
   ;;;     and  (#<library (foo)> #<library (bar)>)
   (define (parse-import-spec* imp*)
     (define imp-collector (make-collector))
+    (define (same-core-prim? l1 l2)
+      (let ((b1 (imported-label->binding l1)) (b2 (imported-label->binding l2)))
+        (and (pair? b1) (pair? b2)
+             (eq? (car b1) 'core-prim) (eq? (car b2) 'core-prim)
+             (eq? (cdr b1) (cdr b2)))))
     (define (merge-substs s subst)
       (define (insert-to-subst a subst)
         (let ((name (car a)) (label (cdr a)))
@@ -3508,6 +3528,16 @@
              (lambda (x)
                (cond
                  ((eq? (cdr x) label) subst)
+                 ;; QUASISCHEME: one binding, one of the labels a
+                 ;; define-property's (SRFI 213), whose properties the
+                 ;; other's lacks: that one's kept
+                 ((eq? (base-label (cdr x)) (base-label label))
+                  (if (eq? (cdr x) (base-label (cdr x)))
+                      (map (lambda (y) (if (eq? y x) a y)) subst)
+                      subst))
+                 ;; QUASISCHEME: two labels of one host primitive, as
+                 ;; (rnrs)'s string? and (scheme base)'s: one binding
+                 ((same-core-prim? (cdr x) label) subst)
                  (else
                   (error 'import
                      "two imports with different bindings"
@@ -4078,6 +4108,13 @@
                      global*
                      (cons (cons loc (binding-value b)) macro*))))
                (($rtd $module) (f (cdr r) (cons x env) global* macro*))
+               ;; QUASISCHEME: an imported binding a define-property
+               ;; gave a label of this library's (SRFI 213: SRFI 262's
+               ;; library gives quasiquote a pattern transformer and
+               ;; exports it): exported as it is, its properties kept
+               ;; under the new label
+               ((core-prim core-macro macro macro! global global-macro global-macro!)
+                (f (cdr r) (cons x env) global* macro*))
                ;; QUASISCHEME: a compile-time value: a global macro whose
                ;; value is ($ctv . value)
                (($ctv)
@@ -4118,8 +4155,11 @@
     (lambda (x . args)
       (unless (for-all string? args)
         (error 'syntax-error "invalid argument" args))
-      (error 'expander "invalid syntax"
-          (stx->datum x) (apply string-append args))))
+      ;; QUASISCHEME: a syntax violation (R6RS 12.1), as in Chez
+      (let ((msg (apply string-append args)))
+        (syntax-violation 'expander
+                          (if (string=? msg "") "invalid syntax" msg)
+                          x))))
   
   ;;; QUASISCHEME: a bare symbol is an identifier to the expander
   ;;; (id?), but not to identifier?: only a syntax object is.
