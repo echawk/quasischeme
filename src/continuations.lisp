@@ -1556,8 +1556,9 @@ that they are.")
   "Whether BODY refers to variable X only to call it, or to pass it to a
 downward parameter of a known procedure.  A reference inside a lambda
 counts only where the lambda can't outlive BODY's evaluation either: a
-procedure argument of one of *PROCEDURE-ARGUMENTS*, or a letrec-bound
-procedure that is itself only called."
+procedure argument of one of *PROCEDURE-ARGUMENTS*, one passed to a
+downward parameter, or a letrec-bound procedure that is itself only
+called."
   (labels ((ok (e)
 	     (cond ((eq e x) nil)	; a reference that isn't a call
 		   ((atom e) t)
@@ -1576,18 +1577,26 @@ procedure that is itself only called."
 		   ((and (symbolp (car e)) *downward-parameters* (gethash (car e) *downward-parameters*))
 		    (let ((flags (gethash (car e) *downward-parameters*)))
 		      (loop for a in (cdr e) for i from 0
-			    always (if (eq a x)
-				       (and (nth i flags)
-					    (note-downward-uses (and *downward-parameter-uses*
-								    (nth i (gethash (car e) *downward-parameter-uses*)))))
-				       (ok a)))))
+			    always (cond ((eq a x)
+					  (and (nth i flags)
+					       (note-downward-uses (and *downward-parameter-uses*
+								       (nth i (gethash (car e) *downward-parameter-uses*))))))
+					 ;; a lambda only called in the call's extent
+					 ((and (nth i flags) (lambda-form-p a) (occurs-p x a))
+					  (and (ok (caddr a))
+					       (note-downward-uses (and *downward-parameter-uses*
+								       (nth i (gethash (car e) *downward-parameter-uses*))))))
+					 (t (ok a))))))
 		   ((and (consp (car e)) (listp (cdr e)) (operator-downward-flags (car e)))
 		    (let ((flags (operator-downward-flags (car e))))
 		      (and (ok (car e))
 			   (loop for a in (cdr e) for i from 0
-				 always (if (eq a x)
-					    (and (nth i flags) (note-downward-uses (list (cons (car e) i))))
-					    (ok a))))))
+				 always (cond ((eq a x)
+					       (and (nth i flags) (note-downward-uses (list (cons (car e) i)))))
+					      ;; a lambda only called in the call's extent
+					      ((and (nth i flags) (lambda-form-p a) (occurs-p x a))
+					       (and (ok (caddr a)) (note-downward-uses (list (cons (car e) i)))))
+					      (t (ok a)))))))
 		   ((procedure-positions e)
 		    (let ((positions (procedure-positions e)))
 		      (and (ok (car e))
