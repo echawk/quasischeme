@@ -220,7 +220,9 @@ are made read-only, as Guile's compiler makes them.")
 name and behaviour: a primcall of one compiles to a call of the host's.")
 
 (defparameter *primcall-renames*
-  '(("call/cc" . "call-with-current-continuation") ("abort-to-prompt*" . "%guile-abort*"))
+  '(("call/cc" . "call-with-current-continuation") ("abort-to-prompt*" . "%guile-abort*")
+    ("struct-ref" . "%guile-struct-ref") ("struct-set!" . "%guile-struct-set!")
+    ("struct-vtable" . "%guile-struct-vtable"))
   "Guile primitives whose host procedure has another name.")
 
 (defun primitive-operator (name)
@@ -276,7 +278,9 @@ references to these."
     ("cdddr" 1 1) ("cadddr" 1 1) ("pair?" 1 1) ("vector?" 1 1) ("string?" 1 1)
     ("procedure?" 1 1) ("symbol?" 1 1) ("char?" 1 1) ("number?" 1 1) ("integer?" 1 1) ("zero?" 1 1)
     ("null?" 1 1) ("not" 1 1) ("vector-length" 1 1) ("string-length" 1 1)
-    ("cons" 2 2) ("eq?" 2 2) ("eqv?" 2 2) ("equal?" 2 2) ("vector-ref" 2 2) ("string-ref" 2 2)
+    ("cons" 2 2) ("eq?" 2 2) ("eqv?" 2 2) ("equal?" 2 2)
+    ("make-struct/simple" 1 nil) ("make-struct/no-tail" 1 nil)
+    ("struct-ref" 2 2) ("struct-set!" 3 3) ("struct-vtable" 1 1) ("vector-ref" 2 2) ("string-ref" 2 2)
     ("set-car!" 2 2) ("set-cdr!" 2 2) ("char=?" 2 2) ("vector-set!" 3 3)
     ("memq" 2 2) ("memv" 2 2) ("length" 1 1) ("append" 2 nil) ("list" 0 nil)
     ;; the host's, which the continuation transformation sees: an escape
@@ -328,6 +332,12 @@ calls, if F is a reference to the root module's variable of a primitive in
 	;; exact 0 minus a flonum zero is -0.0 in Guile's (see "-" in runtime.lisp)
 	(list (core "%guile-sub2") (compile-tree-il (first args)) (compile-tree-il (second args)))
 	(let ((helper (cdr (assoc string '(("<" . "%guile-<") (">" . "%guile->") ("<=" . "%guile-<=")
+					   ;; a record's constructor (MAKE-STRUCT-FORM)
+					   ("make-struct/simple" . "%guile-make-struct/simple")
+					   ("make-struct/no-tail" . "%guile-make-struct/no-tail")
+					   ;; a record's accessors' (inline, *GUILE-INLINE-PRIMITIVES*)
+					   ("struct-ref" . "%guile-struct-ref") ("struct-set!" . "%guile-struct-set!")
+					   ("struct-vtable" . "%guile-struct-vtable")
 					   (">=" . "%guile->=") ("=" . "%guile-=")
 					   ("null?" . "%guile-null?") ("not" . "%guile-not")
 					   ("symbol?" . "%guile-symbol?"))
@@ -1211,6 +1221,17 @@ is (%guile-set! 'site value) or defines the same variable
 	(progn (dolist (x list) (funcall f x)) *unspecified*)
 	(funcall (root-value "for-each") f list)))
   ;; the variable's procedure's F for NARGS arguments, else the procedure
+  ;; the root's struct-ref, struct-set! and struct-vtable, under the names
+  ;; the compiler calls them by (their inline cases: a record's field)
+  (loop for (host . name) in '(("%guile-struct-ref" . "struct-ref") ("%guile-struct-set!" . "struct-set!")
+				("%guile-struct-vtable" . "struct-vtable"))
+	do (qsx:host-set! host (gethash name *guile-primitives*)))
+  (qsx:defhost "%guile-make-struct/simple" (vtable &rest inits)
+    (declare (dynamic-extent inits))
+    (make-record-struct vtable inits "make-struct/simple"))
+  (qsx:defhost "%guile-make-struct/no-tail" (vtable &rest inits)
+    (declare (dynamic-extent inits))
+    (make-record-struct vtable inits "make-struct/no-tail"))
   (qsx:defhost "%guile-safe-f" (site nargs)
     (let ((v (site-variable site)))
       (if (= (gvariable-safe-nargs v) nargs) (gvariable-safe-f v) (gvariable-value v))))
@@ -1308,7 +1329,7 @@ is (%guile-set! 'site value) or defines the same variable
    '("%guile-append2" "%guile-nil:memq" "%guile-nil:memv" "%guile-nil:assq" "%guile-nil:assv"
      "%guile-nil:length" "%guile-nil:list?" "%guile-nil:reverse" "%guile-nil:last-pair"
      "%guile-nil:append"
-     "%guile-ref" "%guile-safe-f" "%guile-parametric-p" "%guile-parametric-f" "%guile-note-parametric" "%guile-holds-p" "%guile-holds-map-p" "%guile-holds-for-each-p" "%guile-map1" "%guile-for-each1" "%guile-safe-ref-p" "%guile-downward-p" "%guile-note-guarded" "%guile-sub2" "%guile-<" "%guile->" "%guile-<=" "%guile->=" "%guile-=" "%guile-null?" "%guile-symbol?" "%guile-not" "%guile-true" "%guile-set!" "%guile-define!" "%guile-unsupported" "%guile-arity-error"
+     "%guile-ref" "%guile-struct-ref" "%guile-struct-set!" "%guile-struct-vtable" "%guile-make-struct/simple" "%guile-make-struct/no-tail" "%guile-safe-f" "%guile-parametric-p" "%guile-parametric-f" "%guile-note-parametric" "%guile-holds-p" "%guile-holds-map-p" "%guile-holds-for-each-p" "%guile-map1" "%guile-for-each1" "%guile-safe-ref-p" "%guile-downward-p" "%guile-note-guarded" "%guile-sub2" "%guile-<" "%guile->" "%guile-<=" "%guile->=" "%guile-=" "%guile-null?" "%guile-symbol?" "%guile-not" "%guile-true" "%guile-set!" "%guile-define!" "%guile-unsupported" "%guile-arity-error"
      "%guile-with-meta" "%guile-inline"
      "%guile-nargs>=" "%guile-nargs-between" "%guile-keywords-fit?" "%guile-positional?" "%guile-check-no-more"
      "%guile-check-keywords" "%guile-keyword-ref")))
@@ -1336,6 +1357,12 @@ is (%guile-set! 'site value) or defines the same variable
 	       (load-time-value qs:true t)
 	       (load-time-value qs:false t))
 	   :call)))
+    ;; a record's field in range, and its vtable: as the root's do first
+    ("%guile-struct-ref" (s i)
+     (if (and (grecord-p s) (typep i 'fixnum) (< -1 i (grecord-field-count s))) (grecord-ref s i) :call))
+    ("%guile-struct-set!" (s i v)
+     (if (and (grecord-p s) (typep i 'fixnum) (< -1 i (grecord-field-count s))) (setf (grecord-ref s i) v) :call))
+    ("%guile-struct-vtable" (s) (if (grecord-p s) (grecord-vtable s) :call))
     ("%guile-safe-f" (s nargs)
      (let ((v (sb-ext:truly-the gvariable (site-variable (sb-ext:truly-the site s)))))
        (if (= (gvariable-safe-nargs v) nargs) (gvariable-safe-f v) (gvariable-value v))))
@@ -1383,7 +1410,34 @@ is (%guile-set! 'site value) or defines the same variable
     ("%guile-true" (x) (if (eq x (load-time-value *elisp-nil* t)) qs:false x)))
   "(name lambda-list body), as in QSX::*INLINE-PRIMITIVES*.")
 
+(defun make-struct-form (global vtable inits)
+  "A record's constructor, (make-struct/simple vtable init ...): the record
+made in line, of a size known here (MAKE-RECORD-STRUCT's, which allocates
+one it finds), if VTABLE's is a plain vtable of as many fields; else
+GLOBAL's call."
+  (let* ((n (length inits))
+	 (vt (gensym "VTABLE"))
+	 (vars (loop repeat n collect (gensym "INIT")))
+	 (x (gensym "RECORD")))
+    `(let ((,vt ,vtable) ,@(mapcar #'list vars inits))
+       (if (and (vtable-p ,vt) (plain-vtable-p ,vt) (= (vtable-nfields ,vt) ,n)
+		(not (logtest (vtable-flags ,vt) (logior +vtable-flag-vtable+ +vtable-flag-applicable+ 512))))
+	   (let ((,x (sb-kernel:%new-instance (load-time-value (sb-kernel:find-layout 'grecord) t)
+					      ,(+ +grecord-fields-start+ n))))
+	     (setf (sb-kernel:%instance-ref ,x sb-vm:instance-data-start) ,vt)
+	     ,@(loop for v in vars for i from 0 collect `(setf (grecord-ref ,x ,i) ,v))
+	     ,x)
+	   (funcall #',global ,vt ,@vars)))))
+
 (defun install-guile-inline-primitives ()
+  (dolist (name '("%guile-make-struct/simple" "%guile-make-struct/no-tail"))
+    (let ((global (qsx:location (ssym name))))
+      (setf (compiler-macro-function global)
+	    (lambda (form env)
+	      (declare (ignore env))
+	      (if (and (not (eq (car form) 'funcall)) (<= 2 (length form) 33))
+		  (make-struct-form global (cadr form) (cddr form))
+		  form)))))
   (loop for (name params body) in *guile-inline-primitives*
 	for global = (qsx:location (ssym name))
 	do (setf (get global 'qsx::inline-primitive) t)
