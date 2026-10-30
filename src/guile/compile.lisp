@@ -276,7 +276,7 @@ references to these."
     ("cdddr" 1 1) ("cadddr" 1 1) ("pair?" 1 1) ("vector?" 1 1) ("string?" 1 1)
     ("procedure?" 1 1) ("symbol?" 1 1) ("char?" 1 1) ("number?" 1 1) ("integer?" 1 1) ("zero?" 1 1)
     ("null?" 1 1) ("not" 1 1) ("vector-length" 1 1) ("string-length" 1 1)
-    ("cons" 2 2) ("eq?" 2 2) ("eqv?" 2 2) ("vector-ref" 2 2) ("string-ref" 2 2)
+    ("cons" 2 2) ("eq?" 2 2) ("eqv?" 2 2) ("equal?" 2 2) ("vector-ref" 2 2) ("string-ref" 2 2)
     ("set-car!" 2 2) ("set-cdr!" 2 2) ("char=?" 2 2) ("vector-set!" 3 3)
     ("memq" 2 2) ("memv" 2 2) ("length" 1 1) ("append" 2 nil) ("list" 0 nil)
     ;; the host's, which the continuation transformation sees: an escape
@@ -905,6 +905,20 @@ a procedure that can't (%guile-note-guarded).")
   "The variables GVARIABLE-SAFE-P-SLOWLY is judging: one met again is
 taken as safe (procedures that call each other, each guarded).")
 
+(defun guard-site-holds-p (site)
+  "Whether a guarded procedure's guard (%guile-note-guarded's) holds: SITE's
+variable holds a safe procedure; (site . name), a fast NAME
+(FAST-LIST-PROCEDURES); (site :parametric mask nargs), a procedure a call
+passing safe procedures in MASK's positions calls frameless
+(SITE-PARAMETRIC)."
+  (cond ((atom site) (let ((w (resolve-site-for-guard site))) (and w (gvariable-safe-p w))))
+	((stringp (cdr site))
+	 (let ((w (resolve-site-for-guard (car site))))
+	   (and w (member (gvariable-value w) (fast-list-procedures (cdr site)) :test #'eq))))
+	(t (destructuring-bind (s kind mask nargs) site
+	     (declare (ignore kind))
+	     (site-parametric-p s mask nargs)))))
+
 (defun gvariable-safe-p-slowly (v x)
   (let ((epoch *procedure-epoch*))
     (if (member v *safety-in-progress* :test #'eq)
@@ -916,18 +930,14 @@ taken as safe (procedures that call each other, each guarded).")
 			     (let ((sites (gethash x *guarded-procedures*)))
 			       (and sites
 				    (let ((*safety-in-progress* (cons v *safety-in-progress*)))
-				      (every (lambda (site)
-					       (if (consp site)
-						   ;; (site . name): holding a fast NAME
-						   (let ((w (resolve-site-for-guard (car site))))
-						     (and w (member (gvariable-value w) (fast-list-procedures (cdr site))
-								    :test #'eq)))
-						   (let ((w (resolve-site-for-guard site)))
-						     (and w (gvariable-safe-p w)))))
-					     sites)))))
+				      (every #'guard-site-holds-p sites)))))
 			 t)))
 	  ;; kept only if nothing changed meanwhile, and not while judging a
 	  ;; cycle (what it found assumed something)
+	  ;; what to call, for the call this check precedes, always
+	  (let ((entry (and safe (gethash x qsx::*frameless-entries*))))
+	    (setf (gvariable-safe-f v) (if entry (car entry) x)
+		  (gvariable-safe-nargs v) (if entry (cdr entry) -1)))
 	  (when (and (null *safety-in-progress*) (= epoch *procedure-epoch*))
 	    (setf (gvariable-safe v) safe (gvariable-safe-for v) x (gvariable-safe-epoch v) epoch))
 	  safe))))
@@ -942,6 +952,79 @@ procedure-valued variable has changed since, else found again."
     (if (and (eq x (gvariable-safe-for v)) (= (gvariable-safe-epoch v) *procedure-epoch*))
 	(gvariable-safe v)
 	(gvariable-safe-p-slowly v x))))
+
+;;; Parametric procedures (src/continuations.lisp, GUARD-DEFINITION): a
+;;; top-level procedure that calls procedures passed to it is recorded
+;;; with an F that is frameless while they're safe; a call passing safe
+;;; procedures in its positions calls F, found and kept on the variable.
+
+(defvar *parametric-procedures* (make-hash-table :test 'eq :weakness :key :synchronized t)
+  "A parametric procedure (its M) -> (F mask nargs guards): F frameless
+given safe procedures in MASK's positions (a bit each) and NARGS
+arguments, while its GUARDS hold (GUARD-SITE-HOLDS-P).")
+
+(defun parametric-of (v)
+  "What variable V's procedure is to a call passing safe procedures: (values
+F mask nargs), F the procedure itself (mask 0, nargs -1) if it's safe,
+its parametric F if its guards hold, else NIL (mask -1).  Kept on V
+(GVARIABLE-PARAMETRIC-FOR) as GVARIABLE-SAFE-P keeps its answer; F
+always, for the call the check precedes."
+  (let ((x (gvariable-value v))
+	(epoch *procedure-epoch*))
+    (multiple-value-bind (f mask nargs)
+	(cond ((member v *safety-in-progress* :test #'eq) (values nil 0 -1)) ; a cycle, as there
+	      ((gvariable-safe-p v) (values (gvariable-safe-f v) 0 (gvariable-safe-nargs v)))
+	      (t (let ((entry (and (functionp x) (gethash x *parametric-procedures*))))
+		   (if (and entry
+			    (let ((*safety-in-progress* (cons v *safety-in-progress*)))
+			      (every #'guard-site-holds-p (fourth entry))))
+		       (values (first entry) (second entry) (third entry))
+		       (values nil -1 -1)))))
+      (setf (gvariable-parametric-f v) f (gvariable-parametric-mask v) mask
+	    (gvariable-parametric-nargs v) nargs)
+      (when (and (null *safety-in-progress*) (= epoch *procedure-epoch*))
+	(setf (gvariable-parametric-for v) x (gvariable-parametric-epoch v) epoch))
+      (values f mask nargs))))
+
+(defun site-parametric-p (site needs nargs)
+  "Whether a call of SITE's variable passing safe procedures in NEEDS's
+positions (a bit each) and NARGS arguments can call its PARAMETRIC-OF."
+  (let ((v (resolve-site-for-guard site)))
+    (and v
+	 (multiple-value-bind (f mask n) (parametric-of v)
+	   (declare (ignore f))
+	   (and (/= mask -1) (zerop (logandc2 mask needs)) (or (= n -1) (= n nargs)))))))
+
+(defun position-bits (positions) (reduce #'logior positions :key (lambda (i) (ash 1 i)) :initial-value 0))
+
+(defun parametric-check-form (operator positions nargs)
+  "For QSX::*PARAMETRIC-CHECK-HOOK*: ((%guile-parametric-p 'site 'bits
+'nargs) . (%guile-parametric-f 'site)) if OPERATOR is (%guile-ref 'site),
+a variable not holding a primitive."
+  (and (reference-site operator) (not (safe-operator-form-p operator))
+       (< (reduce #'max positions) 62)
+       (cons (list (core "%guile-parametric-p") (cadr operator) (quoted (position-bits positions)) (quoted nargs))
+	     (list (core "%guile-parametric-f") (cadr operator)))))
+
+(defun parametric-mask-of (operator)
+  "For QSX::*PARAMETRIC-MASK-HOOK*: the positions the parametric procedure
+OPERATOR's variable holds now needs safe procedures in."
+  (let* ((site (reference-site operator))
+	 (v (and site (ignore-errors (known-site-variable site))))
+	 (entry (and v (gethash (gvariable-value v) *parametric-procedures*))))
+    (and entry (loop for i below 62 when (logbitp i (second entry)) collect i))))
+
+(defun guard-site-entry (check)
+  "The GUARD-SITE-HOLDS-P entry of a guarded procedure's CHECK."
+  (cond ((eq (car check) (core "%guile-parametric-p"))
+	 (list (cadr (cadr check)) :parametric (cadr (caddr check)) (cadr (cadddr check))))
+	((guarded-calling-check-name check) (cons (cadr (cadr check)) (guarded-calling-check-name check)))
+	(t (cadr (cadr check)))))
+
+(defun parametric-note-form (w f positions nargs checks)
+  "For QSX::*PARAMETRIC-NOTE-HOOK*."
+  (list (core "%guile-note-parametric") w f (quoted (position-bits positions)) (quoted nargs)
+	(quoted (mapcar #'guard-site-entry checks))))
 
 ;;; Downward parameters across top-level definitions (src/continuations.lisp,
 ;;; *DOWNWARD-FUNCTIONS*): what a call/cc's escape-only continuation
@@ -1003,11 +1086,7 @@ sites of CHECKS, its guards: GUARD-REFERENCE-FORM's, a site whose
 variable must hold a safe procedure, and GUARDED-CALLING-FORM's, (site .
 name), one that must hold the root's procedure NAME."
   (list (core "%guile-note-guarded") value
-	(list (core "quote")
-	      (mapcar (lambda (c)
-			(let ((name (guarded-calling-check-name c)))
-			  (if name (cons (cadr (cadr c)) name) (cadr (cadr c)))))
-		      checks))))
+	(list (core "quote") (mapcar #'guard-site-entry checks))))
 
 (defun resolve-site-for-guard (site)
   "SITE's variable, found now if it's a top-level one not yet referenced
@@ -1057,6 +1136,10 @@ one of FAST-LIST-PROCEDURES' maps, and NARGS is 2; for-each's likewise."
   "The procedure's name of a GUARDED-CALLING-FORM's CHECK, or NIL."
   (car (find (car check) *guarded-calling-procedures* :key (lambda (p) (core (third p))))))
 
+(defun safe-entry-form (operator nargs)
+  "For QSX::*SAFE-ENTRY-HOOK*: (%guile-safe-f 'site 'nargs)."
+  (and (reference-site operator) (list (core "%guile-safe-f") (cadr operator) (quoted nargs))))
+
 (defun safe-operator-form-p (form)
   "(%guile-ref 'site), SITE being a SAFE-SITE-P."
   (and (consp form) (eq (car form) (core "%guile-ref"))
@@ -1091,6 +1174,10 @@ is (%guile-set! 'site value) or defines the same variable
 	qsx::*guard-reference-hook* 'guard-reference-form
 	qsx::*self-test-hook* 'self-test-form
 	qsx::*guard-calling-hook* 'guarded-calling-form
+	qsx::*parametric-check-hook* 'parametric-check-form
+	qsx::*safe-entry-hook* 'safe-entry-form
+	qsx::*parametric-mask-hook* 'parametric-mask-of
+	qsx::*parametric-note-hook* 'parametric-note-form
 	qsx::*guarded-note-hook* 'guarded-note-form
 	qsx::*downward-operator-hook* 'downward-operator-flags
 	qsx::*downward-datum-hook* 'reference-site
@@ -1123,6 +1210,15 @@ is (%guile-set! 'site value) or defines the same variable
     (if (and (functionp f) (proper-list-p list))
 	(progn (dolist (x list) (funcall f x)) *unspecified*)
 	(funcall (root-value "for-each") f list)))
+  ;; the variable's procedure's F for NARGS arguments, else the procedure
+  (qsx:defhost "%guile-safe-f" (site nargs)
+    (let ((v (site-variable site)))
+      (if (= (gvariable-safe-nargs v) nargs) (gvariable-safe-f v) (gvariable-value v))))
+  (qsx:defhost "%guile-parametric-p" (site needs nargs) (bool (site-parametric-p site needs nargs)))
+  (qsx:defhost "%guile-parametric-f" (site) (gvariable-parametric-f (site-variable site)))
+  (qsx:defhost "%guile-note-parametric" (w f mask nargs guards)
+    (setf (gethash w *parametric-procedures*) (list f mask nargs guards))
+    w)
   (qsx:defhost "%guile-holds-p" (site f)
     (let ((v (resolve-site-for-guard site)))
       (bool (and v (eq (gvariable-value v) f)))))
@@ -1212,7 +1308,7 @@ is (%guile-set! 'site value) or defines the same variable
    '("%guile-append2" "%guile-nil:memq" "%guile-nil:memv" "%guile-nil:assq" "%guile-nil:assv"
      "%guile-nil:length" "%guile-nil:list?" "%guile-nil:reverse" "%guile-nil:last-pair"
      "%guile-nil:append"
-     "%guile-ref" "%guile-holds-p" "%guile-holds-map-p" "%guile-holds-for-each-p" "%guile-map1" "%guile-for-each1" "%guile-safe-ref-p" "%guile-downward-p" "%guile-note-guarded" "%guile-sub2" "%guile-<" "%guile->" "%guile-<=" "%guile->=" "%guile-=" "%guile-null?" "%guile-symbol?" "%guile-not" "%guile-true" "%guile-set!" "%guile-define!" "%guile-unsupported" "%guile-arity-error"
+     "%guile-ref" "%guile-safe-f" "%guile-parametric-p" "%guile-parametric-f" "%guile-note-parametric" "%guile-holds-p" "%guile-holds-map-p" "%guile-holds-for-each-p" "%guile-map1" "%guile-for-each1" "%guile-safe-ref-p" "%guile-downward-p" "%guile-note-guarded" "%guile-sub2" "%guile-<" "%guile->" "%guile-<=" "%guile->=" "%guile-=" "%guile-null?" "%guile-symbol?" "%guile-not" "%guile-true" "%guile-set!" "%guile-define!" "%guile-unsupported" "%guile-arity-error"
      "%guile-with-meta" "%guile-inline"
      "%guile-nargs>=" "%guile-nargs-between" "%guile-keywords-fit?" "%guile-positional?" "%guile-check-no-more"
      "%guile-check-keywords" "%guile-keyword-ref")))
@@ -1231,6 +1327,20 @@ is (%guile-set! 'site value) or defines the same variable
 	   (let ((value (gvariable-value (sb-ext:truly-the gvariable v))))
 	     (if (eq value **unbound**) :call value))
 	   :call)))
+    ("%guile-parametric-p" (s needs nargs)
+     (let ((v (site-variable (sb-ext:truly-the site s))))
+       (if (and v (eq (gvariable-value (sb-ext:truly-the gvariable v)) (gvariable-parametric-for v))
+		(= (gvariable-parametric-epoch v) *procedure-epoch*))
+	   (if (and (zerop (logandc2 (gvariable-parametric-mask v) needs))
+		    (let ((n (gvariable-parametric-nargs v))) (or (= n -1) (= n nargs))))
+	       (load-time-value qs:true t)
+	       (load-time-value qs:false t))
+	   :call)))
+    ("%guile-safe-f" (s nargs)
+     (let ((v (sb-ext:truly-the gvariable (site-variable (sb-ext:truly-the site s)))))
+       (if (= (gvariable-safe-nargs v) nargs) (gvariable-safe-f v) (gvariable-value v))))
+    ("%guile-parametric-f" (s)
+     (gvariable-parametric-f (sb-ext:truly-the gvariable (site-variable (sb-ext:truly-the site s)))))
     ("%guile-holds-p" (s f)
      (let ((v (site-variable (sb-ext:truly-the site s))))
        (if v

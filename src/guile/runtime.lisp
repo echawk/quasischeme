@@ -469,11 +469,25 @@ variable stands while this hasn't changed.")
   (safe-for +unbound+)
   (safe-epoch -1 :type fixnum)
   (safe nil)
+  ;; what a call that finds it safe calls: its F, if it's a guarded W
+  ;; (QSX::*FRAMELESS-ENTRIES*), else the procedure
+  (safe-f nil)
+  (safe-nargs -1 :type fixnum)
   ;; the positions of DOWNWARD-FOR's parameters found downward in
   ;; DOWNWARD-EPOCH, a bit each (SITE-DOWNWARD-P)
   (downward-for +unbound+)
   (downward-epoch -1 :type fixnum)
-  (downward 0 :type fixnum))
+  (downward 0 :type fixnum)
+  ;; what a call passing safe procedures calls for PARAMETRIC-FOR, as
+  ;; found in PARAMETRIC-EPOCH (SITE-PARAMETRIC-P): the procedure itself
+  ;; if it's safe, else its parametric F, which needs safe procedures in
+  ;; PARAMETRIC-MASK's positions and PARAMETRIC-NARGS arguments (-1: any;
+  ;; a mask of -1, neither)
+  (parametric-for +unbound+)
+  (parametric-epoch -1 :type fixnum)
+  (parametric-f nil)
+  (parametric-mask -1 :type fixnum)
+  (parametric-nargs -1 :type fixnum))
 
 (declaim (inline gvariable-value))
 (defun gvariable-value (v) (gvariable-%value v))

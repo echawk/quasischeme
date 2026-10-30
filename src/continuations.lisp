@@ -1201,7 +1201,7 @@ run a little faster in code that calls unknown procedures in loops.")
     "call-with-values" "map" "for-each" "%full-call/cc" "%full-dynamic-wind" "%full-call-with-values"
     "%full-map" "%full-for-each" "%call-with-frame"
     "%full-vector-map" "%full-vector-for-each" "%full-string-map" "%full-string-for-each"
-    "%escape-call/cc" "%guarded-escape-call/cc" "call-with-prompt" "abort-to-prompt"
+    "%escape-call/cc" "%guarded-escape-call/cc" "%parametric-call" "call-with-prompt" "abort-to-prompt"
     "vector-map" "vector-for-each" "string-map" "string-for-each"
     "with-exception-handler" "raise" "raise-continuable" "force"
     "call-with-port" "call-with-input-file" "call-with-output-file"
@@ -1277,6 +1277,10 @@ primitive's name (psyntax renames everything else), or (primitive x)."
 	   (when (and (> (length name) 9) (string= name "%builtin:" :end1 9))
 	     (setq name (subseq name 9)))
 	   (and (gethash name (primitive-names)) name)))))
+
+(defvar *assumed-safe-variables* nil
+  "NIL, or a hash table of the variables, a parametric F's parameters,
+taken to hold safe procedures (callers check it: %parametric-call).")
 
 (defvar *known-procedures* nil
   "A hash table of the lexical variables, in the top-level form being
@@ -1393,6 +1397,7 @@ can't capture, as SAFE-LOCATION-P."
 are Lisp symbols are the transformation's own, or the translator's."
   (cond ((and (symbolp operator) (not (scheme-symbol-p operator))) nil)
 	((and *safe-procedures* (symbolp operator) (gethash operator *safe-procedures*)) nil)
+	((and *assumed-safe-variables* (symbolp operator) (gethash operator *assumed-safe-variables*)) nil)
 	((safe-location-p operator) nil)
 	((safe-operator-p operator) nil)
 	(t (let ((name (primitive-name operator)))
@@ -1841,6 +1846,7 @@ whose body can't capture."
 	((and (consp e) (consp (cdr e)) (equal (primitive-name (car e)) "%cp-dx"))
 	 (safe-procedure-p (cadr e)))
 	((and *safe-procedures* (symbolp e) (gethash e *safe-procedures*)) t)
+	((and *assumed-safe-variables* (symbolp e) (gethash e *assumed-safe-variables*)) t)
 	((safe-location-p e) t)
 	((safe-operator-p e) t)
 	((or (scheme-symbol-p e) (and (consp e) (keyword-p (car e) "PRIMITIVE")))
@@ -1848,7 +1854,14 @@ whose body can't capture."
 	   (and name (not (member name *calling-primitives* :test #'string=)))))))
 
 (defun safe-primitive-call-p (call)
-  "Whether CALL is to one of *PROCEDURE-ARGUMENTS* with safe procedures."
+  "Whether CALL is to one of *PROCEDURE-ARGUMENTS* with safe procedures,
+or a %parametric-call with safe procedures in its positions."
+  (when (and (equal (primitive-name (car call)) "%parametric-call")
+	     (consp (cdr call)) (quote-form-p (cadr call)) (consp (cddr call)))
+    (return-from safe-primitive-call-p
+      (let ((args (cdddr call)))
+	(every (lambda (i) (let ((a (nthcdr i args))) (and a (safe-procedure-p (car a)))))
+	       (cadr (cadr call))))))
   (let* ((name (primitive-name (car call)))
 	 (positions (and name (cdr (assoc name *procedure-arguments* :test #'string=)))))
     (and positions
@@ -2642,6 +2655,7 @@ a procedure, of 350,000 conses, code past arm64's branch reach."
 	 (*downward-parameters* nil)
 	 (*downward-parameter-uses* nil)
 	 (*top-level-downward* '())
+	 (*assumed-safe-variables* (make-hash-table :test 'eq))
 	 (original form)
 	 (form (guard-top-level-self-calls (guard-self-calls form))))
     (setq *safe-procedures* (find-safe-procedures form))
@@ -2753,6 +2767,37 @@ does (Guile mode's map: %guile-map1); else NIL.  In a guarded F, such a
 call passing it safe procedures (lambdas, safe operators, the procedure
 itself) is NAME's call while CHECK holds: no frame for each call of the
 procedure.")
+
+(defvar *safe-entry-hook* nil
+  "NIL, or a function of an operator form *GUARD-REFERENCE-HOOK* guards
+and an argument count: a form, once its guard holds, for what to call
+frameless with that many arguments: the variable's
+procedure's F if it is a guarded W (%note-frameless), else the
+procedure.  W's tests hold then (its guards are what made it safe), and
+no stack limit can be in force in a frameless extent.")
+
+(defvar *frameless-entries* (make-hash-table :test (quote eq) :weakness :key :synchronized t)
+  "A guarded definition's W -> (F . its argument count) (%note-frameless).")
+
+(defvar *parametric-check-hook* nil
+  "NIL, or a function of an operator form, a list of argument positions
+and an argument count: (CHECK . GETTER) if the operator reads a
+top-level variable (Guile mode's (%guile-ref 'site)), CHECK a form true
+while it holds a procedure that can't capture, or one recorded
+parametric (*PARAMETRIC-NOTE-HOOK*) whose positions are among those and
+which takes that many arguments, GETTER a form for its frameless F (or
+the safe procedure itself) once CHECK is true; else NIL.")
+
+(defvar *parametric-mask-hook* nil
+  "NIL, or a function of an operator form: the positions a parametric
+procedure the operator's variable holds now needs safe procedures in,
+or NIL.  Only for finding a parametric procedure's own positions.")
+
+(defvar *parametric-note-hook* nil
+  "NIL, or a function of a definition's procedure W (a form), its F, F's
+positions, its argument count and its guards: a form that records W as
+parametric (W is M, F frameless given safe procedures in the positions)
+and returns W.")
 
 (defvar *guarded-note-hook* nil
   "With *GUARD-REFERENCE-HOOK*: a function of a guarded definition's W (a
@@ -2882,11 +2927,88 @@ and inert primitives (with lambdas applied in place: lets)."
 	      (let ((positions (cdr (assoc (cdr hook) *procedure-arguments* :test #'string=))))
 		(and positions
 		     (every (lambda (i)
+			      ;; a lexical variable too (a local procedure): F's
+			      ;; analysis keeps F only if it's safe
 			      (let ((a (nth i (cdr e))))
-				(or (lambda-form-p a) (safe-operator-p a)
+				(or (lambda-form-p a) (safe-operator-p a) (scheme-symbol-p a)
 				    (eq (funcall *self-reference-hook* a definition) :reads))))
 			    positions)
 		     hook))))))
+
+(defun assigned-variables (e)
+  "The variables E assigns (set!)."
+  (let ((vars '()))
+    (labels ((walk (e)
+	       (cond ((atom e))
+		     ((quote-form-p e))
+		     (t (when (and (keyword-p (car e) "SET!") (consp (cdr e)) (symbolp (cadr e)))
+			  (pushnew (cadr e) vars))
+			(loop for x on e do (walk (car x)) while (consp (cdr x)))))))
+      (walk e))
+    vars))
+
+(defun called-variable-p (v e)
+  "Whether E calls variable V (V in operator position)."
+  (cond ((atom e) nil)
+	((quote-form-p e) nil)
+	((eq (car e) v) t)
+	(t (loop for x on e thereis (called-variable-p v (car x)) while (consp (cdr x))))))
+
+(defun local-procedures (e)
+  "The variables E binds to lambdas (let, letrec, a letrec*'s set!): the
+arguments a parametric procedure's call may take as safe procedures."
+  (let ((vars '()))
+    (labels ((walk (e)
+	       (cond ((atom e))
+		     ((quote-form-p e))
+		     (t (cond ((and (keyword-p (car e) "SET!") (consp (cdr e)) (symbolp (cadr e))
+				    (consp (cddr e)) (lambda-form-p (caddr e)))
+			       (pushnew (cadr e) vars))
+			      ((keyword-p (car e) "LETREC")
+			       (dolist (b (cadr e))
+				 (when (and (consp b) (lambda-form-p (cadr b))) (pushnew (car b) vars))))
+			      ((let-form-p e)
+			       (loop for v in (cadr (car e)) for a in (cdr e)
+				     when (lambda-form-p a) do (pushnew v vars))))
+			(loop for x on e do (walk (car x)) while (consp (cdr x)))))))
+      (walk e))
+    vars))
+
+(defun assumed-safe-positions (formals body definition)
+  "The positions of FORMALS, DEFINITION's lambda's, that BODY calls, or
+passes where a safe procedure is needed (to the procedure itself in one
+of these, to map's procedure, to a parametric procedure's positions as
+its variable holds now): those its parametric F assumes safe procedures
+(see above).  Not one BODY assigns."
+  (let* ((assigned (assigned-variables body))
+	 (candidates (loop for x in formals for i from 0
+			   unless (member x assigned :test #'eq) collect (cons x i)))
+	 (positions (loop for (x . i) in candidates when (called-variable-p x body) collect i)))
+    (labels ((note (a)
+	       (let ((k (and (symbolp a) (cdr (assoc a candidates :test #'eq)))))
+		 (when (and k (not (member k positions)))
+		   (push k positions)
+		   t)))
+	     (needed (e)
+	       (cond ((and (or (consp (car e)) (scheme-symbol-p (car e)))
+			   (eq (funcall *self-reference-hook* (car e) definition) :reads)
+			   (= (length (cdr e)) (length formals)))
+		      positions)
+		     ((guarded-calling-call e definition)
+		      (cdr (assoc (cdr (guarded-calling-call e definition)) *procedure-arguments* :test #'string=)))
+		     ((and *parametric-mask-hook* (consp (car e)))
+		      (funcall *parametric-mask-hook* (car e)))))
+	     (walk (e)
+	       (if (or (atom e) (quote-form-p e))
+		   nil
+		   (let ((changed nil))
+		     (when (listp (cdr e))
+		       (dolist (i (needed e))
+			 (when (note (nth i (cdr e))) (setq changed t))))
+		     (loop for x on e do (when (walk (car x)) (setq changed t)) while (consp (cdr x)))
+		     changed))))
+      (loop while (walk body))
+      (sort positions #'<))))
 
 (defun guard-definition (definition note &optional dispatch-reference)
   "DEFINITION's value made W, F and M as above, if the defined lambda
@@ -2902,7 +3024,18 @@ place of the reference the lambda makes."
 	       (<= (tree-size l) *self-call-size-limit*))
       (let* ((f (fresh)) (w (fresh)) (m (fresh))
 	     (inert (inert-body-p (caddr l) definition (length formals)))
-	     (body (labels ((guard (e)
+	     ;; the positions a parametric F takes safe procedures in
+	     (assumed (and *parametric-note-hook* *assumed-safe-variables*
+			   (assumed-safe-positions formals (caddr l) definition)))
+	     ;; F's own variables: not M's (a named let in both
+	     ;; would bind one variable to two lambdas)
+	     (renamed (rename-binders (caddr l)))
+	     ;; the arguments that may be safe procedures
+	     (candidates (append (mapcar (lambda (i) (nth i formals)) assumed) (local-procedures renamed)))
+	     (body (labels ((candidate-p (a)
+			      (or (lambda-form-p a) (safe-operator-p a)
+				  (and (symbolp a) (member a candidates :test #'eq))))
+			    (guard (e)
 			      (cond ((atom e) e)
 				    ((quote-form-p e) e)
 				    ((eq (funcall *self-reference-hook* e definition) :assigns)
@@ -2911,7 +3044,10 @@ place of the reference the lambda makes."
 				     (return-from guard-definition nil))
 				    ((and (or (consp (car e)) (scheme-symbol-p (car e)))
 					  (eq (funcall *self-reference-hook* (car e) definition) :reads)
-					  (listp (cdr e)) (= (length (cdr e)) (length formals)))
+					  (listp (cdr e)) (= (length (cdr e)) (length formals))
+					  ;; a parametric F's call of itself: safe procedures
+					  ;; in its positions
+					  (every (lambda (i) (candidate-p (nth i (cdr e)))) assumed))
 				     (incf calls)
 				     (when inert
 				       (return-from guard `(,f ,@(mapcar #'guard (cdr e)))))
@@ -2956,25 +3092,69 @@ place of the reference the lambda makes."
 						     tests :from-end t :initial-value fast))
 					   ,@(loop for a in (cdr e) for arg in args
 						   unless (eq (car arg) :inline) collect (guard a))))))
+				    ;; a call of a top-level variable passing it what may
+				    ;; be safe procedures: the procedure it holds, if safe,
+				    ;; or its parametric F, if it needs them only there
+				    ((and *parametric-check-hook* (consp (car e)) (listp (cdr e))
+					  (not (eq (funcall *self-reference-hook* (car e) definition) :reads))
+					  (some #'candidate-p (cdr e))
+					  (funcall *parametric-check-hook* (car e)
+						   (loop for a in (cdr e) for i from 0 when (candidate-p a) collect i)
+						   (length (cdr e))))
+				     (let* ((positions (loop for a in (cdr e) for i from 0 when (candidate-p a) collect i))
+					    (hook (funcall *parametric-check-hook* (car e) positions (length (cdr e))))
+					    (check (car hook))
+					    (args (loop for a in (cdr e) for i from 0
+							collect (if (member i positions) (cons :inline (guard a)) (cons :value (fresh)))))
+					    (temps (loop for (kind . x) in args when (eq kind :value) collect x))
+					    (fast `(,(sym "%parametric-call") (,(sym "quote") ,positions) ,(cdr hook)
+						    ,@(mapcar #'cdr args)))
+					    ;; a lambda again, its binders fresh (each binds once)
+					    (slow `(%self-call-barrier ,(car e)
+								       ,@(loop for (kind . x) in args
+									       collect (if (eq kind :inline) (rename-binders x) x)))))
+				       (pushnew check checks :test #'equal)
+				       `((,(sym "lambda") ,temps (,(sym "if") ,check ,fast ,slow))
+					 ,@(loop for a in (cdr e) for arg in args
+						 when (eq (car arg) :value) collect (guard a)))))
 				    ;; a call of another top-level variable that holds
 				    ;; a safe procedure while CHECK is true
 				    ((and *guard-reference-hook* (consp (car e)) (listp (cdr e))
 					  (funcall *guard-reference-hook* (car e)))
 				     (let ((check (funcall *guard-reference-hook* (car e)))
+					   (entry (and *safe-entry-hook* (funcall *safe-entry-hook* (car e) (length (cdr e)))))
 					   (g (fresh)) (temps (mapcar (lambda (a) (declare (ignore a)) (fresh)) (cdr e))))
 				       (pushnew check checks :test #'equal)
-				       `((,(sym "lambda") (,g ,@temps)
-					  (,(sym "if") ,check
-					   (%safe-call ,g ,@temps)
-					   (%self-call-barrier ,g ,@temps)))
-					 ,(car e) ,@(mapcar #'guard (cdr e)))))
+				       (if entry
+					   ;; the operator read only in the barrier, as above
+					   `((,(sym "lambda") ,temps
+					      (,(sym "if") ,check
+					       (%safe-call ,entry ,@temps)
+					       (%self-call-barrier ,(car e) ,@temps)))
+					     ,@(mapcar #'guard (cdr e)))
+					   `((,(sym "lambda") (,g ,@temps)
+					      (,(sym "if") ,check
+					       (%safe-call ,g ,@temps)
+					       (%self-call-barrier ,g ,@temps)))
+					     ,(car e) ,@(mapcar #'guard (cdr e))))))
 				    (t (loop for x on e
 					     collect (guard (car x)) into new
 					     unless (listp (cdr x)) do (return (nconc new (cdr x)))
 					     finally (return new))))))
-		     ;; F's own variables: not M's (a named let in both
-		     ;; would bind one variable to two lambdas)
-		     (guard (rename-binders (caddr l))))))
+		     (guard renamed))))
+	(when assumed
+	  ;; parametric: the variable holds M (W, here), and F, frameless
+	  ;; given safe procedures in its positions, is recorded for the
+	  ;; calls that pass them; its parameters there are taken as safe
+	  (let ((fl (rename-binders `(,(car l) ,formals ,body))))
+	    (dolist (i assumed) (setf (gethash (nth i (cadr fl)) *assumed-safe-variables*) t))
+	    (funcall note f)
+	    (setf (gethash f *guarded-frameless*) t)
+	    (let* ((letrec `(,(sym "letrec") ((,f ,fl) (,w ,l))
+			     ,(funcall *parametric-note-hook* w f assumed (length formals) checks)))
+		   (value (if (eq value l) letrec (list* (car value) letrec (cddr value)))))
+	      (return-from guard-definition
+		(list (first definition) (second definition) (third definition) value)))))
 	(when (or (plusp calls) checks)
 	  (multiple-value-bind (stripped name) (strip-procedure-name (caddr l))
 	    (declare (ignore stripped))
@@ -2996,7 +3176,7 @@ place of the reference the lambda makes."
 				   ,(if name
 					`(,(sym "begin") (,(sym "quote") (:procedure-name . ,name)) ,dispatch)
 					dispatch))))
-			     ,w)))
+			     (,(sym "%note-frameless") ,w ,f (,(sym "quote") ,(length formals))))))
 	      (funcall note f)
 	      (setf (gethash f *guarded-frameless*) t)
 	      (let ((value (if (eq value l) letrec (list* (car value) letrec (cddr value)))))
@@ -3189,7 +3369,19 @@ compiled on its own)."
     (setf (gethash f *downward-functions*) (cons flags uses))
     f)
   (defhost "%note-safe" (f) (setf (gethash f *safe-functions*) t) f)
-  (register-primitive-names '("%note-safe"))
+  ;; (%parametric-call 'positions f arg ...): F's call, a parametric
+  ;; procedure's frameless F found by a guard (GUARD-DEFINITION); the
+  ;; analysis takes it as safe when the arguments in POSITIONS are
+  ;; (SAFE-PRIMITIVE-CALL-P)
+  (defhost "%parametric-call" (positions f &rest args) (progn positions (apply f args)))
+  (setf (compiler-macro-function (location (sym "%parametric-call")))
+	(lambda (form env)
+	  (declare (ignore env))
+	  (if (and (not (eq (car form) 'funcall)) (cddr form))
+	      `(funcall ,(third form) ,@(cdddr form))
+	      form)))
+  (defhost "%note-frameless" (w f nargs) (setf (gethash w *frameless-entries*) (cons f nargs)) w)
+  (register-primitive-names '("%note-safe" "%parametric-call" "%note-frameless"))
   (defhost "call-with-prompt" (tag thunk handler) (call-with-prompt tag thunk handler))
   (defhost "abort-to-prompt" (tag &rest values) (apply #'abort-to-prompt tag values))
   (defhost "%full-map" (f list &rest lists) (apply #'full-map f list lists))
