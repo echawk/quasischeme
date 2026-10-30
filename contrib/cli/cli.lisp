@@ -295,10 +295,18 @@ running them."
 		       (lambda ()
 			 (quasischeme-repl:run-repl :guile)
 			 qsg::*unspecified*))
+  ;; the script, loaded by load/lang, compiled into the cache as guile
+  ;; auto-compiles it (src/guile/boot.lisp, *CACHEABLE-LOAD*), not each run
+  (qsg::obarray-define (qsg::ssym "%quasischeme-cacheable")
+		       (lambda (load)
+			 (lambda (&rest args)
+			   (let ((qsg::*cacheable-load* t))
+			     (apply load args)))))
   (qsg:eval-string
    (format nil "(primitive-eval
 		 (let walk ((x ((@ (ice-9 command-line) compile-shell-switches) '(~{~S~^ ~}) \"guile\")))
 		   (cond ((equal? x '(@ (ice-9 top-repl) top-repl)) '%quasischeme-top-repl)
+			 ((equal? x '(@@ (ice-9 command-line) load/lang)) (list '%quasischeme-cacheable x))
 			 ((pair? x) (cons (walk (car x)) (walk (cdr x))))
 			 (else x))))"
 	   (cons "guile" args))))
