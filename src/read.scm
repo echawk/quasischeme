@@ -777,6 +777,37 @@
     (sub-read-carefully port)          ;discard the next datum
     (sub-read port)))
 
+; SRFI 267's raw strings: #"X"S"X", X any characters but ", S taken as
+; written up to the first "X" (so S can't end in "X).
+
+(define-sharp-macro #\"
+  (lambda (c port)
+    (read-char port)                   ;consume the "
+    (let ((closing (let loop ((x (list #\")))
+		     (let ((ch (read-char port)))
+		       (cond ((eof-object? ch)
+			      (reading-error port "end of file within a raw string's delimiter"))
+			     ((char=? ch #\") (reverse (cons #\" x)))
+			     (else (loop (cons ch x))))))))
+      ;; L: S's characters so far, last first; done when they end in
+      ;; CLOSING, the "X" that ends S
+      (let ((n (length closing))
+	    (closing-reversed (reverse closing)))
+	(let loop ((l '()) (i 0))
+	  (let ((ch (read-char port)))
+	    (if (eof-object? ch)
+		(reading-error port "end of file within a raw string")
+		(let ((l (cons ch l)) (i (+ i 1)))
+		  (if (and (>= i n) (raw-string-closed? l closing-reversed))
+		      (reverse-list->string (list-tail l n) (- i n))
+		      (loop l i))))))))))
+
+(define (raw-string-closed? l closing-reversed)
+  (cond ((null? closing-reversed) #t)
+	((char=? (car l) (car closing-reversed))
+	 (raw-string-closed? (cdr l) (cdr closing-reversed)))
+	(else #f)))
+
 (let ((number-sharp-macro
        (lambda (c port)
 	 c

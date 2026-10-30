@@ -30,7 +30,7 @@ Each `N.sld` here also makes `srfi-N` a feature for `cond-expand` (SRFI
 line, which have no library: 0, 22, 30, 46, 62, 97, 105, 138 and 169
 (`qsl:*scheme-features*`, src/environments.lisp). Some others are mostly
 built in, their libraries holding what procedures they have: the reader
-syntax of 10, 49, 58, 88, 107, 108, 109, 110, 119, 163, 207 and 270
+syntax of 10, 49, 58, 88, 107, 108, 109, 110, 119, 163, 207, 267 and 270
 (`src/read.scm`, `src/quasi.lisp`), and the expander forms of 139, 149,
 212, 213 and 251 (`vendor/psyntax`).
 
@@ -241,9 +241,15 @@ throughout:
 | 261 | The library system's names (`src/r7rs/front.lisp`) | Quasischeme's |
 | 263 | Daniel Ziltener's reference implementation, with fixes | MIT |
 | 264 | Sergei Egorov's sample implementation, on SRFI 115 | MIT |
+| 267 | Peter McGoron's sample implementation; the `#"X"..."X"` syntax in `src/read.scm` (not in Racket mode, where `#"..."` is a byte string) | MIT; Quasischeme's |
+| 269 | Quasischeme's, from the SRFI's text (the sample it points to is GPL); no runner of its own | Quasischeme's |
 | 270 | Peter McGoron's `write-hexadecimal-float`; hexadecimal floats in `string->number` | MIT; Quasischeme's |
 | 271 | Wolfgang Corcoran-Mathe's sample implementation; xoshiro256++ moved from Gauche classes to R6RS custom ports | MIT |
+| 273 | Artyom Bologov's sample implementation, on SRFI 253 | MIT |
 | 274 | Peter McGoron's sample implementation | MIT |
+| 277 | Wolfgang Corcoran-Mathe's R6RS sample implementation, its definitions in an R7RS library | MIT |
+| 278 | Peter McGoron's sample implementation (on SRFIs 144 and 151) | MIT; BSD-3-Clause (its exact-integer-nth-root, from CHICKEN) |
+| 279 | Artyom Bologov's sample implementation, its portable branch, with stand-ins for the Chibi procedures it calls | MIT |
 
 Where an upstream licence file was a blank MIT template, the
 `reference/srfi-N/LICENSE` here names the copyright holder from the SRFI

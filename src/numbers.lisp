@@ -216,21 +216,46 @@ compute an exact one in single floats."
 
 ;;; The out-of-line cases: CL's generic operation, except for two
 ;;; inexact complex numbers, where SBCL's generic one dispatches and
-;;; boxes its intermediate results (mbrotZ spent 60% of its time there).
-(macrolet ((def-generic (name op complex-form)
+;;; boxes its intermediate results (mbrotZ spent 60% of its time there),
+;;; and a real and a complex number added or subtracted, which is the
+;;; real parts' sum: CL makes the real a complex of zero imaginary part
+;;; first, so -0.0's sign was lost ((+ -3.0 0.0-0.0i) was -3.0+0.0i, and
+;;; SRFI 278's atanh took the wrong side of its branch cut).
+(macrolet ((def-generic (name op complex-form &rest clauses)
 	     `(defun ,name (a b)
-		(if (and (typep a '(complex double-float)) (typep b '(complex double-float)))
-		    (let ((ar (realpart a)) (ai (imagpart a)) (br (realpart b)) (bi (imagpart b)))
-		      (declare (double-float ar ai br bi))
-		      ,complex-form)
-		    (,op a b)))))
-  (def-generic generic+ + (complex (+ ar br) (+ ai bi)))
-  (def-generic generic- - (complex (- ar br) (- ai bi)))
-  (def-generic generic* * (complex (- (* ar br) (* ai bi)) (+ (* ar bi) (* ai br)))))
+		(cond ((and (typep a '(complex double-float)) (typep b '(complex double-float)))
+		       (let ((ar (realpart a)) (ai (imagpart a)) (br (realpart b)) (bi (imagpart b)))
+			 (declare (double-float ar ai br bi))
+			 ,complex-form))
+		      ,@clauses
+		      (t (,op a b))))))
+  (def-generic generic+ + (complex (+ ar br) (+ ai bi))
+    ((and (realp a) (complexp b)) (complex (+ a (realpart b)) (imagpart b)))
+    ((and (complexp a) (realp b)) (complex (+ (realpart a) b) (imagpart a))))
+  (def-generic generic- - (complex (- ar br) (- ai bi))
+    ((and (realp a) (complexp b)) (complex (- a (realpart b)) (- (imagpart b))))
+    ((and (complexp a) (realp b)) (complex (- (realpart a) b) (imagpart a))))
+  ;; an exact imaginary (+i, -2i) times a number: its parts swapped and
+  ;; scaled, exactly, as Kahan's algorithms multiply by i: CL's product
+  ;; adds 0*x terms, losing -0.0's sign, and 0*inf is NaN
+  (def-generic generic* * (complex (- (* ar br) (* ai bi)) (+ (* ar bi) (* ai br)))
+    ((exact-imaginary-p a) (times-exact-imaginary (imagpart a) b))
+    ((exact-imaginary-p b) (times-exact-imaginary (imagpart b) a))))
+
+(defun exact-imaginary-p (x)
+  (and (complexp x) (typep (realpart x) 'rational) (zerop (realpart x))))
+
+(defun times-exact-imaginary (k z)
+  "(* K*i Z), K an exact real."
+  (if (complexp z)
+      (complex (- (* k (imagpart z))) (* k (realpart z)))
+      (complex 0 (* k z))))
 
 (defmacro def-arith (name op generic)
   `(progn
-     (defun ,name (&rest numbers) (apply #',op numbers))
+     ;; called as a procedure: GENERIC's, left to right, as the inline code
+     (defun ,name (&rest numbers)
+       (if (cdr numbers) (reduce #',generic numbers) (apply #',op numbers)))
      (define-compiler-macro ,name (&rest args)
        (case (length args)
 	 (0 (list ',op))
@@ -697,6 +722,7 @@ between two digits of RADIX; else NIL."
       (let ((re (realpart x)) (im (imagpart x)))
 	(format nil "~A~A~Ai"
 		(if (and (rationalp re) (zerop re)) "" (format-real re radix))
-		(if (or (nan-p im) (infinite-p im) (minusp im)) "" "+")
+		;; -0.0's sign is its own: 2.0-0.0i, not 2.0+-0.0i
+		(if (or (nan-p im) (infinite-p im) (if (floatp im) (minusp (float-sign im)) (minusp im))) "" "+")
 		(format-real im radix)))
       (format-real x radix)))

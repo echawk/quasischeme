@@ -1234,6 +1234,53 @@
        (SUB-READ-CAREFULLY PORT)
        (SUB-READ PORT))))
 (AT-TOP-LEVEL
+  (DEFINE-SHARP-MACRO
+   #\"
+   #'(LAMBDA (C PORT)
+       (.READ-CHAR PORT)
+       (LET ((CLOSING (PROG (X)
+                        (SETQ X (LIST #\"))
+                        (GO LOOP)
+                        LOOP
+                        (LET ((CH (.READ-CHAR PORT)))
+                          (IF (EQ CH EOF-OBJECT)
+                              (RETURN (READING-ERROR
+                                       PORT
+                                       "end of file within a raw string's delimiter"))
+                              (IF (CHAR= CH #\")
+                                  (RETURN (REVERSE (CONS #\" X)))
+                                  (PROGN (SETQ X (CONS CH X)) (GO LOOP))))))))
+         (LET ((N (LENGTH CLOSING)) (CLOSING-REVERSED (REVERSE CLOSING)))
+           (PROG (.L.0 .I.1)
+             (PSETQ .L.0 'NIL .I.1 0)
+             (GO LOOP)
+             LOOP
+             (LET ((L .L.0) (I .I.1))
+               (LET ((CH (.READ-CHAR PORT)))
+                 (IF (EQ CH EOF-OBJECT)
+                     (RETURN (READING-ERROR
+                              PORT
+                              "end of file within a raw string"))
+                     (LET ((.L.2 (CONS CH L)) (.I.3 (SCHEME+ I 1)))
+                       (IF (AND (SCHEME>= .I.3 N)
+                                (TRUEP (RAW-STRING-CLOSED?
+                                        .L.2
+                                        CLOSING-REVERSED)))
+                           (RETURN (REVERSE-LIST->STRING
+                                    (NTHCDR N .L.2)
+                                    (SCHEME- .I.3 N)))
+                           (PROGN (PSETQ .L.0 .L.2 .I.1 .I.3) (GO LOOP)))))))))))))
+(DEFUN RAW-STRING-CLOSED? (L CLOSING-REVERSED)
+  (IF (NULL CLOSING-REVERSED)
+      TRUE
+      (IF (CHAR= (CAR (THE-WHO CONS "car" L))
+                 (CAR (THE-WHO CONS "car" CLOSING-REVERSED)))
+          (RAW-STRING-CLOSED?
+           (CDR (THE-WHO CONS "cdr" L))
+           (CDR (THE-WHO CONS "cdr" CLOSING-REVERSED)))
+          FALSE)))
+(SET-VALUE-FROM-FUNCTION 'RAW-STRING-CLOSED? 'SCHEME::RAW-STRING-CLOSED?)
+(AT-TOP-LEVEL
   (FLET ((NUMBER-SHARP-MACRO
           (C PORT)
           C
