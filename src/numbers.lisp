@@ -44,17 +44,6 @@ around a body, so this is per implementation."
 			  :invalid nil :inexact nil)
   t)
 
-;;; SBCL 2.6.9's SUB-GC zeroes the collecting thread's unused control
-;;; stack (UNSAFE-CLEAR-ROOTS calls the runtime's scrub_control_stack),
-;;; and then collect_garbage zeroes it all again: the main thread's is 256
-;;; MB, so each collection wrote 512 MB of zeros.  The first goes; the
-;;; second is the one that keeps pointers left in dead frames from being
-;;; roots.  deriv takes 5% fewer cycles, cpstak 7%.
-#+sbcl
-(when (string= (lisp-implementation-version) "2.6.9")
-  (sb-ext:without-package-locks
-    (setf (fdefinition 'sb-kernel::scrub-control-stack) (lambda () (values)))))
-
 (defun limit-thread-stack-size (bytes)
   "Give the threads created from now on control stacks of BYTES, if
 that's less than they'd get.  SBCL gives every thread a stack the size
