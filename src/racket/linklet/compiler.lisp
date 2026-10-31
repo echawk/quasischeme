@@ -451,31 +451,38 @@ After the assignment, so that analyses still see the lambda assigned."
 			       (if (self-call-p (car ids) rhs env)
 				   (lower-self-procedure (car ids) rhs env)
 				   (named (car ids) rhs (lower-expr rhs env) env))
-			       env)
+			       env t)
 		    env)
       (let ((temps (loop repeat (length ids) collect (fresh-lexical "v"))))
 	(list (core "call-with-values")
 	      (list (core "lambda") '() (lower-expr rhs env))
 	      (list (core "lambda") temps
 		    (cons (core "begin")
-			  (append (mapcar (lambda (id temp) (lower-set id temp env)) ids temps)
+			  (append (mapcar (lambda (id temp) (lower-set id temp env t)) ids temps)
 				  (list (quoted *void*)))))))))
 
-(defun lower-set (name value env)
-  "set! of NAME to core VALUE: an exported definition's variable too."
+(defun lower-set (name value env &optional defining)
+  "set! of NAME to core VALUE: an exported definition's variable too.
+DEFINING: it's NAME's definition (define-values), which, for a variable
+never set!, is racket:variable-define!: a module's constant, which a
+continuation re-entering the definition can't define again, as in
+Racket (\"cannot re-define a constant\")."
   (let ((local (assoc name env)))
     (if local
 	(list (core "set!") (cdr local) value)
 	(let* ((v (gethash name (linklet-info-variables *info*)))
-	       (kind (and v (variable-info-kind v))))
+	       (kind (and v (variable-info-kind v)))
+	       (cell-set (if (and defining v (not (variable-info-mutated v)))
+			     (core "racket:variable-define!")
+			     (core "racket:variable-set!"))))
 	  (cond ((and (member kind '(:defined :defined-exported)) (null (variable-info-core v)))
 		 ;; a split linklet's: a cell
-		 (list (core "racket:variable-set!") (variable-info-cell v) value))
+		 (list cell-set (variable-info-cell v) value))
 		((eq kind :defined) (list (core "set!") (variable-info-core v) value))
 		((eq kind :defined-exported)
 		 (list (core "begin")
 		       (list (core "set!") (variable-info-core v) value)
-		       (list (core "racket:variable-set!") (variable-info-cell v) (variable-info-core v))))
+		       (list cell-set (variable-info-cell v) (variable-info-core v))))
 		((eq kind :exported) (list (core "racket:variable-set!") (variable-info-cell v) value))
 		(t (list (core "racket:assign-error") (quoted name))))))))
 
@@ -745,7 +752,7 @@ candidates that turn out to capture made plain."
 	;; OBJECT-NAMED's (begin (racket:variable-set! cell value) (racket:named ...))
 	(when (and (consp set) (eq (car set) (core "begin")) (consp (cdr set)))
 	  (setq set (cadr set)))
-	(when (and (consp set) (eq (car set) (core "racket:variable-set!")))
+	(when (and (consp set) (member (car set) (list (core "racket:variable-set!") (core "racket:variable-define!"))))
 	  (let* ((value (caddr set))
 		 (l (labels ((procedure (x)
 			       (cond ((qsx::lambda-form-p x) x)
@@ -903,7 +910,8 @@ letrec, a case-lambda's racket:with-arity, or NAMED's binding; or NIL."
     (labels ((walk (x)
 	       (when (consp x)
 		 (cond ((eq (car x) (core "quote")))
-		       ((and (or (eq (car x) (core "set!")) (eq (car x) (core "racket:variable-set!")))
+		       ((and (or (eq (car x) (core "set!")) (eq (car x) (core "racket:variable-set!"))
+				 (eq (car x) (core "racket:variable-define!")))
 			     (consp (cdr x)) (consp (cddr x)) (gethash (cadr x) targets))
 			(setf (gethash (cadr x) found) (caddr x))
 			(walk (caddr x)))
@@ -1159,7 +1167,8 @@ assigned their host primitives after BODY, whose value it still returns."
 	      (list (list (core "lambda") (list r)
 			  (cons (core "begin")
 				(append (loop for (cell . host) in sets
-					      collect (list (core "racket:variable-set!") cell (core host)))
+					      ;; over the definition, a constant
+					      collect (list (core "racket:variable-override!") cell (core host)))
 					(list r))))
 		    (caddr core))))))
 

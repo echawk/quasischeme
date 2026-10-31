@@ -100,6 +100,10 @@ linklets (after every instance is filled: #%linklet's too)."
 (defun install-compiler-helpers ()
   (qsx:defhost "racket:variable-ref" (v) (variable-ref v))
   (qsx:defhost "racket:variable-set!" (v value) (variable-set v value))
+  ;; a definition of a variable never set! (LOWER-SET)
+  (qsx:defhost "racket:variable-define!" (v value) (variable-define v value))
+  ;; a native override of a definition (ADD-NATIVE-OVERRIDES), constant or not
+  (qsx:defhost "racket:variable-override!" (v value) (setf (linklet-variable-value v) value) *void*)
   ;; a reference to a procedure that can't capture (SAFE-CELLS)
   (qsx:defhost "racket:safe-variable-ref" (v) (variable-ref v))
   ;; an import that can't capture if the procedures passed it at these
@@ -166,7 +170,7 @@ linklets (after every instance is filled: #%linklet's too)."
      "racket:correlated-column" "racket:correlated-position" "racket:correlated-span"
      "racket:correlated->datum" "racket:instance-name" "racket:instance?"))
   (qsx::register-primitive-names
-   '("racket:variable-ref" "racket:safe-variable-ref" "racket:safe-ref" "racket:arg-safe-ref" "racket:named" "racket:variable-set!" "racket:variable-reference"
+   '("racket:variable-ref" "racket:safe-variable-ref" "racket:safe-ref" "racket:arg-safe-ref" "racket:named" "racket:variable-set!" "racket:variable-define!" "racket:variable-override!" "racket:variable-reference"
      "racket:unknown-primitive" "racket:assign-error" "racket:arity-error" "racket:with-arity")))
 
 ;;; ------------------------------------------------------------------

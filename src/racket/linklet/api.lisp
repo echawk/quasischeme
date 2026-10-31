@@ -19,7 +19,8 @@
 
 (defstruct (linklet-variable (:constructor make-linklet-variable (name &optional (value +undefined+))))
   name value
-  (constant nil))			; set by instance-describe-variable! or analysis
+  (constant nil)			; set by instance-describe-variable! or analysis
+  (module nil))				; a constant's module, written, for errors
 
 (defun instance-variable (instance name &optional create)
   (or (gethash name (linklet-instance-variables instance))
@@ -78,6 +79,26 @@ MESSAGE's reason."
 			(funcall old flag value name))))))
       (qsx:host-set! "%letrec-check" new)
       (setq *racket-letrec-check* new))))
+
+(defvar *defining-module* nil
+  "While a module's body runs (INSTANTIATE-LINKLET): its name, as
+Racket's errors show it; its definitions of variables never set! make
+them constants.")
+
+(defun variable-define (v value)
+  "A definition of V, a variable never set!: in a module's body, a
+constant, which a second definition (a continuation re-entering the
+first) can't change, as in Racket."
+  (when (linklet-variable-constant v)
+    (do-raise (make-exn "exn:fail:contract:variable"
+			(format nil "define-values: assignment disallowed;~% cannot re-define a constant~%  constant: ~A~@[~%  in module:~A~]"
+				(rname (linklet-variable-name v)) (linklet-variable-module v))
+			(linklet-variable-name v))))
+  (setf (linklet-variable-value v) value)
+  (when *defining-module*
+    (setf (linklet-variable-constant v) t
+	  (linklet-variable-module v) *defining-module*))
+  *void*)
 
 (defun variable-set (v value)
   (when (linklet-variable-constant v)
@@ -216,6 +237,13 @@ again."
     (and (or (rhash-p name) (ihash-p name))
 	 (multiple-value-bind (m found) (lookup* name (rsym "module"))
 	   (and found (truthy m))))))
+
+(defun module-body-name (compiled)
+  "If COMPILED is a module's body, its module's name, written as
+Racket's errors show it (\"/path/m.rkt\"); else NIL."
+  (when (module-body-linklet-p compiled)
+    (let ((m (lookup* (compiled-linklet-name compiled) (rsym "module"))))
+      (or (ignore-errors (written m)) "?"))))
 
 (defun note-instance-safe-exports (compiled instance)
   "Record, for the linklets compiled against INSTANCE, which of the
@@ -414,8 +442,9 @@ with one, the body's result, the exports defined in TARGET."
 	 (result (multiple-value-list
 		  ;; the frames a continuation captured in the body can reach:
 		  ;; the body's (inside an enclosing base, all of that one's)
-		  (qsx::call-with-continuation-base
-		   (lambda () (apply (linklet-function compiled) instance (append imports exports)))))))
+		  (let ((*defining-module* (module-body-name compiled)))
+		    (qsx::call-with-continuation-base
+		     (lambda () (apply (linklet-function compiled) instance (append imports exports))))))))
     (if target (values-list result) instance)))
 
 ;;; ------------------------------------------------------------------
