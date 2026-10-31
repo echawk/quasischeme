@@ -41,11 +41,13 @@
 (defun make-let-form (var init body)
   (list (list (sym "lambda") (list var) body) init))
 
-(defun fix-bindings (bindings)
+(defun fix-bindings (bindings &optional later)
   "For BINDINGS in letrec* order, the steps that bind a prefix of them
 nested -- (:let b) or (:letrec bs), outermost first -- and the bindings
-left, in their order."
-  (let* ((vars (mapcar #'car bindings))
+left, in their order.  LATER are the group's other variables, bound
+inside whatever the steps bind: an init or lambda that refers to one
+stays inside too."
+  (let* ((vars (append (mapcar #'car bindings) later))
 	 (refs (make-hash-table :test 'eq))
 	 (bound '())			; variables bound so far, outside
 	 (pending (remove-if-not (lambda (b) (cp-lambda-p (cadr b))) bindings))
@@ -124,7 +126,12 @@ the leading assignments as bindings, and the forms after them."
   "E, of DEFINITIONS-SHAPE, nested as FIX-BINDINGS says, or NIL."
   (multiple-value-bind (vars lambdas sets forms) (definitions-shape e)
     (when vars
-      (multiple-value-bind (steps left) (fix-bindings (append lambdas sets))
+      ;; the body's variables not among them (assigned after a form
+      ;; that isn't an assignment) are bound inside, so what refers to
+      ;; one stays there
+      (multiple-value-bind (steps left)
+	  (fix-bindings (append lambdas sets)
+			(remove-if (lambda (v) (or (assoc v lambdas) (assoc v sets))) vars))
 	(when (find :let steps :key #'first)
 	  (let* ((left-lambdas (remove-if-not (lambda (b) (member b lambdas)) left))
 		 (left-sets (remove-if (lambda (b) (member b lambdas)) left))
