@@ -53,10 +53,20 @@ for 256 MB on an M4, the command line's size, against 0.3 ms for
 lowers the size: SBCL reuses a finished thread's memory for a new
 thread without checking its size, so raising it again could give a
 thread a stack longer than its memory.  So it's for the start of a
-program, as the command line calls it, not for a library."
+program, as the command line calls it, not for a library.
+
+SBCL's finalizer thread, started before this with the main thread's
+size, is started again with the new one: every collection zeroes each
+thread's unused control stack (SBCL 2.6.9's scrub_thread_control_stack),
+and an idle finalizer's 256 MB of it was half of that work (with 32 MB,
+deriv takes 12% fewer cycles, cpstak 16%)."
   #+sbcl (let ((current (sb-alien:extern-alien "thread_control_stack_size" sb-alien:unsigned)))
 	   (when (< 0 bytes current)
-	     (setf (sb-alien:extern-alien "thread_control_stack_size" sb-alien:unsigned) bytes)))
+	     (setf (sb-alien:extern-alien "thread_control_stack_size" sb-alien:unsigned) bytes)
+	     (when (and (find-symbol "*FINALIZER-THREAD*" "SB-IMPL")
+			(typep (symbol-value (find-symbol "*FINALIZER-THREAD*" "SB-IMPL")) 'sb-thread:thread))
+	       (sb-impl::finalizer-thread-stop)
+	       (sb-impl::finalizer-thread-start))))
   #-sbcl (progn bytes)
   (values))
 
