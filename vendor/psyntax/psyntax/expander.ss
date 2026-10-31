@@ -3770,6 +3770,14 @@
   ;;; variables of the library being expanded.
   (define library-export-locs (make-parameter '()))
 
+  ;;; QUASISCHEME: whether the body being expanded is a top-level
+  ;;; program's.  Nothing outside a program refers to its variables, so
+  ;;; they get no global locations: a library's get them all, since an
+  ;;; exported macro may expand into a reference to any of them.  A
+  ;;; program's procedures then don't escape through their locations,
+  ;;; and the optimizer and the continuation analysis know their calls.
+  (define expanding-program (make-parameter #f))
+
   ;;; QUASISCHEME: B* may be syntax objects already wrapped for the top
   ;;; level (WRAPPED?, a library a macro produced there), which get only
   ;;; the library's rib.
@@ -3816,7 +3824,8 @@
                   (let ((export-subst (make-export-subst exp-int* exp-ext* rib)))
                     (let-values (((export-env global* macro*)
                                   (make-export-env/macros r)))
-                      (let ((invoke-body
+                      (let* ((global* (if (expanding-program) '() global*))
+                             (invoke-body
                              (build-letrec* no-source lex* rhs* 
                                 (build-exports global* init*)))
                             (invoke-definitions 
@@ -3855,7 +3864,8 @@
                         ;; the top level's
                         (parameterize ((interaction-library
                                         (and (expanding-top-module) (interaction-library)))
-                                       (expanding-top-module #f))
+                                       (expanding-top-module #f)
+                                       (expanding-program #f))
                           (library-body-expander exp* imp* b* wrapped?))))
              (values name ver imp* invoke-req* visit-req* 
                      invoke-code visit-code export-subst
@@ -3872,7 +3882,8 @@
       (let-values (((imp* b*) (parse-top-level-program e*)))
           (let-values (((imp* invoke-req* visit-req* invoke-code
                          visit-code export-subst export-env)
-                        (library-body-expander '() imp* b*)))
+                        (parameterize ((expanding-program #t))
+                          (library-body-expander '() imp* b*))))
             (values invoke-req* invoke-code)))))
 
   ;;; An env record encapsulates a substitution and a set of
