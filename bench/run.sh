@@ -24,7 +24,8 @@
 # (scratch directory for the assembled programs, default /tmp/...).
 #
 # Results accumulate in r7rs-benchmarks/results.<System>; delete those
-# files to start over.  bench/summarize.py prints the comparison table.
+# files to start over.  bench/summarize.py prints the comparison table;
+# bench/summarize.py --update FILE regenerates the tables in docs.
 
 here=$(cd "$(dirname "$0")" && pwd)
 systems=""
@@ -43,4 +44,4 @@ cd "$here/r7rs-benchmarks" || exit 1
 for s in $systems; do
     ./bench "$s" "$benchmarks"
 done
-python3 "$here/summarize.py" "$here/r7rs-benchmarks"
+python3 "$here/summarize.py" --dir "$here/r7rs-benchmarks"

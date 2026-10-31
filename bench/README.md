@@ -45,6 +45,7 @@ bench/run.sh                                      # Quasischeme, every benchmark
 bench/run.sh quasischeme chez-akku guile -- fib tak nqueens
 bench/run.sh modes                                # each of Quasischeme's modes
 python3 bench/summarize.py                        # table of results.* so far
+python3 bench/summarize.py --update bench/RESULTS.md README.md   # regenerate the docs' tables
 ```
 
 Each benchmark is one program: the benchmark, `common.scm` (the timing
@@ -68,4 +69,10 @@ and compilation included.
 
 ## Results
 
-See `RESULTS.md`.
+See `RESULTS.md`. Its tables, and the ratios in the top-level README,
+sit between `<!-- bench KIND ARGS -->` and `<!-- /bench -->` markers;
+`summarize.py --update` rewrites what is between them from the
+`results.*` files and leaves the rest alone. The kinds (`table`,
+`summary`, `pairs`, `geomean`) are described at the top of
+`summarize.py`. Systems are named by their results files: `ChezAkku`,
+`Quasischeme`, `QuasischemeGuile`, `RacketBase` and so on.

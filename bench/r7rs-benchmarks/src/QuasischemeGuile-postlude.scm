@@ -1,1 +1,1 @@
-(define (this-scheme-implementation-name) "quasischeme_guile-3.0")
+(define (this-scheme-implementation-name) "quasischeme_guile-1.0")

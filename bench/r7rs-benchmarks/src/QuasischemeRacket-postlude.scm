@@ -1,1 +1,1 @@
-(define (this-scheme-implementation-name) "quasischeme_racket-3.0")
+(define (this-scheme-implementation-name) "quasischeme_racket-1.0")

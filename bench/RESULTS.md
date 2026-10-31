@@ -1,83 +1,144 @@
 # Results
 
-October 2026, on an Apple M4 MacBook Air (4 performance and 6
-efficiency cores) running macOS. These are single runs of
-`r7rs-benchmarks` with its standard inputs. Times are in seconds, and
-the figure in parentheses is the ratio to Chez Scheme. Lower is better.
-These runs predate the optimizer's first pass (cp0 and cptypes,
-2026-10-18; docs/optimizations.md), which is on by default now.
+Apple M4 MacBook Air (4 performance and 6 efficiency cores), macOS,
+SBCL 2.6.9. Single runs of `r7rs-benchmarks` with its standard inputs,
+one implementation at a time. Times are in seconds, of each benchmark's
+own loop: Quasischeme's expansion and SBCL compilation are not
+included, nor are other implementations' compile steps. Lower is
+better. Quasischeme runs with full, re-entrant continuations, the
+default; escape-only mode is not used for these figures.
 
-| implementation | version | geometric mean vs Chez | benchmarks completed |
-|---|---|---|---|
-| Chez Scheme (with akku-r7rs; `--optimize-level 2`) | 10.4.1 | 1.0× | 57/57 |
-| **Quasischeme** (SBCL 2.6.9; full continuations, the default) | 3.0 | **1.37×** (1.55× before the second pass) | **57/57** |
-| Quasischeme, `--continuations=escape` | 3.0 | 1.30× (1.44× before) | 57/57 |
-| Guile | 3.0.11 | 2.8× | 56/57 |
-| Gauche | 0.9.15 | 9.2× | 57/57 |
-| Chibi (a bytecode interpreter) | 0.12.0 | 35.7× | 49/57 |
+The tables between `<!-- bench ... -->` markers are generated from the
+local `r7rs-benchmarks/results.*` files: after a run, regenerate them
+with
 
-The table under "All benchmarks" is the first run. In the second
-pass's run (next
-section), with full continuations, Quasischeme is at or ahead of Chez
-on 15 benchmarks, within 1.5× on 33 and within 2× on 41. Its worst
-ratios are `conform` (3.6×), `ack` (3.6×), `fibc` (3.6×), `divrec`
-(3.5×), `browse` (3.4×) and `matrix` (3.4×); `ack`, `divrec` and
-`browse` come down to SBCL's own call and allocation costs, and
-`conform` and `matrix` are among those full continuations cost most.
-Full continuations (re-entrant, from generalized stack inspection:
-docs/continuations.md) cost 5.0% over escape-only as a geometric mean
-(7.7% in the first run); 39 of 57 benchmarks run within 5%, and the
-cost is in programs that call unknown procedures in tight loops
-(`lattice`, `matrix`, `conform`, `quicksort`: 1.66–1.76×; `scheme`,
-`graphs`: 1.4×).
+```sh
+python3 bench/summarize.py --update bench/RESULTS.md README.md
+```
 
-**Caveats.**
-- Chez, Guile, Gauche and Chibi are from an earlier run, in which the
-  implementations ran three at a time (Quasischeme, Chez and Guile;
-  then Chibi and Gauche), so that each could have a performance core.
-  Quasischeme's figures here are from a later run of its own.
-- The times cover each benchmark's own loop. Quasischeme's expansion
-  and SBCL compilation are excluded, as are other implementations'
-  compile steps.
-- Racket wasn't run: it needs its `r7rs` package, which isn't installed
-  here.
-- Chibi's failures are its own crashes and timeouts under the 300 s
-  limit.
-- ecraven's published results (<https://ecraven.github.io/r7rs-benchmarks/>)
-  cover more implementations on different hardware.
+Quasischeme's columns (R7RS, `--guile`, `--racket`) and Racket's are
+from 2026-10-31. Chez, Gauche and Chibi are from 2026-10-03, and Guile
+from 2026-10-23; their versions have not changed since.
 
-Reproduce with `bench/run.sh quasischeme chez-akku guile gauche-local chibi`,
-then `python3 bench/summarize.py`.
+## Against Chez Scheme
 
-## A second pass, later in October 2026
+Chez runs with Akku's `akku-r7rs` libraries at `--optimize-level 2`.
+Racket runs the programs as `racket/base` modules with a prelude of the
+R7RS names they use (`src/QuasischemeRacket-prelude.scm`), as
+Quasischeme's `--racket` does.
 
-With the default full continuations, after the second speed pass (shared
-compiled lambdas, inline host primitives, typed complex arithmetic and
-the rest; git log for October 2026): **1.37×** Chez's time as a geometric
-mean, from 1.55×, and 1.30× escape-only, from 1.44×, with all 57
-benchmarks completing (single runs, the machine otherwise idle).
-Against the first run ("All benchmarks", its `full` column):
+<!-- bench summary ChezAkku Quasischeme RacketBase Guile GaucheLocal Chibi -->
+| implementation | version | geometric mean vs Chez Scheme | completed | ≤ 1× | ≤ 1.5× | ≤ 2× |
+|---|---|---:|---:|---:|---:|---:|
+| Quasischeme | 1.0 | 0.96× | 57/57 | 23 | 46 | 52 |
+| Racket | 9.3 | 1.17× | 57/57 | 28 | 47 | 49 |
+| Guile | 3.0.11 | 2.78× | 56/57 | 4 | 8 | 17 |
+| Gauche | 0.9.15 | 9.15× | 57/57 | 2 | 5 | 5 |
+| Chibi | 0.12.0 | 35.68× | 49/57 | 0 | 0 | 1 |
+<!-- /bench -->
 
-| benchmark | before | after | now vs Chez | what |
-|---|---|---|---|---|
-| mbrotZ | 11.93 | 3.38 | 1.35× | inexact complex `+`, `-`, `*` with typed parts |
-| bv2string | 2.59 | 0.81 | 1.44× | UTF-8 in two passes; inline bytevector accessors |
-| wc | 1.49 | 0.95 | 1.10× | |
-| mperm | 4.35 | 2.88 | 0.49× | |
-| string | 0.96 | 0.65 | 0.88× | inline two-argument string comparisons |
-| parsing | 1.94 | 1.36 | 0.83× | |
-| graphs | 3.43 | 2.43 | 2.04× | |
-| primes | 1.24 | 0.99 | 1.90× | inline fixnum `quotient`/`remainder`/`modulo` |
+## Each mode against its own system
 
-Where no reason is given, the benchmark doesn't use what changed much,
-and part of the difference is from run to run: the first run is from an
-earlier day. Two benchmarks came out slower than in the first run
-(`read1`, `paraffins`), and were checked against a build from before
-the changes, the two run alternately on the same day: `read1` 1.45 s
-before and 1.43 s after, `paraffins` 2.84–3.42 s before and 2.91–3.21 s
-after.
+Quasischeme's Guile and Racket modes run the same programs as Guile
+3.0.11 and Racket CS do, and are measured against them; R7RS mode is
+measured against Chez.
 
-## What made the difference
+<!-- bench pairs Quasischeme/ChezAkku QuasischemeGuile/Guile QuasischemeRacket/RacketBase -->
+| | geometric mean | faster on | worst ratios |
+|---|---:|---:|---|
+| Quasischeme vs Chez Scheme | 0.96× | 23 of 57 | scheme 3.0×, ctak 3.0×, fibc 2.8×, matrix 2.2×, browse 2.1× |
+| Quasischeme `--guile` vs Guile | 0.60× | 41 of 54 | string 5.9×, bv2string 5.3×, pi 2.4×, slatex 2.0×, compiler 1.9× |
+| Quasischeme `--racket` vs Racket | 1.04× | 23 of 56 | matrix 3.0×, scheme 2.6×, conform 2.5×, compiler 2.4×, gcbench 2.0× |
+<!-- /bench -->
+
+Open failures: in Guile mode, `dynamic` and `sum1` crash the collector
+(`heap_scavenge failure`, after some 100,000 `read`s from one port; not
+with escape-only continuations), and Racket mode's `equal` runs past the
+120 s limit.
+
+Racket (`racket prog.rkt`) compiles each program as it loads it, Guile
+runs programs compiled with `guild compile -O3`; either way the
+compilation is outside the timed loop.
+
+## All benchmarks
+
+<!-- bench table ChezAkku Quasischeme RacketBase QuasischemeRacket Guile QuasischemeGuile GaucheLocal Chibi -->
+| benchmark | Chez Scheme | Quasischeme | Racket | Quasischeme `--racket` | Guile | Quasischeme `--guile` | Gauche | Chibi |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| ack | 1.37 | 1.38 (1.01×) | 1.77 (1.29×) | 1.44 (1.05×) | 5.61 (4.09×) | 1.39 (1.02×) | 42.15 (30.75×) | 23.25 (16.96×) |
+| array1 | 2.71 | 2.37 (0.87×) | 2.44 (0.90×) | 1.30 (0.48×) | 4.03 (1.48×) | 2.62 (0.96×) | 13.85 (5.10×) | 21.55 (7.94×) |
+| browse | 0.65 | 1.36 (2.10×) | 1.09 (1.69×) | 1.44 (2.23×) | 2.27 (3.53×) | 1.40 (2.18×) | 10.87 (16.86×) | crashed |
+| bv2string | 0.56 | 0.75 (1.34×) | 0.61 (1.08×) | 1.16 (2.06×) | 0.90 (1.61×) | 4.79 (8.53×) | 5.24 (9.33×) | 3.62 (6.45×) |
+| cat | 1.56 | 1.41 (0.90×) | 5.22 (3.34×) | 2.35 (1.50×) | 8.97 (5.73×) | 9.90 (6.32×) | 7.22 (4.61×) | 25.31 (16.18×) |
+| chudnovsky | 0.12 | 0.05 (0.41×) | 0.12 (0.94×) | 0.05 (0.41×) | 0.07 (0.54×) | 0.06 (0.49×) | 0.48 (3.90×) | 60.80 (495.02×) |
+| compiler | 0.89 | 1.27 (1.43×) | 0.88 (0.99×) | 2.10 (2.36×) | 1.59 (1.79×) | 3.09 (3.47×) | 13.47 (15.12×) | 43.96 (49.36×) |
+| conform | 1.14 | 1.73 (1.52×) | 1.81 (1.60×) | 4.61 (4.06×) | 3.61 (3.17×) | 4.09 (3.60×) | 22.90 (20.15×) | 59.70 (52.53×) |
+| cpstak | 1.29 | 2.55 (1.97×) | 1.61 (1.24×) | 2.23 (1.72×) | 7.77 (6.00×) | 3.30 (2.55×) | 42.30 (32.68×) | 90.09 (69.59×) |
+| ctak | 0.39 | 1.17 (3.00×) | 1.03 (2.64×) | 1.12 (2.89×) | 39.82 (102.33×) | 1.28 (3.29×) | 8.49 (21.82×) | 234.71 (603.19×) |
+| deriv | 0.51 | 0.80 (1.57×) | 0.58 (1.15×) | 0.91 (1.79×) | 3.41 (6.73×) | 1.41 (2.78×) | 13.83 (27.30×) | 39.76 (78.46×) |
+| destruc | 0.91 | 1.13 (1.24×) | 0.95 (1.05×) | 1.32 (1.45×) | 1.58 (1.74×) | 1.75 (1.93×) | 14.27 (15.72×) | 35.32 (38.90×) |
+| diviter | 0.93 | 1.06 (1.15×) | 0.86 (0.93×) | 1.10 (1.18×) | 3.24 (3.49×) | 1.36 (1.47×) | 8.64 (9.33×) | 21.53 (23.25×) |
+| divrec | 1.02 | 1.75 (1.70×) | 1.06 (1.04×) | 1.84 (1.80×) | 5.24 (5.11×) | 1.87 (1.82×) | 10.54 (10.29×) | 21.05 (20.54×) |
+| dynamic | 1.56 | 1.62 (1.04×) | 4.42 (2.84×) | 2.61 (1.68×) | 3.75 (2.41×) | crashed | 9.62 (6.18×) | 97.16 (62.47×) |
+| earley | 2.20 | 1.07 (0.48×) | 2.14 (0.97×) | 1.06 (0.48×) | 4.41 (2.00×) | 1.13 (0.51×) | 6.43 (2.92×) | crashed |
+| equal | 0.45 | 0.49 (1.09×) | 0.99 (2.20×) | crashed | crashed | 0.46 (1.02×) | 6.12 (13.61×) | 17.63 (39.20×) |
+| fft | 1.41 | 0.77 (0.54×) | 1.25 (0.89×) | 0.83 (0.59×) | 2.87 (2.04×) | 0.92 (0.65×) | 4.94 (3.50×) | 23.29 (16.52×) |
+| fib | 1.75 | 2.11 (1.21×) | 1.78 (1.01×) | 2.22 (1.26×) | 4.72 (2.69×) | 2.12 (1.21×) | 25.10 (14.32×) | 27.82 (15.87×) |
+| fibc | 0.26 | 0.74 (2.83×) | 0.73 (2.77×) | 0.75 (2.84×) | 25.49 (97.22×) | 1.39 (5.29×) | 8.00 (30.50×) | 49.01 (186.93×) |
+| fibfp | 1.25 | 1.12 (0.89×) | 1.22 (0.97×) | 1.06 (0.85×) | 6.70 (5.34×) | 1.16 (0.93×) | 5.53 (4.41×) | 16.34 (13.02×) |
+| gcbench | 0.46 | 0.45 (0.99×) | 0.42 (0.91×) | 0.85 (1.86×) | 1.08 (2.36×) | 0.54 (1.18×) | 11.41 (24.98×) | crashed |
+| graphs | 1.19 | 1.22 (1.03×) | 1.28 (1.08×) | 2.14 (1.80×) | 6.54 (5.50×) | 2.07 (1.74×) | 49.79 (41.89×) | crashed |
+| lattice | 1.72 | 3.02 (1.76×) | 1.68 (0.98×) | 3.27 (1.90×) | 6.22 (3.63×) | 3.50 (2.04×) | 35.43 (20.66×) | crashed |
+| matrix | 0.60 | 1.34 (2.22×) | 0.67 (1.11×) | 2.03 (3.37×) | 3.08 (5.11×) | 1.78 (2.95×) | 18.94 (31.39×) | 85.53 (141.77×) |
+| maze | 0.45 | 0.55 (1.23×) | 0.44 (0.97×) | 0.86 (1.91×) | 1.51 (3.36×) | 1.93 (4.30×) | 11.16 (24.85×) | 33.43 (74.41×) |
+| mazefun | 1.14 | 1.29 (1.13×) | 1.07 (0.94×) | 1.25 (1.10×) | 3.42 (2.99×) | 1.92 (1.68×) | 21.96 (19.21×) | 43.22 (37.81×) |
+| mbrot | 4.91 | 0.44 (0.09×) | 3.57 (0.73×) | 3.08 (0.63×) | 12.14 (2.47×) | 3.26 (0.66×) | 10.51 (2.14×) | 76.44 (15.57×) |
+| mbrotZ | 2.50 | 3.41 (1.36×) | 2.22 (0.89×) | 3.44 (1.38×) | 10.35 (4.13×) | 3.54 (1.41×) | 15.27 (6.10×) | 164.98 (65.91×) |
+| mperm | 5.82 | 2.69 (0.46×) | 5.61 (0.96×) | 2.21 (0.38×) | 6.15 (1.06×) | 2.27 (0.39×) | 16.70 (2.87×) | 74.09 (12.73×) |
+| nboyer | 1.18 | 0.92 (0.78×) | 1.01 (0.85×) | 0.88 (0.74×) | 1.66 (1.41×) | 0.91 (0.77×) | 10.35 (8.76×) | 13.64 (11.55×) |
+| nqueens | 3.50 | 4.20 (1.20×) | 3.00 (0.86×) | 4.26 (1.22×) | 5.80 (1.66×) | 4.33 (1.24×) | 39.62 (11.32×) | 633.75 (181.12×) |
+| ntakl | 1.54 | 1.15 (0.75×) | 2.00 (1.30×) | 1.28 (0.83×) | 2.94 (1.91×) | 1.98 (1.29×) | 35.92 (23.29×) | 39.87 (25.85×) |
+| nucleic | 1.02 | 1.19 (1.17×) | 0.93 (0.92×) | 1.26 (1.24×) | 2.92 (2.88×) | 1.91 (1.88×) | 8.71 (8.58×) | 31.63 (31.12×) |
+| paraffins | 3.80 | 2.19 (0.58×) | 3.20 (0.84×) | 3.63 (0.95×) | 2.41 (0.63×) | 3.32 (0.87×) | 4.29 (1.13×) | crashed |
+| parsing | 1.64 | 1.10 (0.67×) | 1.09 (0.67×) | 2.17 (1.32×) | 4.08 (2.49×) | 2.92 (1.78×) | 67.55 (41.22×) | crashed |
+| peval | 1.04 | 1.11 (1.06×) | 1.13 (1.08×) | 1.56 (1.50×) | 3.59 (3.44×) | 2.11 (2.02×) | 21.25 (20.35×) | 70.53 (67.52×) |
+| pi | 0.24 | 0.11 (0.45×) | 0.28 (1.19×) | 0.11 (0.45×) | 0.05 (0.20×) | 0.11 (0.48×) | 1.96 (8.23×) | crashed |
+| pnpoly | 2.92 | 1.24 (0.42×) | 2.57 (0.88×) | 1.50 (0.51×) | 7.67 (2.62×) | 2.38 (0.81×) | 13.18 (4.51×) | 95.57 (32.71×) |
+| primes | 0.52 | 0.54 (1.04×) | 0.43 (0.82×) | 0.55 (1.05×) | 1.68 (3.22×) | 1.94 (3.73×) | 6.90 (13.27×) | 7.68 (14.78×) |
+| puzzle | 1.40 | 1.69 (1.21×) | 1.59 (1.14×) | 1.73 (1.24×) | 4.02 (2.87×) | 2.55 (1.82×) | 17.21 (12.32×) | 101.89 (72.94×) |
+| quicksort | 2.33 | 3.35 (1.43×) | 2.12 (0.91×) | 4.26 (1.83×) | 4.44 (1.90×) | 3.28 (1.40×) | 21.93 (9.40×) | 157.72 (67.59×) |
+| ray | 1.35 | 1.40 (1.04×) | 1.48 (1.10×) | 1.78 (1.32×) | 3.58 (2.66×) | 2.20 (1.63×) | 10.48 (7.79×) | 84.46 (62.77×) |
+| read1 | 1.19 | 0.85 (0.72×) | 6.22 (5.22×) | 0.72 (0.61×) | 3.31 (2.78×) | 6.34 (5.32×) | 1.24 (1.04×) | 89.59 (75.20×) |
+| sboyer | 0.50 | 0.48 (0.96×) | 0.41 (0.82×) | 0.65 (1.29×) | 1.64 (3.26×) | 0.58 (1.15×) | 9.54 (18.95×) | 13.17 (26.16×) |
+| scheme | 1.38 | 4.16 (3.02×) | 1.19 (0.87×) | 3.06 (2.22×) | 5.07 (3.68×) | 3.05 (2.21×) | 16.02 (11.62×) | 45.68 (33.14×) |
+| simplex | 1.29 | 1.01 (0.78×) | 1.07 (0.83×) | 1.03 (0.80×) | 3.94 (3.06×) | 2.52 (1.96×) | 19.13 (14.86×) | 72.78 (56.55×) |
+| slatex | 5.48 | 7.71 (1.41×) | 5.96 (1.09×) | 7.65 (1.39×) | 10.56 (1.93×) | 21.50 (3.92×) | 11.74 (2.14×) | 53.22 (9.70×) |
+| string | 0.74 | 0.58 (0.78×) | 0.96 (1.30×) | 0.50 (0.68×) | 0.10 (0.14×) | 0.59 (0.80×) | 0.46 (0.62×) | 2.91 (3.94×) |
+| sum | 1.78 | 1.86 (1.05×) | 2.09 (1.17×) | 2.02 (1.14×) | 2.46 (1.38×) | 2.01 (1.13×) | 20.19 (11.35×) | 33.52 (18.84×) |
+| sum1 | 0.82 | 0.40 (0.49×) | 2.55 (3.11×) | 2.96 (3.61×) | 2.67 (3.26×) | crashed | 0.64 (0.78×) | 31.87 (38.93×) |
+| sumfp | 1.92 | 0.57 (0.30×) | 1.93 (1.01×) | 0.63 (0.33×) | 11.68 (6.10×) | 2.36 (1.23×) | 6.47 (3.38×) | 30.58 (15.97×) |
+| tail | 1.71 | 0.34 (0.20×) | 1.68 (0.98×) | 1.05 (0.61×) | 4.00 (2.34×) | 0.94 (0.55×) | 2.42 (1.41×) | 3.39 (1.98×) |
+| tak | 0.74 | 1.17 (1.58×) | 0.74 (1.00×) | 1.26 (1.70×) | 2.12 (2.87×) | 1.25 (1.70×) | 11.12 (15.03×) | 25.37 (34.29×) |
+| takl | 1.60 | 1.62 (1.01×) | 1.83 (1.14×) | 1.73 (1.08×) | 2.83 (1.77×) | 2.80 (1.75×) | 42.16 (26.29×) | 202.89 (126.54×) |
+| triangl | 1.27 | 0.86 (0.68×) | 1.17 (0.92×) | 1.05 (0.83×) | 3.37 (2.66×) | 3.01 (2.37×) | 12.23 (9.64×) | 35.96 (28.35×) |
+| wc | 0.87 | 0.91 (1.04×) | 2.62 (3.01×) | 1.49 (1.71×) | 5.40 (6.21×) | 5.68 (6.53×) | 11.34 (13.03×) | 166.40 (191.22×) |
+| **geometric mean** | **1.00×** | **0.96×** | **1.17×** | **1.20×** | **2.78×** | **1.64×** | **9.15×** | **35.68×** |
+<!-- /bench -->
+
+Reproduce with `bench/run.sh quasischeme quasischeme-guile
+quasischeme-racket racket-base chez-akku guile gauche-local chibi`.
+
+## History
+
+Late October 2026, from 1.37× Chez's time (full continuations) to the
+figures above: the optimizer's passes after Chez's (`cp0`, `cptypes`
+with flonum versions of procedures, `cpletrec`; docs/optimizations.md);
+a program's own definitions bound locally rather than as global
+locations; `map` and `for-each` on one list open-coded; frame pointers
+restored only after calls that need it; smaller thread stacks, so that
+a collection has less stack to scrub.
+
+### Early October 2026: what made the difference
 
 From 3.0× Chez's time to 1.44× escape-only (an earlier run on the same
 machine, then the first run), in order of effect:
@@ -112,71 +173,3 @@ Biggest gains: `lattice` 23.2 → 2.9 s, `parsing` 11.2 → 1.4 s, `takl`
 11.1 → 2.5 s, `wc` 7.5 → 1.1 s, `sum` 8.9 → 2.0 s, `gcbench` 4.7 →
 1.0 s, `conform` 9.0 → 2.5 s.
 
-## All benchmarks
-
-Times in seconds; in parentheses, the ratio to Chez. "quasischeme" is
-escape-only continuations (`--continuations=escape`), "full" full
-continuations (now the default), both from the first run, before the
-second pass; the other columns are from the earlier run.
-
-| benchmark | chez | quasischeme | full | chibi | gauche | guile |
-|---|---|---|---|---|---|---|
-| browse | 0.65 (1.0x) | 2.23 (3.4x) | 2.23 (3.4x) | crashed | 10.87 (16.9x) | 2.27 (3.5x) |
-| deriv | 0.51 (1.0x) | 1.05 (2.1x) | 1.05 (2.1x) | 39.76 (78.5x) | 13.83 (27.3x) | 3.41 (6.7x) |
-| destruc | 0.91 (1.0x) | 1.68 (1.9x) | 1.67 (1.8x) | 35.32 (38.9x) | 14.27 (15.7x) | 1.61 (1.8x) |
-| diviter | 0.93 (1.0x) | 1.17 (1.3x) | 1.19 (1.3x) | 21.53 (23.3x) | 8.64 (9.3x) | 3.24 (3.5x) |
-| divrec | 1.02 (1.0x) | 3.71 (3.6x) | 3.66 (3.6x) | 21.05 (20.5x) | 10.54 (10.3x) | 5.24 (5.1x) |
-| puzzle | 1.40 (1.0x) | 2.78 (2.0x) | 2.80 (2.0x) | 101.89 (72.9x) | 17.21 (12.3x) | 4.02 (2.9x) |
-| triangl | 1.27 (1.0x) | 1.63 (1.3x) | 1.63 (1.3x) | 35.96 (28.3x) | 12.23 (9.6x) | 3.37 (2.7x) |
-| tak | 0.74 (1.0x) | 1.42 (1.9x) | 1.42 (1.9x) | 25.37 (34.3x) | 11.12 (15.0x) | 2.11 (2.9x) |
-| takl | 1.60 (1.0x) | 2.46 (1.5x) | 2.44 (1.5x) | 202.89 (126.5x) | 42.16 (26.3x) | 2.83 (1.8x) |
-| ntakl | 1.54 (1.0x) | 1.29 (0.8x) | 1.25 (0.8x) | 39.87 (25.9x) | 35.92 (23.3x) | 2.94 (1.9x) |
-| cpstak | 1.29 (1.0x) | 3.00 (2.3x) | 2.95 (2.3x) | 90.09 (69.6x) | 42.30 (32.7x) | 7.77 (6.0x) |
-| ctak | 0.39 (1.0x) | 0.85 (2.2x) | 1.15 (2.9x) | 234.71 (603.2x) | 8.49 (21.8x) | 39.82 (102.3x) |
-| fib | 1.75 (1.0x) | 2.98 (1.7x) | 2.85 (1.6x) | 27.82 (15.9x) | 25.10 (14.3x) | 5.09 (2.9x) |
-| fibc | 0.26 (1.0x) | 0.98 (3.8x) | 1.18 (4.6x) | 49.01 (186.9x) | 8.00 (30.5x) | 25.49 (97.2x) |
-| fibfp | 1.25 (1.0x) | 1.26 (1.0x) | 1.23 (1.0x) | 16.34 (13.0x) | 5.53 (4.4x) | 6.70 (5.3x) |
-| sum | 1.78 (1.0x) | 2.01 (1.1x) | 2.00 (1.1x) | 33.52 (18.8x) | 20.19 (11.3x) | 2.46 (1.4x) |
-| sumfp | 1.92 (1.0x) | 2.61 (1.4x) | 2.62 (1.4x) | 30.58 (16.0x) | 6.47 (3.4x) | 11.68 (6.1x) |
-| fft | 1.41 (1.0x) | 1.01 (0.7x) | 1.03 (0.7x) | 23.29 (16.5x) | 4.94 (3.5x) | 2.87 (2.0x) |
-| mbrot | 4.91 (1.0x) | 3.48 (0.7x) | 3.46 (0.7x) | 76.44 (15.6x) | 10.51 (2.1x) | 12.14 (2.5x) |
-| mbrotZ | 2.50 (1.0x) | 11.95 (4.8x) | 11.93 (4.8x) | 164.98 (65.9x) | 15.27 (6.1x) | 10.35 (4.1x) |
-| nucleic | 1.02 (1.0x) | 1.51 (1.5x) | 1.54 (1.5x) | 31.63 (31.1x) | 8.71 (8.6x) | 2.92 (2.9x) |
-| pi | 0.24 (1.0x) | 0.11 (0.5x) | 0.11 (0.5x) | crashed | 1.96 (8.2x) | 0.05 (0.2x) |
-| pnpoly | 2.92 (1.0x) | 3.38 (1.2x) | 3.44 (1.2x) | 95.57 (32.7x) | 13.18 (4.5x) | 7.67 (2.6x) |
-| ray | 1.35 (1.0x) | 1.73 (1.3x) | 1.69 (1.3x) | 84.46 (62.8x) | 10.48 (7.8x) | 3.58 (2.7x) |
-| simplex | 1.29 (1.0x) | 1.52 (1.2x) | 1.54 (1.2x) | 72.78 (56.5x) | 19.13 (14.9x) | 3.94 (3.1x) |
-| ack | 1.37 (1.0x) | 5.37 (3.9x) | 4.99 (3.6x) | 23.25 (17.0x) | 42.15 (30.8x) | 5.61 (4.1x) |
-| array1 | 2.71 (1.0x) | 2.60 (1.0x) | 2.71 (1.0x) | 21.55 (7.9x) | 13.85 (5.1x) | 4.03 (1.5x) |
-| string | 0.74 (1.0x) | 0.96 (1.3x) | 0.96 (1.3x) | 2.91 (3.9x) | 0.46 (0.6x) | 0.10 (0.1x) |
-| sum1 | 0.82 (1.0x) | 1.43 (1.7x) | 1.71 (2.1x) | 31.87 (38.9x) | 0.64 (0.8x) | 2.67 (3.3x) |
-| cat | 1.56 (1.0x) | 1.36 (0.9x) | 1.51 (1.0x) | 25.31 (16.2x) | 7.22 (4.6x) | 8.97 (5.7x) |
-| tail | 1.71 (1.0x) | 0.38 (0.2x) | 0.38 (0.2x) | 3.39 (2.0x) | 2.42 (1.4x) | 4.00 (2.3x) |
-| wc | 0.87 (1.0x) | 1.10 (1.3x) | 1.49 (1.7x) | 166.40 (191.2x) | 11.34 (13.0x) | 5.40 (6.2x) |
-| read1 | 1.19 (1.0x) | 1.28 (1.1x) | 1.23 (1.0x) | 89.59 (75.2x) | 1.24 (1.0x) | 3.31 (2.8x) |
-| compiler | 0.89 (1.0x) | 1.99 (2.2x) | 2.24 (2.5x) | 43.96 (49.4x) | 13.47 (15.1x) | 1.59 (1.8x) |
-| conform | 1.14 (1.0x) | 2.52 (2.2x) | 4.33 (3.8x) | 59.70 (52.5x) | 22.90 (20.2x) | 3.61 (3.2x) |
-| dynamic | 1.56 (1.0x) | 2.01 (1.3x) | 2.11 (1.4x) | 97.16 (62.5x) | 9.62 (6.2x) | 3.75 (2.4x) |
-| earley | 2.20 (1.0x) | 1.19 (0.5x) | 1.18 (0.5x) | crashed | 6.43 (2.9x) | 4.41 (2.0x) |
-| graphs | 1.19 (1.0x) | 1.88 (1.6x) | 3.43 (2.9x) | crashed | 49.79 (41.9x) | 6.54 (5.5x) |
-| lattice | 1.72 (1.0x) | 2.94 (1.7x) | 5.37 (3.1x) | crashed | 35.43 (20.7x) | 7.34 (4.3x) |
-| matrix | 0.60 (1.0x) | 1.33 (2.2x) | 2.20 (3.7x) | 85.53 (141.8x) | 18.94 (31.4x) | 3.08 (5.1x) |
-| maze | 0.45 (1.0x) | 1.12 (2.5x) | 1.09 (2.4x) | 33.43 (74.4x) | 11.16 (24.9x) | 1.51 (3.4x) |
-| mazefun | 1.14 (1.0x) | 1.34 (1.2x) | 1.38 (1.2x) | 43.22 (37.8x) | 21.96 (19.2x) | 3.42 (3.0x) |
-| nqueens | 3.50 (1.0x) | 4.60 (1.3x) | 4.46 (1.3x) | 633.75 (181.1x) | 39.62 (11.3x) | 6.33 (1.8x) |
-| paraffins | 3.80 (1.0x) | 3.88 (1.0x) | 2.66 (0.7x) | crashed | 4.29 (1.1x) | 2.41 (0.6x) |
-| parsing | 1.64 (1.0x) | 1.44 (0.9x) | 1.94 (1.2x) | crashed | 67.55 (41.2x) | 4.79 (2.9x) |
-| peval | 1.04 (1.0x) | 1.97 (1.9x) | 2.10 (2.0x) | 70.53 (67.5x) | 21.25 (20.3x) | 4.31 (4.1x) |
-| primes | 0.52 (1.0x) | 1.26 (2.4x) | 1.24 (2.4x) | 7.68 (14.8x) | 6.90 (13.3x) | 1.68 (3.2x) |
-| quicksort | 2.33 (1.0x) | 3.41 (1.5x) | 5.90 (2.5x) | 157.72 (67.6x) | 21.93 (9.4x) | 4.44 (1.9x) |
-| scheme | 1.38 (1.0x) | 2.82 (2.0x) | 4.32 (3.1x) | 45.68 (33.1x) | 16.02 (11.6x) | 5.07 (3.7x) |
-| slatex | 5.48 (1.0x) | 12.86 (2.3x) | 13.11 (2.4x) | 53.22 (9.7x) | 11.74 (2.1x) | 10.56 (1.9x) |
-| chudnovsky | 0.12 (1.0x) | 0.05 (0.4x) | 0.05 (0.4x) | 60.80 (495.0x) | 0.48 (3.9x) | 0.07 (0.5x) |
-| nboyer | 1.18 (1.0x) | 1.18 (1.0x) | 1.09 (0.9x) | 13.64 (11.6x) | 10.35 (8.8x) | 1.66 (1.4x) |
-| sboyer | 0.50 (1.0x) | 0.77 (1.5x) | 0.69 (1.4x) | 13.17 (26.2x) | 9.54 (19.0x) | 1.64 (3.3x) |
-| gcbench | 0.46 (1.0x) | 0.96 (2.1x) | 0.93 (2.0x) | crashed | 11.41 (25.0x) | 0.85 (1.9x) |
-| mperm | 5.82 (1.0x) | 4.37 (0.8x) | 4.35 (0.7x) | 74.09 (12.7x) | 16.70 (2.9x) | 6.15 (1.1x) |
-| equal | 0.45 (1.0x) | 0.49 (1.1x) | 0.47 (1.1x) | 17.63 (39.2x) | 6.12 (13.6x) | crashed |
-| bv2string | 0.56 (1.0x) | 2.27 (4.1x) | 2.59 (4.6x) | 3.62 (6.4x) | 5.24 (9.3x) | 0.90 (1.6x) |
-| **geometric mean vs chez** | 1.0x | 1.44x | 1.55x | 35.7x | 9.2x | 2.8x |
-| **completed** | 57/57 | 57/57 | 57/57 | 49/57 | 57/57 | 56/57 |

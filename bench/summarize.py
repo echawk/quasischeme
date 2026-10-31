@@ -1,91 +1,218 @@
 #!/usr/bin/env python3
-"""Summarize r7rs-benchmarks results as a Markdown table.
+"""Summarize r7rs-benchmarks results as Markdown tables.
 
-    python3 bench/summarize.py [results-dir] [--baseline NAME]
+    python3 bench/summarize.py [--dir DIR] [--base SYSTEM] [SYSTEM ...]
+    python3 bench/summarize.py [--dir DIR] --update FILE ...
 
-Reads every results.* file in results-dir (default
-bench/r7rs-benchmarks), collects the "+!CSVLINE!+impl,benchmark,seconds"
-lines that the benchmark harness prints, and prints one row per
-benchmark: each implementation's time and, in parentheses, its ratio
-to the baseline (default: the implementation whose name starts with
-"chez").  Failures (CRASHED, ULIMITKILLED, COMPILEERROR) show as such.
-The last rows give each implementation's geometric mean ratio over the
-benchmarks that it and the baseline both completed, and how many it
-completed.
+Reads the results.<System> files in DIR (default bench/r7rs-benchmarks)
+and collects the "+!CSVLINE!+impl,benchmark,seconds" lines that the
+benchmark harness prints.  A system is named by its file (ChezAkku,
+Quasischeme, QuasischemeRacket, RacketBase, ...), since programs that
+share a prelude print the same implementation name.  The last run of a
+benchmark wins.  Failures (CRASHED, ULIMITKILLED, COMPILEERROR) show as
+such.
+
+With no --update: one row per benchmark, each system's time and its
+ratio to the base system (default ChezAkku), then each system's
+geometric mean ratio over the benchmarks it and the base both completed.
+
+With --update: in each FILE, every section between
+
+    <!-- bench KIND ARGS -->  and  <!-- /bench -->
+
+is regenerated from the results.  KIND and ARGS:
+
+    table BASE SYSTEM ...     the per-benchmark table above
+    summary BASE SYSTEM ...   per system: version, geometric mean vs
+                              BASE, benchmarks completed, how many are
+                              at most 1x, 1.5x and 2x BASE's time
+    pairs A/B ...             per pair: A's geometric mean vs B, the
+                              benchmarks A is faster on, and A's five
+                              worst ratios
+    geomean A/B               inline: A's geometric mean vs B, as 0.94x
+
+Text outside the markers is left alone, so the prose around a table is
+written by hand and the numbers in it are not.
 """
 
 import glob
 import math
 import os
+import re
 import sys
 
+LABELS = {
+    "ChezAkku": "Chez Scheme",
+    "Quasischeme": "Quasischeme",
+    "QuasischemeR6RS": "Quasischeme `--r6rs`",
+    "QuasischemeR5RS": "Quasischeme `--r5rs`",
+    "QuasischemeChez": "Quasischeme `--chez`",
+    "QuasischemeGuile": "Quasischeme `--guile`",
+    "QuasischemeRacket": "Quasischeme `--racket`",
+    "RacketBase": "Racket",
+    "Guile": "Guile",
+    "GaucheLocal": "Gauche",
+    "Chibi": "Chibi",
+}
 
-def short(impl):
-    # "chez-10.4.1+akku-r7rs" -> "chez", "quasischeme-0.2" -> "quasischeme"
-    return impl.split("-")[0]
+
+def label(system):
+    return LABELS.get(system) or system
 
 
-def main():
-    args = [a for a in sys.argv[1:] if not a.startswith("--")]
-    baseline = "chez"
-    if "--baseline" in sys.argv:
-        baseline = sys.argv[sys.argv.index("--baseline") + 1]
-        args = [a for a in args if a != baseline]
-    here = os.path.dirname(os.path.abspath(__file__))
-    rdir = args[0] if args else os.path.join(here, "r7rs-benchmarks")
-
-    results = {}          # (impl, bench) -> seconds or failure string
-    impls, benches = [], []
+def load(rdir):
+    """{system: {bench: seconds or failure string}}, {system: version}"""
+    results, versions = {}, {}
     for path in sorted(glob.glob(os.path.join(rdir, "results.*"))):
-        rows = []
+        system = path.rsplit("results.", 1)[1]
+        times = results.setdefault(system, {})
         for line in open(path, errors="replace"):
-            if line.startswith("+!CSVLINE!+"):
-                rows.append(line[len("+!CSVLINE!+"):].strip().split(",")[:3])
-        # a timed line names the implementation as the program does
-        # ("quasischeme_racket-3.0"); a failure line, as the harness
-        # names the system ("quasischeme-racket"): that is the file's
-        # implementation, from its timed lines, if it has any, or else
-        # the system's name with _ for - (as -r6rs and the like's programs
-        # name themselves)
-        timed = [short(i) for i, _, v in rows if not v.isalpha()]
-        file_impl = max(set(timed), key=timed.count) if timed else None
-        for impl, bench, value in rows:
-            try:
-                value = float(value)
-                impl = short(impl)
-            except ValueError:
-                impl = file_impl or impl.replace("-", "_")
+            if not line.startswith("+!CSVLINE!+"):
+                continue
+            row = line[len("+!CSVLINE!+"):].strip().split(",")
+            if len(row) < 3:
+                continue
+            impl, bench, value = row[:3]
             bench = bench.split(":")[0]
-            results[(impl, bench)] = value      # the last run wins
-            if impl not in impls:
-                impls.append(impl)
-            if bench not in benches:
-                benches.append(bench)
+            try:
+                times[bench] = float(value)
+                # "chez-10.4.1+akku-r7rs" -> "10.4.1+akku-r7rs"
+                if "-" in impl:
+                    versions[system] = impl.split("-", 1)[1]
+            except ValueError:
+                times[bench] = value.lower()
+    return results, versions
 
-    impls.sort(key=lambda i: (i != baseline, i != "quasischeme", i))
-    print("| benchmark | " + " | ".join(impls) + " |")
-    print("|---|" + "---|" * len(impls))
-    logs = {i: [] for i in impls}
-    for b in benches:
-        base = results.get((baseline, b))
+
+def ratios(results, a, b):
+    """{bench: a's time / b's time} over the benchmarks both completed"""
+    ta, tb = results.get(a, {}), results.get(b, {})
+    return {k: ta[k] / tb[k] for k in ta
+            if isinstance(ta[k], float) and isinstance(tb.get(k), float)
+            and ta[k] > 0 and tb[k] > 0}
+
+
+def geomean(rs):
+    return math.exp(sum(map(math.log, rs)) / len(rs)) if rs else None
+
+
+def fmt(r):
+    return "" if r is None else "%.2f×" % r
+
+
+def benchmarks(results, systems):
+    seen = []
+    for s in systems:
+        for b in results.get(s, {}):
+            if b not in seen:
+                seen.append(b)
+    return sorted(seen)
+
+
+def table(results, base, systems):
+    systems = [base] + [s for s in systems if s != base]
+    out = ["| benchmark | " + " | ".join(label(s) for s in systems) + " |",
+           "|---|" + "---:|" * len(systems)]
+    for b in benchmarks(results, systems):
         cells = []
-        for i in impls:
-            v = results.get((i, b))
+        for s in systems:
+            v = results.get(s, {}).get(b)
+            base_v = results.get(base, {}).get(b)
             if v is None:
                 cells.append("")
             elif isinstance(v, str):
-                cells.append(v.lower())
-            elif isinstance(base, float) and base > 0 and v > 0:
-                cells.append("%.2f (%.1fx)" % (v, v / base))
-                logs[i].append(math.log(v / base))
+                cells.append(v)
+            elif s != base and isinstance(base_v, float) and base_v > 0:
+                cells.append("%.2f (%.2f×)" % (v, v / base_v))
             else:
                 cells.append("%.2f" % v)
-        print("| %s | %s |" % (b, " | ".join(cells)))
-    print("| **geometric mean vs %s** | %s |" % (baseline, " | ".join(
-        ("%.1fx" % math.exp(sum(l) / len(l))) if l else "" for l in logs.values())))
-    print("| **completed** | %s |" % " | ".join(
-        str(sum(1 for b in benches if isinstance(results.get((i, b)), float)))
-        + "/" + str(len(benches)) for i in impls))
+        out.append("| %s | %s |" % (b, " | ".join(cells)))
+    out.append("| **geometric mean** | %s |" % " | ".join(
+        "**%s**" % fmt(geomean(list(ratios(results, s, base).values())))
+        for s in systems))
+    return out
+
+
+def summary(results, versions, base, systems):
+    out = ["| implementation | version | geometric mean vs %s | completed "
+           "| ≤ 1× | ≤ 1.5× | ≤ 2× |" % label(base),
+           "|---|---|---:|---:|---:|---:|---:|"]
+    total = len(benchmarks(results, [base] + systems))
+    for s in systems:
+        rs = list(ratios(results, s, base).values())
+        done = sum(isinstance(v, float) for v in results.get(s, {}).values())
+        out.append("| %s | %s | %s | %d/%d | %d | %d | %d |" % (
+            label(s), versions.get(s, ""), fmt(geomean(rs)), done, total,
+            sum(r <= 1 for r in rs), sum(r <= 1.5 for r in rs),
+            sum(r <= 2 for r in rs)))
+    return out
+
+
+def pairs(results, specs):
+    out = ["| | geometric mean | faster on | worst ratios |",
+           "|---|---:|---:|---|"]
+    for spec in specs:
+        a, b = spec.split("/")
+        rs = ratios(results, a, b)
+        worst = sorted(rs.items(), key=lambda kv: -kv[1])[:5]
+        out.append("| %s vs %s | %s | %d of %d | %s |" % (
+            label(a), label(b), fmt(geomean(list(rs.values()))),
+            sum(r < 1 for r in rs.values()), len(rs),
+            ", ".join("%s %.1f×" % kv for kv in worst)))
+    return out
+
+
+MARKER = re.compile(r"(<!-- bench (\w+)([^>]*?) -->)(.*?)(<!-- /bench -->)",
+                    re.S)
+
+
+def update(path, results, versions):
+    text = open(path).read()
+
+    def section(m):
+        kind, args = m.group(2), m.group(3).split()
+        if kind == "geomean":
+            a, b = args[0].split("/")
+            body = fmt(geomean(list(ratios(results, a, b).values())))
+            return m.group(1) + body + m.group(5)
+        if kind == "table":
+            lines = table(results, args[0], args[1:])
+        elif kind == "summary":
+            lines = summary(results, versions, args[0], args[1:])
+        elif kind == "pairs":
+            lines = pairs(results, args)
+        else:
+            sys.exit("%s: unknown section kind %s" % (path, kind))
+        return m.group(1) + "\n" + "\n".join(lines) + "\n" + m.group(5)
+
+    new = MARKER.sub(section, text)
+    if new != text:
+        open(path, "w").write(new)
+        print("updated", path)
+
+
+def main():
+    args = sys.argv[1:]
+    here = os.path.dirname(os.path.abspath(__file__))
+    rdir, base, files = os.path.join(here, "r7rs-benchmarks"), "ChezAkku", None
+    systems = []
+    while args:
+        a = args.pop(0)
+        if a == "--dir":
+            rdir = args.pop(0)
+        elif a == "--base":
+            base = args.pop(0)
+        elif a == "--update":
+            files = args
+            args = []
+        else:
+            systems.append(a)
+    results, versions = load(rdir)
+    if files is not None:
+        for f in files:
+            update(f, results, versions)
+        return
+    print("\n".join(table(results, base, systems or sorted(results))))
 
 
 if __name__ == "__main__":

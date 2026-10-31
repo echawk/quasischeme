@@ -78,4 +78,4 @@ jobs:
         # ratio to escape-only
         run: |
           echo "## r7rs-benchmarks: escape-only and full continuations" >> "$GITHUB_STEP_SUMMARY"
-          python3 bench/summarize.py /tmp/bench --baseline quasischeme | tee -a "$GITHUB_STEP_SUMMARY"
+          python3 bench/summarize.py --dir /tmp/bench --base Quasischeme Quasischeme QuasischemeFull | tee -a "$GITHUB_STEP_SUMMARY"

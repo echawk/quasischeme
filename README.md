@@ -107,13 +107,15 @@ native too (docs/continuations.md);
 `--continuations=escape` makes them escape-only, a little faster in code
 that calls unknown procedures in loops.
 
-Speed (`bench/`, ecraven's r7rs-benchmarks, measured before the
-optimizer): all 57 run, at about 1.4× Chez's time as a geometric mean
-with full continuations (Guile: 2.8×).
-`bench/run.sh modes` runs the same programs in each mode, each its own
-column. R6RS mode is as fast as R7RS mode; Chez mode, at Chez's script
-top level, takes about 1.5× R7RS mode's time; Guile mode, about 1.3–1.6×
-on the call-heavy benchmarks. See bench/RESULTS.md and bench/README.md.
+Speed (`bench/`, ecraven's r7rs-benchmarks, full continuations): all
+57 run, at <!-- bench geomean Quasischeme/ChezAkku -->0.96×<!-- /bench -->
+Chez Scheme's time as a geometric mean. On the same programs, Guile
+mode runs at <!-- bench geomean QuasischemeGuile/Guile -->0.60×<!-- /bench -->
+Guile 3.0.11's time, and Racket mode at
+<!-- bench geomean QuasischemeRacket/RacketBase -->1.04×<!-- /bench --> Racket
+CS's. `bench/run.sh modes` runs the programs in each mode, each its own
+column; R6RS mode is as fast as R7RS mode. See bench/RESULTS.md and
+bench/README.md.
 
 Real-world libraries (`tests/run-library-corpus.lisp`): 228 of 387 Akku
 libraries and 91 of 130 snow-fort libraries load.
