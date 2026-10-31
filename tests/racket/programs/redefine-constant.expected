@@ -1,0 +1,5 @@
+(2 1 (4 6))
+define-values: assignment disallowed;
+ cannot re-define a constant
+  constant: v
+  in module:"redefine-constant.rkt"

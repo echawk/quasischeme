@@ -442,7 +442,18 @@ with one, the body's result, the exports defined in TARGET."
 	 (result (multiple-value-list
 		  ;; the frames a continuation captured in the body can reach:
 		  ;; the body's (inside an enclosing base, all of that one's)
-		  (let ((*defining-module* (module-body-name compiled)))
+		  (let ((*defining-module*
+			  ;; the expander names a module's instance by its
+			  ;; resolved name ("/path/m.rkt" for a file's)
+			  (and (module-body-name compiled)
+			       (or (let ((n (and target (linklet-instance-name target))))
+				     ;; written already: a string, or a symbol
+				     (typecase n
+				       (null nil)
+				       (string n)
+				       (symbol (symbol-name n))
+				       (t (ignore-errors (written n)))))
+				   (module-body-name compiled)))))
 		    (qsx::call-with-continuation-base
 		     (lambda () (apply (linklet-function compiled) instance (append imports exports))))))))
     (if target (values-list result) instance)))
