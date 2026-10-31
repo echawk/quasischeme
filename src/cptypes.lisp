@@ -86,7 +86,7 @@
 ;;; (name bits exact): (name x) is true exactly when x is of BITS (EXACT),
 ;;; or at least only then.
 (defparameter *predicate-types*
-  `(("pair?" ,+pair+ t) ("null?" ,+null+ t) ("fixnum?" ,+fix+ t) ("flonum?" ,+flo+ t)
+  `(("pair?" ,+pair+ t) ("null?" ,+null+ t) ("fixnum?" ,+fix+ t) ("flonum?" ,+flo+ t) ("%cp-flonum?" ,+flo+ t)
     ("exact-integer?" ,+int+ t) ("char?" ,+char+ t) ("boolean?" ,+bool+ t)
     ("number?" ,+num+ t) ("symbol?" ,+sym+ nil) ("procedure?" ,+proc+ nil)))
 
@@ -153,11 +153,20 @@ argument type is within, else DEFAULT."
   (def "list" (ts) (if ts +pair+ +null+))
   (def ("not" "eq?" "eqv?" "equal?" "null?" "pair?" "number?" "integer?" "rational?" "real?"
 	"complex?" "exact?" "inexact?" "exact-integer?" "char?" "boolean?" "symbol?" "string?"
-	"vector?" "procedure?" "fixnum?" "flonum?" "zero?" "positive?" "negative?" "odd?" "even?"
+	"vector?" "procedure?" "fixnum?" "flonum?" "%cp-flonum?" "zero?" "positive?" "negative?" "odd?" "even?"
 	"=" "<" ">" "<=" ">=" "fx=?" "fx<?" "fx>?" "fx<=?" "fx>=?" "fl=?" "fl<?" "fl>?" "fl<=?" "fl>=?"
 	"char=?" "char<?" "char>?" "char<=?" "char>=?" "list?" "vector?" "string=?")
       (ts) +bool+)
-  (def ("integer->char" "char-upcase" "char-downcase" "string-ref") (ts) +char+))
+  (def ("integer->char" "char-upcase" "char-downcase" "string-ref") (ts) +char+)
+  ;; of a flonum, a flonum; of another real, a flonum or exact 0 or 1
+  ;; ((sin 0) is 0); sqrt, log, asin and acos can be complex
+  (def ("sin" "cos" "tan" "exp") (ts)
+    (unary-type ts `((,+flo+ ,+flo+) (,+real+ ,(logior +flo+ +fix+))) +num+))
+  (def "atan" (ts)
+    (cond ((null (cdr ts)) (unary-type ts `((,+flo+ ,+flo+) (,+real+ ,(logior +flo+ +fix+))) +num+))
+	  ((some #'zerop ts) 0)
+	  ((every (lambda (b) (subtype-p b +flo+)) ts) +flo+)
+	  (t +num+))))
 
 (defun primitive-result-type (name ts)
   (let ((f (gethash name *result-types*)))
@@ -332,6 +341,13 @@ calls in each hold for the rest."
     (let (test2 after-test)
       (let ((*after-facts* '()))
 	(setq test2 (nth-value 1 (ty test)) after-test *after-facts*))
+      ;; a test emitted as a constant (a predicate its argument's type
+      ;; decides): only its branch
+      (when (and *emitting* (constant-p test2))
+	(return-from ty-if
+	  (cond ((scheme-true-p (nth-value 1 (constant-p test2))) (ty then))
+		(else-p (ty else))
+		(t (values +all+ (cp-void))))))
       ;; what the test's calls say holds after the IF too
       (setq *after-facts* (append after-test *after-facts*))
       (multiple-value-bind (yes no) (test-facts test)
@@ -356,6 +372,17 @@ type is joined into its result type."
 	(when v
 	  (setf (gethash v *rtypes-next*) (logior (gethash v *rtypes-next* 0) type))))
       (list* (car e) (cadr e) body))))
+
+(defun decided-predicate (name args types)
+  "#t or #f if the type of the argument of a call of type predicate NAME
+on ARGS, a variable or a constant, decides it; else NIL."
+  (let ((entry (assoc name *predicate-types* :test #'string=)))
+    (when (and entry (= (length args) 1)
+	       (or (typed-variable-p (car args)) (constant-p (car args)))
+	       (/= (car types) 0))
+      (destructuring-bind (bits exact) (cdr entry)
+	(cond ((and exact (subtype-p (car types) bits)) t)
+	      ((zerop (logand (car types) bits)) qs:false))))))
 
 (defun ty-call (e)
   (let ((op (car e)) (args (cdr e)))
@@ -385,6 +412,10 @@ type is joined into its result type."
 		 do (setf (gethash p *ptypes-next*) (logior (gethash p *ptypes-next* 0) type))))
 	 (when name
 	   (setq *after-facts* (append (call-facts name args) *after-facts*)))
+	 (let ((decided (and *emitting* name (decided-predicate name args types))))
+	   (when decided
+	     (return-from ty-call
+	       (values (if (scheme-true-p decided) +true+ +false+) (cp-quote decided)))))
 	 (values (cond (name (bounded-step-type name args (primitive-result-type name types)))
 		       ((and (symbolp op) (gethash op *known*)) (gethash op *rtypes* +all+))
 		       (t +all+))
@@ -430,7 +461,10 @@ another, or bound by a let (docs/optimizations.md, \"Plan\", item 3)."
   (let ((name (emitted-type type)))
     (if (and (member name '("flonum" "fixnum") :test #'equal)
 	     (consp e) (not (constant-p e)) (not (marker-wrapper-p e))
-	     (not (cp-lambda-p e)) (symbolp (car e)) (not (cp-keyword (car e))))
+	     (not (cp-lambda-p e))
+	     ;; a call, or a let (a flonum version's call, its arguments bound)
+	     (or (and (symbolp (car e)) (not (cp-keyword (car e))))
+		 (cp-lambda-p (car e))))
 	(progn (incf *emit-count*)
 	       (list (sym (concatenate 'string "%cp-assume-" name)) e))
 	e)))
@@ -657,6 +691,34 @@ of an emitted type."
 
 (defparameter *cptypes-iterations* 12)
 
+(defun infer-types (form)
+  "*KNOWN*, *PTYPES* and *RTYPES* filled in for FORM, from the empty
+types to a fixed point; FORM's known-procedure candidates returned."
+  (multiple-value-bind (lambdas escapes) (known-candidates form)
+    (dolist (table (list *known* *ptypes* *vtypes* *facts* *rtypes* *known-lambdas*))
+      (clrhash table))
+    (loop for v being the hash-keys of lambdas using (hash-value l)
+	  unless (gethash v escapes)
+	    do (setf (gethash v *known*) l (gethash l *known-lambdas*) v (gethash v *rtypes*) 0)
+	       (dolist (p (cadr l)) (setf (gethash p *ptypes*) 0)))
+    (let ((converged nil))
+      (loop repeat *cptypes-iterations*
+	    do (let ((*ptypes-next* (make-hash-table :test 'eq))
+		     (*rtypes-next* (make-hash-table :test 'eq)))
+		 (clrhash *vtypes*)
+		 (ty form)
+		 (let ((changed nil))
+		   (loop for table in (list *ptypes* *rtypes*)
+			 for next in (list *ptypes-next* *rtypes-next*)
+			 do (loop for p being the hash-keys of table using (hash-value old)
+				  do (let ((new (logior old (gethash p next 0))))
+				       (unless (= new old) (setf changed t (gethash p table) new)))))
+		   (unless changed (setq converged t) (return)))))
+      (unless converged
+	(loop for p being the hash-keys of *ptypes* do (setf (gethash p *ptypes*) +all+))
+	(loop for v being the hash-keys of *rtypes* do (setf (gethash v *rtypes*) +all+))))
+    lambdas))
+
 (defun cptypes (form)
   "FORM, cp0's output, with the types found told to SBCL (see above)."
   (multiple-value-bind (lambdas escapes) (known-candidates form)
@@ -664,45 +726,165 @@ of an emitted type."
       ;; the clones' variables, and the known procedures again
       (clrhash *vi*)
       (analyze form)
-      (multiple-value-bind (lambdas escapes) (known-candidates form)
-	(let ((*known* (make-hash-table :test 'eq))
-	      (*ptypes* (make-hash-table :test 'eq))
-	      (*vtypes* (make-hash-table :test 'eq))
-	      (*facts* (make-hash-table :test 'eq))
-	      (*rtypes* (make-hash-table :test 'eq))
-	      (*known-lambdas* (make-hash-table :test 'eq))
-	      (*bounds* '())
-	      (*after-facts* '())
-	      (*emit-count* 0))
-	  (loop for v being the hash-keys of lambdas using (hash-value l)
-		unless (gethash v escapes)
-		  do (setf (gethash v *known*) l (gethash l *known-lambdas*) v (gethash v *rtypes*) 0)
-		     (dolist (p (cadr l)) (setf (gethash p *ptypes*) 0)))
-	  (let ((converged nil))
-	    (loop repeat *cptypes-iterations*
-		  do (let ((*ptypes-next* (make-hash-table :test 'eq))
-			   (*rtypes-next* (make-hash-table :test 'eq)))
-		       (clrhash *vtypes*)
-		       (ty form)
-		       (let ((changed nil))
-			 (loop for table in (list *ptypes* *rtypes*)
-			       for next in (list *ptypes-next* *rtypes-next*)
-			       do (loop for p being the hash-keys of table using (hash-value old)
-					do (let ((new (logior old (gethash p next 0))))
-					     (unless (= new old) (setf changed t (gethash p table) new)))))
-			 (unless changed (setq converged t) (return)))))
-	    (unless converged
-	      (loop for p being the hash-keys of *ptypes* do (setf (gethash p *ptypes*) +all+))
-	      (loop for v being the hash-keys of *rtypes* do (setf (gethash v *rtypes*) +all+))))
+      (let ((*known* (make-hash-table :test 'eq))
+	    (*ptypes* (make-hash-table :test 'eq))
+	    (*vtypes* (make-hash-table :test 'eq))
+	    (*facts* (make-hash-table :test 'eq))
+	    (*rtypes* (make-hash-table :test 'eq))
+	    (*known-lambdas* (make-hash-table :test 'eq))
+	    (*bounds* '())
+	    (*after-facts* '())
+	    (*emit-count* 0))
+	(let ((lambdas (infer-types form)))
 	  ;; useless clones go
 	  (let ((drop (remove-if (lambda (c) (useful-clone-p (car c) lambdas)) clones)))
 	    (when drop
 	      (setq form (drop-clones form drop))
-	      (dolist (c drop) (remhash (car c) *known*))))
-	  (clrhash *vtypes*)
-	  (let ((*emitting* t) (*ptypes-next* (make-hash-table :test 'eq))
-		(*rtypes-next* (make-hash-table :test 'eq)))
-	    (nth-value 1 (ty form))))))))
+	      (dolist (c drop) (remhash (car c) *known*)))))
+	;; flonum versions, and the types again with them
+	(let ((candidates (and (flonum-versions-p) (flonum-version-candidates form))))
+	  (when candidates
+	    (setq form (add-flonum-versions form candidates))
+	    (clrhash *vi*)
+	    (analyze form)
+	    (infer-types form)))
+	(clrhash *vtypes*)
+	(let ((*emitting* t) (*ptypes-next* (make-hash-table :test 'eq))
+	      (*rtypes-next* (make-hash-table :test 'eq)))
+	  (nth-value 1 (ty form)))))))
+
+;;; ------------------------------------------------------------------
+;;; Flonum versions
+;;;
+;;; A known procedure with a parameter used in arithmetic with a flonum,
+;;; but not known to be one -- the loop of
+;;;
+;;;   (define (run n) (let loop ((i n) (sum 0.)) (if (< i 0.) sum (loop (- i 1.) (+ i sum)))))
+;;;
+;;; whose n comes from outside -- gets a copy, its flonum version, for
+;;; calls with flonums there.  Each call of the procedure tests those
+;;; arguments, (flonum? x), and calls the version if they all are, else
+;;; the procedure itself.  In the version, a call whose arguments are
+;;; surely flonums (the loop's own calls, here) is emitted without the
+;;; test (DECIDED-PREDICATE), so that a loop once in stays in, its
+;;; variables unboxed; in the procedure, a call tests each time, and goes
+;;; over to the version when the arguments become flonums.  Hawk's
+;;; tracing JIT specializes a trace on the types it sees at run time;
+;;; this is that ahead of time, for flonums, whose boxing costs most.
+
+(defparameter *flonum-version-size-limit* 1500
+  "The biggest procedure, in conses, given a flonum version.")
+
+(defvar *flonum-versions* :unset
+  "Whether to make flonum versions: QUASISCHEME_FLONUM_VERSIONS=0 says not.")
+
+#+sbcl (pushnew (lambda () (setq *flonum-versions* :unset)) sb-ext:*init-hooks*)
+
+(defun flonum-versions-p ()
+  (when (eq *flonum-versions* :unset)
+    (setq *flonum-versions* (not (equal (uiop:getenv "QUASISCHEME_FLONUM_VERSIONS") "0"))))
+  (and *flonum-versions* (primitive-symbol-p (sym "%cp-flonum?"))))
+
+(defparameter *flonum-arithmetic* '("+" "-" "*" "/" "<" ">" "<=" ">=" "=" "max" "min"))
+
+(defun flonum-operand-p (e)
+  "Whether E is a flonum constant or a variable known to hold flonums."
+  (or (typep (constant-value e) 'double-float)
+      (and (typed-variable-p e) (/= (base-type e) 0) (subtype-p (base-type e) +flo+))))
+
+(defun flonum-evidence-p (p body)
+  "Whether variable P is an operand of arithmetic in BODY beside a flonum."
+  (labels ((walk (e)
+	     (cond ((atom e) nil)
+		   ((quote-p e) nil)
+		   ((and (member (primitive-call-name e) *flonum-arithmetic* :test #'equal)
+			 (member p (cdr e))
+			 (some #'flonum-operand-p (cdr e)))
+		    t)
+		   (t (loop for x on e thereis (and (consp x) (walk (car x))))))))
+    (walk body)))
+
+(defun letrec-bound-variables (form)
+  "A set of the variables FORM's letrecs bind."
+  (let ((bound (make-hash-table :test 'eq)))
+    (labels ((scan (e)
+	       (cond ((atom e))
+		     ((quote-p e))
+		     (t (when (and (symbolp (car e)) (member (cp-keyword (car e)) '(:letrec :letrec*)))
+			  (dolist (b (cadr e)) (when (consp b) (setf (gethash (car b) bound) t))))
+			(loop for x on e while (consp x) do (scan (car x)))))))
+      (scan form))
+    bound))
+
+(defun flonum-version-candidates (form)
+  "((v lambda params) ...): FORM's known procedures worth a flonum
+version (see above), each with the parameters its calls test; only a
+letrec's, beside which the version goes."
+  (let ((candidates '())
+	(letrec-bound (letrec-bound-variables form)))
+    (maphash (lambda (v l)
+	       (when (and (<= (tree-size l) *flonum-version-size-limit*)
+			  (gethash v letrec-bound))
+		 (let ((params (remove-if-not
+				(lambda (p)
+				  (let ((type (gethash p *ptypes* 0)))
+				    (and (not (assigned-p p))
+					 (logtest type +flo+) (not (subtype-p type +flo+))
+					 (flonum-evidence-p p (cddr l)))))
+				(cadr l))))
+		   (when params (push (list v l params) candidates)))))
+	     *known*)
+    candidates))
+
+(defun add-flonum-versions (form candidates)
+  "FORM with each of CANDIDATES given its flonum version, beside it in
+its letrec, and each call of it testing its arguments (see above)."
+  (let ((versions (make-hash-table :test 'eq))
+	(flonum-p (sym "%cp-flonum?")))
+    (dolist (c candidates)
+      (destructuring-bind (v l params) c
+	(setf (gethash v versions)
+	      (list (fresh-variable v) (length (cadr l))
+		    (mapcar (lambda (p) (position p (cadr l))) params)))))
+    (labels ((tested (e)
+	       ;; a call of a procedure with a version: its arguments tested
+	       (let ((entry (and (symbolp (car e)) (gethash (car e) versions))))
+		 (if (or (null entry) (/= (length (cdr e)) (second entry)))
+		     e
+		     (let* ((bindings '())
+			    (args (mapcar (lambda (a)
+					    (if (or (constant-p a) (typed-variable-p a))
+						a
+						(let ((tmp (make-lexical "fv")))
+						  (push (list tmp a) bindings)
+						  tmp)))
+					  (cdr e)))
+			    (call (cons (car e) args))
+			    (test (reduce (lambda (pos rest)
+					    `(,(sym "if") (,flonum-p ,(nth pos args)) ,rest ,call))
+					  (third entry)
+					  :from-end t
+					  :initial-value (cons (first entry) args))))
+		       (if bindings
+			   (let ((bindings (nreverse bindings)))
+			     `((,(sym "lambda") ,(mapcar #'first bindings) ,test) ,@(mapcar #'second bindings)))
+			   test)))))
+	     (add (e)
+	       ;; each letrec with a versioned procedure: the version added
+	       (cond ((atom e) e)
+		     ((quote-p e) e)
+		     ((and (symbolp (car e)) (member (cp-keyword (car e)) '(:letrec :letrec*)))
+		      (let ((bindings (mapcar (lambda (b) (list (car b) (add (cadr b)))) (cadr e))))
+			(list* (car e)
+			       (append bindings
+				       (loop for b in bindings
+					     for entry = (gethash (car b) versions)
+					     when (and entry (cp-lambda-p (cadr b)))
+					       collect (list (first entry) (alpha-copy (cadr b)))))
+			       (mapcar #'add (cddr e)))))
+		     (t (let ((a (add (car e))) (d (if (consp (cdr e)) (add (cdr e)) (cdr e))))
+			  (if (and (eq a (car e)) (eq d (cdr e))) e (cons a d)))))))
+      (add (map-calls #'tested form)))))
 
 ;;; ------------------------------------------------------------------
 ;;; The primitives the emitted code calls
@@ -722,6 +904,15 @@ of an emitted type."
 			 (if (and (consp form) (not (eq (car form) 'funcall)) (= (length form) 2))
 			     `(,op ,type ,(second form))
 			     form))))))
+    ;; the test of a flonum version's calls (ADD-FLONUM-VERSIONS)
+    (push "%cp-flonum?" names)
+    (host-set! "%cp-flonum?" (lambda (x) (if (typep x 'double-float) t qs:false)))
+    (setf (compiler-macro-function (location (sym "%cp-flonum?")))
+	  (lambda (form env)
+	    (declare (ignore env))
+	    (if (and (consp form) (not (eq (car form) 'funcall)) (= (length form) 2))
+		`(if (typep ,(second form) 'double-float) t qs:false)
+		form)))
     (register-primitive-names names)))
 
 ;;; ------------------------------------------------------------------

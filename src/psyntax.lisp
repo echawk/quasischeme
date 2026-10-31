@@ -357,7 +357,10 @@ circular, R7RS 2.4)."
   "Whether X names a host primitive (not a variable psyntax made)."
   (unless *primitive-symbols*
     (setq *primitive-symbols* (make-hash-table :test 'eq))
-    (dolist (name (all-primitive-names)) (setf (gethash name *primitive-symbols*) t)))
+    (dolist (name (all-primitive-names)) (setf (gethash name *primitive-symbols*) t))
+    ;; and the optimizer's own, which it emits and then analyzes again
+    ;; (src/cptypes.lisp)
+    (dolist (name '("%cp-flonum?")) (setf (gethash (sym name) *primitive-symbols*) t)))
   (gethash x *primitive-symbols*))
 
 ;;; R6RS's restriction on letrec and letrec* (11.4.6): it must be
