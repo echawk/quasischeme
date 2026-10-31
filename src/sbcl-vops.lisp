@@ -8,8 +8,9 @@
 ;;;; QUASISCHEME_FAST=0 turns it off for a process.  Code compiled with
 ;;;; and without it is as correct, and goes together.
 ;;;;
-;;;; For SBCL 2.6.9 on arm64 (sbcl/sbcl at tag sbcl-2.6.9), whose
-;;;; internals it uses; elsewhere it does nothing.
+;;;; For SBCL on arm64, written against 2.6.9 (sbcl/sbcl at tag
+;;;; sbcl-2.6.9): on when the internals it uses are there, whatever the
+;;;; release; elsewhere it does nothing.
 ;;;;
 ;;;; A small stack vector, inline.  A frame (src/continuations.lisp,
 ;;;; %SITE) is (vector ...) declared DYNAMIC-EXTENT, which SBCL compiles
@@ -26,8 +27,40 @@
 
 #+(and sbcl arm64)
 (eval-when (:compile-toplevel :load-toplevel :execute)
-  (when (string= (lisp-implementation-version) "2.6.9")
-    (pushnew :quasischeme-sbcl-vops *features*)))
+  ;; on when the SBCL internals it uses are there, whatever the release
+  ;; (sbcl/sbcl's names: compiler structures, the assembler's encoder
+  ;; table, the stack vector VOP's helpers)
+  (flet ((there-p (package names)
+	   (every (lambda (name)
+		    (let ((s (find-symbol name package)))
+		      (and s (or (fboundp s) (char= (char name 0) #\*)))))
+		  names)))
+    (when (and (there-p "SB-ASSEM" '("*CURRENT-VOP*" "*INST-ENCODER*" "%EMIT-LABEL" "LABEL-P"
+                             "LABEL-POSITION"))
+	       (there-p "SB-C" '("*COMPILATION*" "BASIC-COMBINATION-ARGS"
+                         "BASIC-COMBINATION-FUN" "BASIC-COMBINATION-INFO"
+                         "BASIC-COMBINATION-KIND" "BASIC-COMBINATION-P"
+                         "BLOCK-COMPONENT" "BLOCK-HOME-LAMBDA" "BLOCK-INFO"
+                         "BLOCK-NEXT" "BLOCK-START" "COMBINATION-LAMBDA"
+                         "COMBINATION-P" "COMPONENT-HEAD" "COMPONENT-TAIL"
+                         "CONSTANT-LVAR-P" "CONSTANT-P" "CONSTANT-VALUE" "CTRAN-NEXT"
+                         "FUN-INFO-LTN-ANNOTATE" "FUN-INFO-OR-LOSE" "IR2-BLOCK-BLOCK"
+                         "IR2-BLOCK-NEXT" "IR2-BLOCK-START-VOP" "LAMBDA-COMPONENT"
+                         "LEAF-REFS" "LVAR-DEST" "LVAR-FUN-NAME" "LVAR-VALUE"
+                         "MSAN-UNPOISON" "MV-COMBINATION-P" "NODE-HOME-LAMBDA"
+                         "NODE-LVAR" "NODE-NEXT" "NODE-STACK-ALLOCATE-P" "NODE-TAIL-P"
+                         "SB-ALLOCATED-SIZE" "SB-KIND" "SC-NAME" "SC-NUMBER" "SC-SB"
+                         "TN-KIND" "TN-LEAF" "TN-OFFSET" "TN-REF-ACROSS" "TN-REF-NEXT"
+                         "TN-REF-TN" "TN-REF-VOP" "TN-SAVE-TN" "TN-SC" "TN-VALUE"
+                         "TN-WRITES" "VALUED-NODE-P" "VECTORISH-LTN-ANNOTATE-HELPER"
+                         "VOP-ARGS" "VOP-BLOCK" "VOP-CODEGEN-INFO" "VOP-INFO"
+                         "VOP-INFO-NAME" "VOP-NAME" "VOP-NEXT" "VOP-NODE" "VOP-P"
+                         "VOP-RESULTS"))
+	       (there-p "SB-VM" '("STACK-CONSED-P" "ALLOCATION"))
+	       (find-package "SB-ARM64-ASM")
+	       (boundp 'sb-assem::*inst-encoder*)
+	       (gethash (find-symbol "BL" "SB-ARM64-ASM") sb-assem::*inst-encoder*))
+      (pushnew :quasischeme-sbcl-vops *features*))))
 
 (defvar cl-user::*quasischeme-fast* :unknown
   "Whether this layer is on: QUASISCHEME_FAST=0 turns it off.  Read once

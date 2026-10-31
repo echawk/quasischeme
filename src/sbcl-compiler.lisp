@@ -9,8 +9,9 @@
 ;;;; function of a few thousand local functions (a macro's expansion,
 ;;;; INTERCAL's programs through Racket's intercal) took minutes there, 90%
 ;;;; of the time in MEMQ.  The same algorithms with sets that become hash
-;;;; tables as they grow; nothing else changes.  Only for 2.6.9, the
-;;;; source this follows.
+;;;; tables as they grow; nothing else changes.  Only where SBCL's
+;;;; functions take the arguments the copies do and what they call is
+;;;; there (2.6.9's source is what they follow).
 
 #+sbcl
 (in-package "SB-C")
@@ -52,7 +53,19 @@
 	    return (ash 1 i))))
 
 #+sbcl
-(when (and (string= (lisp-implementation-version) "2.6.9") *qs-mv-let-kind*)
+(when (and *qs-mv-let-kind*
+	   ;; the two functions as this file's copies follow them, and what
+	   ;; the copies call, whatever the release
+	   (equal (mapcar #'princ-to-string (sb-kernel:%fun-lambda-list #'map-all-dests))
+		  '("FUNCTION" "NODE" "&OPTIONAL" "(NTH-VALUE 0)"))
+	   (equal (mapcar #'princ-to-string (sb-kernel:%fun-lambda-list #'select-tagging))
+		  '("COMPONENT"))
+	   (every (lambda (name) (let ((s (find-symbol name "SB-C"))) (and s (fboundp s))))
+		  '("ADD-EDGE" "COMBINATION-ARG-TEMPLATE-POSITION" "COMBINATION-INFO"
+		    "FUNCTIONAL-KIND" "LAMBDA-VARS" "LEAF-REFS" "LVAR-DEST" "LVAR-FUN-IS"
+		    "MAKE-NET" "MAP-ALL-USES" "MIN-CUT" "NET-TABLE" "NET-TO"
+		    "TAGGED-TEMPLATE-ARG-P" "TAGGED-TEMPLATE-RESULTS-P" "VOP-INFO-P"
+		    "VOP-INFO-RELATED-ARGS")))
   (sb-ext:without-package-locks
     (handler-bind ((warning #'muffle-warning))
       (macrolet ((with-seen-set ((member-p note) &body body)

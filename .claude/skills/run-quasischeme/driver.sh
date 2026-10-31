@@ -41,7 +41,14 @@ case $cmd in
     LIMIT=${LIMIT_BUILD:-900} capped make -C "$ROOT/contrib/cli" >"${TMPDIR:-/tmp}/quasischeme-build.log" 2>&1 \
       && echo "built $PS" || { tail -20 "${TMPDIR:-/tmp}/quasischeme-build.log"; exit 1; } ;;
   eval)
-    m=$1; shift; capped "$PS" $(mode_flag "$m") -p "$1" ;;
+    # after --chez or --guile the rest is that language's own command line
+    m=$1; shift
+    case $m in
+      chez)  f=${TMPDIR:-/tmp}/quasischeme-eval.$$.ss; printf '(write %s)\n' "$1" >"$f"
+             capped "$PS" --chez --script "$f"; rc=$?; rm -f "$f"; exit $rc ;;
+      guile) capped "$PS" --guile -c "(write $1)" ;;
+      *)     capped "$PS" $(mode_flag "$m") -p "$1" ;;
+    esac ;;
   run)
     m=$1; shift; capped "$PS" $(mode_flag "$m") "$@" ;;
   repl)
@@ -74,8 +81,8 @@ EOF
     chk r6rs  "(1 2 3)" "$PS" --r6rs -p '(list-sort < (list 3 1 2))'
     chk r5rs  "#t"     "$PS" --r5rs -p "(eq? 'abc 'ABC)"
     chk r4rs  "2"      "$PS" --r3rs -p "(if '() 1 2)"
-    chk chez  1267650600228229401496703205376 "$PS" --chez "$tmp/a.ss"
-    chk guile '"a,b"'  "$PS" --guile -p '(string-join (list "a" "b") ",")'
+    chk chez  1267650600228229401496703205376 "$PS" --chez --script "$tmp/a.ss"
+    chk guile '"a,b"'  "$PS" --guile -c '(write (string-join (list "a" "b") ","))'
     chk racket "(0 1 4)" "$PS" --racket "$tmp/a.rkt"
     chk repl  "$(printf 'r7rs> 3\nr7rs> ')" sh -c "printf '(+ 1 2)\n,q\n' | '$PS' | tail -n +2"
     rm -rf "$tmp"; exit $fail ;;
