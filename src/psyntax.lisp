@@ -1301,6 +1301,27 @@ the command line and exits; DROP-LAST skips it.)"
 	    collect `(,name (a b) (if (and (typep a 'fixnum) (typep b 'fixnum))
 				      (if (,op a b) t qs:false)
 				      :call)))
+    ;; map and for-each of one list with a procedure (not in Chez mode, which
+    ;; checks the arguments first): a loop here, without the call, the rest
+    ;; list and MAPCAR's coercion of the procedure at each element (deriv
+    ;; spent a third of its time there).  A list that ends in something
+    ;; other than () is what's left of it passed to the procedure, as
+    ;; MAPCAR would have stopped there too.
+    ("map" (f l0)
+     (if (and (functionp f) (not qs:*chez-reader*))
+	 (let* ((head (list nil)) (tail head))
+	   (declare (dynamic-extent head))
+	   (loop (if (consp l0)
+		     (let ((c (list (funcall f (car l0)))))
+		       (setf (cdr tail) c tail c l0 (cdr l0)))
+		     (return)))
+	   (if (null l0) (cdr head) (progn :call)))
+	 :call))
+    ("for-each" (f l0)
+     (if (and (functionp f) (not qs:*chez-reader*))
+	 (progn (loop (if (consp l0) (progn (funcall f (car l0)) (setq l0 (cdr l0))) (return)))
+		(if (null l0) qs:unspecific (progn :call)))
+	 :call))
     ;; two strings: CL's comparisons, which compare code points as R7RS does
     ("string=?" (a b) (if (and (simple-string-p a) (simple-string-p b)) (if (string= a b) t qs:false) :call))
     ("string<?" (a b) (if (and (simple-string-p a) (simple-string-p b)) (if (string< a b) t qs:false) :call))
