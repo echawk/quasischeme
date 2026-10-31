@@ -540,11 +540,34 @@ above their frame: those a stack-moving VOP is in (by its block)."
 			    (setf (gethash (and block (sb-c::block-home-lambda block)) dirty) t))
 		     ;; an entry with &REST or &MORE arguments leaves them above
 		     ;; the frame and goes on, in the same frame, into functions
-		     ;; of its own (a machine's body): all of them, then (key NIL)
+		     ;; of its own (a machine's body), by tail calls: below
 		     when (member (symbol-name (sb-c::vop-name v))
 				  '("COPY-MORE-ARG" "%MORE-ARG-CONTEXT" "%LISTIFY-REST-ARGS")
 				  :test #'string=)
-		       do (setf (gethash nil dirty) t)))
+		       do (let ((block (sb-c::ir2-block-block b)))
+			    (setf (gethash (and block (sb-c::block-home-lambda block)) dirty) t))))
+      ;; A function a dirty one calls in tail position runs in its frame,
+      ;; with what it left above: dirty too.  (Before, any &more entry
+      ;; made the whole component dirty, and a Racket linklet always has
+      ;; one: fib in the benchmark's linklet took 36% longer than alone.)
+      (let ((tail-calls '()))
+	(loop for block = (sb-c::block-next (sb-c::component-head component)) then (sb-c::block-next block)
+	      until (or (null block) (eq block (sb-c::component-tail component)))
+	      when (sb-c::block-start block)
+	      do (loop for node = (sb-c::ctran-next (sb-c::block-start block))
+			 then (let ((next (sb-c::node-next node))) (and next (sb-c::ctran-next next)))
+		       while node
+		       do (when (and (sb-c::combination-p node)
+				     (eq (sb-c::basic-combination-kind node) :local)
+				     (sb-c::node-tail-p node))
+			    (push (cons (sb-c::node-home-lambda node) (sb-c::combination-lambda node))
+				  tail-calls))))
+	(loop with changed = t
+	      while changed
+	      do (setq changed nil)
+		 (dolist (c tail-calls)
+		   (when (and (gethash (car c) dirty) (not (gethash (cdr c) dirty)))
+		     (setf (gethash (cdr c) dirty) t changed t)))))
       dirty))
 
   ;; component -> its QS-DIRTY-LAMBDAS
