@@ -60,7 +60,7 @@
 
 (defun errno ()
   "C's errno now."
-  #+sbcl (errno)
+  #+sbcl (sb-alien:get-errno)
   #-sbcl (cffi:mem-ref (cffi:foreign-funcall #+darwin "__error" #-darwin "__errno_location" :pointer) :int))
 
 (defun call-with-address (place function)
