@@ -22,7 +22,7 @@ SBCL ?= sbcl
 SCHEME_RUN = QUASISCHEME_LIBRARY_CACHE=0 $(SBCL) --dynamic-space-size 4GB \
 	--control-stack-size 500MB --script
 
-SUITES = syntax-case library interop srfi-system r5rs r7rs r6rs continuation reports
+SUITES = syntax-case library interop srfi-system r5rs r7rs r6rs continuation reports sbcl
 
 test:
 	@# one run first, so ASDF compiles whatever is stale once

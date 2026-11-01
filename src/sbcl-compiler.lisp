@@ -255,3 +255,47 @@
 #+sbcl
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (sb-ext:lock-package "SB-C"))
+
+;;;; CLOSURE-INIT with a GC card mark, on arm64.
+;;;;
+;;;; IR2-CONVERT-ENCLOSE (sbcl/sbcl at tag sbcl-2.6.9,
+;;;; src/compiler/ir2tran.lisp) makes every closure of a LABELS group,
+;;;; each MAKE-CLOSURE an allocation a collection can follow, and only
+;;;; then stores the closures in each other (the delayed CLOSURE-INITs).
+;;;; arm64's CLOSURE-INIT (src/compiler/arm64/cell.lisp) stores without
+;;;; the card mark that x86-64's makes: a closure promoted by a
+;;;; collection between the allocations then holds younger closures the
+;;;; next collection doesn't see, and frees.  Guile's reader, whose %read
+;;;; makes a group of closures of 51 slots each call, corrupted the heap
+;;;; after some 100,000 reads (heap_scavenge failure).  This is x86-64's
+;;;; definition, on when the internals it uses are there.
+
+#+(and sbcl arm64)
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (sb-ext:unlock-package "SB-VM")
+  (when (and (find-symbol "EMIT-GENGC-BARRIER" "SB-VM")
+	     (fboundp (find-symbol "EMIT-GENGC-BARRIER" "SB-VM"))
+	     (find-symbol "CLOSURE-INIT" "SB-VM")
+	     (ignore-errors (sb-c::template-or-lose (find-symbol "CLOSURE-INIT" "SB-VM"))))
+    (pushnew :quasischeme-closure-init-barrier *features*)))
+
+#+quasischeme-closure-init-barrier
+(sb-ext:without-package-locks
+  (handler-bind ((warning #'muffle-warning))
+    (sb-vm::define-vop (sb-vm::closure-init)
+      (:args (sb-vm::qs-closure :scs (sb-vm::descriptor-reg))
+	     (sb-vm::qs-value :scs (sb-vm::descriptor-reg sb-vm::any-reg)))
+      (:info sb-vm::qs-offset sb-vm::qs-dx)
+      (:vop-var sb-vm::vop)
+      (:generator 4
+	(unless sb-vm::qs-dx
+	  (sb-vm::emit-gengc-barrier sb-vm::qs-closure nil sb-vm::tmp-tn (sb-c::tn-ref-across (sb-c::vop-args sb-vm::vop))))
+	(let ((disp (- (* (+ sb-vm:closure-info-offset sb-vm::qs-offset) sb-vm:n-word-bytes)
+		       sb-vm:fun-pointer-lowtag)))
+	  ;; STR's immediate offset is short, as STOREW knows: past it, in
+	  ;; TMP-TN (which the barrier is done with)
+	  (if (<= -256 disp 255)
+	      (sb-assem:inst sb-vm::str sb-vm::qs-value (sb-vm::@ sb-vm::qs-closure disp))
+	      (progn
+		(sb-vm::load-immediate-word sb-vm::tmp-tn disp)
+		(sb-assem:inst sb-vm::str sb-vm::qs-value (sb-vm::@ sb-vm::qs-closure sb-vm::tmp-tn)))))))))
