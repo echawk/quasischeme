@@ -198,22 +198,29 @@ per import set, the safe exports of the linklet it imports
 (IMPORTS-SAFE-EXPORTS)."
   (incf (getf *stats* :linklets))
   (install-letrec-check)
+  (let ((*enforce-constants* (truthy (funcall *compile-enforce-module-constants*))))
+    (compile-linklet-1 form name key imports-known)))
+
+(defun compile-linklet-1 (form name key imports-known)
+  ;; compiled without constants: cached apart (LINKLET-KEY hashes the strategy)
+  (let ((strategy (if *enforce-constants* "linklet" "linklet/no-constants")))
   ;; its machine code and what lowering it says cached already
   (when key
-    (let ((compiled (make-compiled-linklet :deferred :name name :strategy "linklet")))
+    (let ((compiled (make-compiled-linklet :deferred :name name :strategy strategy)))
       (setf (compiled-linklet-source-key compiled) key
 	    (compiled-linklet-source-form compiled) form
 	    (compiled-linklet-imports-known compiled) imports-known)
       (when (linklet-from-meta compiled)
-	(return-from compile-linklet compiled))))
+	(return-from compile-linklet-1 compiled))))
   (timing (:lower)
     (let* ((form (if (functionp form) (funcall form) form)) ; a .zo's (READ-LINKLET-BUNDLE)
 	   (compiled (compile-linklet-form form :name name :imports-known imports-known)))
+      (setf (compiled-linklet-strategy compiled) strategy)
       ;; compiled in memory if it can't be cached (UNDUMPABLE-LITERAL-P)
       (when (undumpable-literal-p (compiled-linklet-form compiled))
 	(setf (compiled-linklet-source-form compiled) form
 	      (compiled-linklet-imports-known compiled) imports-known)
-	(return-from compile-linklet compiled))
+	(return-from compile-linklet-1 compiled))
       ;; its compiled code is cached, keyed by the linklet as given and
       ;; the imports it was told are safe (its code depends on them)
       (unless (compiled-linklet-source-key compiled)
@@ -224,7 +231,7 @@ per import set, the safe exports of the linklet it imports
       (setf (compiled-linklet-source-form compiled) form
 	    (compiled-linklet-imports-known compiled) imports-known)
       (write-linklet-meta compiled)
-      compiled)))
+      compiled))))
 
 (defvar *instance-safe-exports* (make-hash-table :test 'eq :weakness :key :synchronized t)
   "A module's linklet instance -> its linklet's safe exports.")

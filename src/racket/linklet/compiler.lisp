@@ -466,13 +466,14 @@ After the assignment, so that analyses still see the lambda assigned."
 DEFINING: it's NAME's definition (define-values), which, for a variable
 never set!, is racket:variable-define!: a module's constant, which a
 continuation re-entering the definition can't define again, as in
-Racket (\"cannot re-define a constant\")."
+Racket (\"cannot re-define a constant\"); unless *ENFORCE-CONSTANTS*
+is false."
   (let ((local (assoc name env)))
     (if local
 	(list (core "set!") (cdr local) value)
 	(let* ((v (gethash name (linklet-info-variables *info*)))
 	       (kind (and v (variable-info-kind v)))
-	       (cell-set (if (and defining v (not (variable-info-mutated v)))
+	       (cell-set (if (and defining v (not (variable-info-mutated v)) *enforce-constants*)
 			     (core "racket:variable-define!")
 			     (core "racket:variable-set!"))))
 	  (cond ((and (member kind '(:defined :defined-exported)) (null (variable-info-core v)))

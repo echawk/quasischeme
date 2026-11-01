@@ -20,6 +20,13 @@
 
 (in-package "QUASISCHEME-RACKET")
 
+(defvar *enforce-constants* t
+  "compile-enforce-module-constants as a linklet is compiled: when
+false, no definition makes a constant (schemify's mutated.rkt counts
+every variable mutated), so that a module can be declared again
+(LOWER-SET).  Lowered without constants, a linklet is cached apart: its
+strategy is linklet/no-constants (LINKLET-KEY).")
+
 (defstruct (compiled-linklet (:constructor make-compiled-linklet (form &key name strategy)))
   form					; the lowered S-expression
   name
@@ -224,11 +231,13 @@ READ-LINKLET-BUNDLE reads only if it's lowered or written again)."
 (defun linklet-form (compiled)
   "COMPILED's lowered form: lowered now if its meta file stood for it."
   (when (eq (compiled-linklet-form compiled) :deferred)
-    (setf (compiled-linklet-form compiled)
-	  (compiled-linklet-form
-	   (compile-linklet-form (linklet-source-form compiled)
-				 :name (compiled-linklet-name compiled)
-				 :imports-known (compiled-linklet-imports-known compiled)))))
+    ;; lowered as it was asked for, constants or not (COMPILE-LINKLET)
+    (let ((*enforce-constants* (not (equal (compiled-linklet-strategy compiled) "linklet/no-constants"))))
+      (setf (compiled-linklet-form compiled)
+	    (compiled-linklet-form
+	     (compile-linklet-form (linklet-source-form compiled)
+				   :name (compiled-linklet-name compiled)
+				   :imports-known (compiled-linklet-imports-known compiled))))))
   (compiled-linklet-form compiled))
 
 (defun whole-function (compiled)
