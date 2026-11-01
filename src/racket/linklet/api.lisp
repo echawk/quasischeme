@@ -101,8 +101,11 @@ first) can't change, as in Racket."
   *void*)
 
 (defun variable-set (v value)
+  ;; set! of a constant: Racket CS's do-variable-set! not as a definition
   (when (linklet-variable-constant v)
-    (racket-error (rname (linklet-variable-name v)) "cannot re-define a constant"))
+    (do-raise (make-exn "exn:fail:contract:variable"
+			(format nil "~A: cannot modify a constant" (rname (linklet-variable-name v)))
+			(linklet-variable-name v))))
   (setf (linklet-variable-value v) value)
   *void*)
 

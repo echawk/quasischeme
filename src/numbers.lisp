@@ -277,6 +277,33 @@ compute an exact one in single floats."
 (def-arith scheme- - generic-)
 (def-arith scheme* * generic*)
 
+;;; An integer division of a bignum and a flonum: CL converts the bignum to
+;;; a flonum, which overflows ((remainder #e1e1000 3.0) was an error), so
+;;; the flonum, an integer, is made exact, the division done exactly, and
+;;; its result made inexact, as Racket's and Chez's are.
+
+(defun integer-division (op a b)
+  (flet ((exactly (x) (if (and (floatp x) (not (infinite-p x)) (not (nan-p x))) (rational x) x))
+	 (inexact (r)
+	   ;; past the flonums: an infinity of its sign
+	   (if (> (integer-length r) 1024)
+	       (if (minusp r) sb-ext:double-float-negative-infinity sb-ext:double-float-positive-infinity)
+	       (coerce r 'double-float))))
+    (if (or (and (typep a '(and integer (not fixnum))) (floatp b))
+	    (and (typep b '(and integer (not fixnum))) (floatp a)))
+	(let ((ea (exactly a)) (eb (exactly b)))
+	  (if (and (rationalp ea) (rationalp eb) (not (zerop eb)))
+	      (inexact (values (funcall op ea eb)))
+	      (values (funcall op a b))))
+	(let ((r (values (funcall op a b))))
+	  ;; TRUNCATE's quotient is an integer even of flonums: inexact, as
+	  ;; Scheme's, a zero signed as IEEE division signs it
+	  (if (and (rationalp r) (or (floatp a) (floatp b)))
+	      (if (zerop r)
+		  (float-sign (/ (coerce a 'double-float) (coerce b 'double-float)) 0d0)
+		  (coerce r 'double-float))
+	      r)))))
+
 ;;; quotient, remainder, modulo and zero?: CL's TRUNCATE, REM, MOD and
 ;;; ZEROP, called out of line unless the arguments' types are known;
 ;;; so inline when they are fixnums, as the operations above are.
@@ -289,9 +316,9 @@ compute an exact one in single floats."
 		       (if (and ,@(mapcar (lambda (v) `(typep ,v 'fixnum)) vars))
 			   ,(sublis (mapcar #'cons ',lambda-list vars) ',form)
 			   ,(sublis (mapcar #'cons ',lambda-list vars) ',form))))))))
-  (def-integer-op scheme-quotient (a b) (values (truncate a b)))
-  (def-integer-op scheme-remainder (a b) (rem a b))
-  (def-integer-op scheme-modulo (a b) (mod a b))
+  (def-integer-op scheme-quotient (a b) (integer-division #'truncate a b))
+  (def-integer-op scheme-remainder (a b) (integer-division #'rem a b))
+  (def-integer-op scheme-modulo (a b) (integer-division #'mod a b))
   (def-integer-op scheme-zerop (a) (zerop a)))
 
 ;;; Comparisons.  CL compares a rational with a float by converting the
