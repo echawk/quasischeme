@@ -419,7 +419,18 @@ lexical's name less the suffixes the linklet compiler gives it
 	((regexp-literal-p x) (regexp-literal-source x))
 	((rinport-p x) (rinport-name x))
 	((routport-p x) (routport-name x))
-	((struct-instance-p x) (or (object-name-property x) (struct-type-name (struct-of-type x))))
+	((struct-instance-p x)
+	 (or (object-name-property x)
+	     ;; an applicable struct whose procedure is a field: that
+	     ;; procedure's name (Racket CS's EXTRACT-PROCEDURE-NAME), as a
+	     ;; keyword procedure's is its own
+	     (multiple-value-bind (spec owner) (applicable-procedure (struct-of-type x))
+	       (let ((f (and (integerp spec)
+			     (struct-field x (+ spec (- (struct-type-total owner) (struct-type-field-count owner)))))))
+		 (and (functionp f)
+		      (let ((name (funcall (native-function (gethash "object-name" *natives*)) f)))
+			(and (not (eq name qs:false)) name)))))
+	     (struct-type-name (struct-of-type x))))
 	((struct-type-p x) (struct-type-name x))
 	((and (functionp x) (gethash x *renamed-procedures*)))
 	((and (functionp x) (local-function-name x)))

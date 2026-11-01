@@ -18,6 +18,7 @@
   (install-natives)
   (install-linklet-primitives)
   (install-stubs)
+  (install-arity-masks)
   (install-host-globals)
   (prune-extra-primitives))
 

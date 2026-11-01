@@ -329,6 +329,30 @@ and none of them assigned in them or BODY?"
 			       (some (lambda (b2) (assigned-p (car (car b)) (cadr b2))) bindings)))
 	       bindings)))
 
+(defun inferred-procedure-name (x)
+  "The name Racket gives the procedure lambda or case-lambda X makes, as
+schemify's infer-name.rkt does: its inferred-name, or else where it is
+in its source, path:line:col (the path shortened to its last 19
+characters after ...); NIL for none (or a name of schemify's own
+encodings, [ and ])."
+  (let ((name (gethash x (linklet-info-names *info*))))
+    (if (and name (symbolp name) (not (eq name qs:false)))
+	(let ((s (rname name)))
+	  (and (plusp (length s)) (not (find (char s 0) "[]")) name))
+	(destructuring-bind (&optional src line col pos &rest more)
+	    (gethash x (linklet-info-locations *info*))
+	  (declare (ignore more))
+	  (let ((path (cond ((stringp src) src)
+			    ((rpath-p src) (rpath-string src)))))
+	    (when (and path (plusp (length path)))
+	      (let ((short (substitute #\/ #\\
+				       (if (< (length path) 20)
+					   path
+					   (concatenate 'string "..." (subseq path (- (length path) 19)))))))
+		(cond ((and (integerp line) (integerp col))
+		       (rsym (format nil "~A:~D:~D" short line col)))
+		      ((integerp pos) (rsym (format nil "~A::~D" short pos)))))))))))
+
 (defun name-lambda (core id)
   "CORE, a lowered expression; if it is a lambda (or a case-lambda's
 racket:with-arity), with '(:racket-name . ID) first in its body: the
@@ -563,8 +587,14 @@ NOTE-INLINE-PROCEDURE remembered, with as many arguments as it takes."
 					(list* (core "begin")
 					       (append (mapcar (lambda (f) (lower-expr f env)) (cdr args))
 						       (list (list (core "apply") (core "values") vals)))))))))
-	     (:lambda (lower-lambda (car args) (cdr args) env))
-	     (:case-lambda (lower-case-lambda args env (gethash x (linklet-info-names *info*))))
+	     (:lambda (let ((name (inferred-procedure-name x)))
+			(if name
+			    (name-lambda (lower-lambda (car args) (cdr args) env) name)
+			    (lower-lambda (car args) (cdr args) env))))
+	     (:case-lambda (let ((name (inferred-procedure-name x)))
+			     (if (and name (null (cdr args)))
+				 (name-lambda (lower-case-lambda args env name) name)
+				 (lower-case-lambda args env (gethash x (linklet-info-names *info*))))))
 	     ;; Racket CS's (#%foreign-inline e mode): e
 	     (:foreign-inline (lower-expr (first args) env))
 	     (:let-values (lower-let-values (car args) (cdr args) env))

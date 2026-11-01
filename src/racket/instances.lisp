@@ -73,10 +73,14 @@ Racket's own (primitive-table ...) lists."
 			   (mask (and (second words) (parse-integer (second words) :junk-allowed t))))
 		      (make-table-entry name (first words) mask)))))
 
+(defvar *primitive-tables* nil "PRIMITIVE-TABLES, once read.")
+
 (defun primitive-tables ()
-  "Instance name -> its table's entries, for every table."
-  (loop for (file . instance) in *primitive-table-files*
-	collect (cons instance (read-primitive-table file))))
+  "Instance name -> its table's entries, for every table (read once)."
+  (or *primitive-tables*
+      (setq *primitive-tables*
+	    (loop for (file . instance) in *primitive-table-files*
+		  collect (cons instance (read-primitive-table file))))))
 
 (defvar *arity-masks* (make-hash-table :test 'eq :weakness :key :synchronized t)
   "Procedures whose arity isn't their lambda list's -> their arity mask:
@@ -153,6 +157,36 @@ instances have, and how many have the wrong arity.  MISSING: list them."
 
 (defvar *stubs* (make-hash-table :test 'equal)
   "Name -> T for each primitive that is a stub (INSTALL-STUBS).")
+
+(defun install-arity-masks ()
+  "Each primitive whose lambda list allows other numbers of arguments
+than Racket CS's table gives it (a host procedure of &rest arguments,
+an optional argument Racket's lacks) recorded with the table's mask, so
+that procedure-arity and procedure-arity-includes? answer as Racket's
+do.  A function two primitives share is left alone.  Needs Racket's
+source; without it, nothing."
+  (when (ignore-errors (racket-source-directory))
+    (let ((uses (make-hash-table :test 'eq)) (masks '()))
+      (dolist (table (primitive-tables))
+	(dolist (e (cdr table))
+	  (multiple-value-bind (v found) (gethash (table-entry-name e) (primitive-instance (car table)))
+	    (when (and found (functionp v) (table-entry-mask e)
+		       (not (gethash (table-entry-name e) *stubs*)))
+	      (incf (gethash v uses 0))
+	      (unless (eql (ignore-errors (arity-mask v)) (table-entry-mask e))
+		(push (cons v (table-entry-mask e)) masks))))))
+      (loop for (v . mask) in masks
+	    when (and (= (gethash v uses) 1) (not (nth-value 1 (gethash v *arity-masks*))))
+	      do (setf (gethash v *arity-masks*) mask))
+      ;; and named as the table names it, for object-name (make-parameter
+      ;; was #f): a function one primitive has, not named already
+      (dolist (table (primitive-tables))
+	(dolist (e (cdr table))
+	  (multiple-value-bind (v found) (gethash (table-entry-name e) (primitive-instance (car table)))
+	    (when (and found (functionp v) (eql (gethash v uses) 1)
+		       (not (gethash (table-entry-name e) *stubs*))
+		       (not (nth-value 1 (gethash v *renamed-procedures*))))
+	      (setf (gethash v *renamed-procedures*) (rsym (table-entry-name e))))))))))
 
 (defun install-stubs ()
   "Each procedure of Racket CS's primitive tables that an instance lacks,

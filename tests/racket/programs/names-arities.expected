@@ -1,0 +1,14 @@
+kf
+kf2
+named
+open-input-file
+with-output-to-file
+sort
+make-parameter
+kar
+string-copy 2
+make-parameter 30
+string->number 62
+car 2
++ -1
+vector-ref 4
