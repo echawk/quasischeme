@@ -5,7 +5,7 @@
 SBCL ?= sbcl
 
 .PHONY: bootstrap bootstrap-all bootstrap-pso bootstrap-psyntax bootstrap-check clean \
-	test test-reports test-escape test-cli test-srfi test-programs test-guile test-chez test-all precompile-srfi
+	test test-reports test-escape test-cli test-srfi test-programs test-guile test-chez test-all precompile-srfi fuzz
 
 # Tests.  `make test` runs every suite in the default mode (full
 # continuations, src/continuations.lisp); `make test-escape` the
@@ -45,6 +45,10 @@ test-escape:
 	    | sed 's/^/escape-only continuations: /' \
 	    || { echo "$$t: no result; see /tmp/quasischeme-test-escape-$$t.log"; exit 1; }; \
 	done
+
+# Random programs under several compiler configurations (tests/fuzz/)
+fuzz:
+	python3 tests/fuzz/difftest.py --count $(or $(COUNT),20)
 
 test-cli:
 	$(MAKE) -C contrib/cli test

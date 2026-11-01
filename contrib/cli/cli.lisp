@@ -101,7 +101,8 @@
 QUASISCHEME_LIBRARY_PATH, a list of directories separated by colons,
 is searched before the -L directories.  QUASISCHEME_THREAD_STACK_SIZE
 is the control stack of each thread a program makes, in megabytes
-(default 32; the main thread's is 256).
+(default 32; the main thread's is 256).  QUASISCHEME_NURSERY, in
+kilobytes, is how much is allocated between collections (for testing).
 
 The Lisp's init file (~/.sbclrc for SBCL) is loaded first, as the Lisp
 itself would, so it can set up Quicklisp dists such as Ultralisp, ASDF's
@@ -582,6 +583,14 @@ proportion (qs:limit-thread-stack-size)."
   (let ((mb (or (ignore-errors (parse-integer (uiop:getenv "QUASISCHEME_THREAD_STACK_SIZE"))) 32)))
     (qs:limit-thread-stack-size (* mb 1024 1024))))
 
+(defun set-nursery ()
+  "QUASISCHEME_NURSERY kilobytes allocated between collections, if set:
+small, a collection is frequent, to find what goes wrong across one
+(tests/fuzz/difftest.py's gc-stress)."
+  (let ((kb (ignore-errors (parse-integer (uiop:getenv "QUASISCHEME_NURSERY")))))
+    (when (and kb (plusp kb))
+      #+sbcl (setf (sb-ext:bytes-consed-between-gcs) (* kb 1024)))))
+
 (defun set-program-arguments (argv0 args)
   "What (command-line), Guile's (program-arguments) and Racket's
 current-command-line-arguments are."
@@ -599,6 +608,7 @@ current-command-line-arguments are."
 (defun run-compiled-program ()
   (qs:disable-float-traps)
   (limit-thread-stacks)
+  (set-nursery)
   (set-program-arguments (car (uiop:raw-command-line-arguments)) (uiop:command-line-arguments))
   (handler-bind ((serious-condition
 		   (lambda (e) (if (interrupt-p e) (uiop:quit 130) (report-and-exit e)))))
@@ -803,6 +813,7 @@ is reported, and the program runs anyway."
 (defun main ()
   (qs:disable-float-traps)
   (limit-thread-stacks)
+  (set-nursery)
   (find-sbcl-contribs)
   (dolist (dir (uiop:split-string (or (uiop:getenv "QUASISCHEME_LIBRARY_PATH") "") :separator ":"))
     (when (plusp (length dir)) (add-library-path dir)))
