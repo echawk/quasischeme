@@ -63,8 +63,20 @@ sets: an alist of the same kind.")
 (defun whitespacep (c)
   (member c '(#\Space #\Tab #\Newline #\Return #\Page #.(code-char 11) #.(code-char 160))))
 
-(defun peekc (port) (peek-char nil port nil nil))
-(defun readc (port) (read-char port nil nil))
+(defvar *gport-class* nil "The class of Guile's ports, once ports.lisp has made it.")
+
+(defun peekc (port)
+  ;; a port of ours without the stream functions' dispatch, per character
+  (if (and *gport-class* (eq (class-of port) *gport-class*))
+      (let ((c (or (buffered-ascii-peek port) (trivial-gray-streams:stream-peek-char port))))
+	(if (eq c :eof) nil c))
+      (peek-char nil port nil nil)))
+
+(defun readc (port)
+  (if (and *gport-class* (eq (class-of port) *gport-class*))
+      (let ((c (port-read-char port)))
+	(if (eq c :eof) nil (progn (track-char port c) c)))
+      (read-char port nil nil)))
 
 (defun skip-whitespace-and-comments (port)
   "Skip to the next datum's first character; return it (not consumed),
@@ -216,11 +228,28 @@ odd number with the same operator between is (op e1 e2 ...); otherwise
 		   (progn (unread-char #\. port) (push (guile-read-1 port) items))))
 	      (t (push (guile-read-1 port) items)))))))
 
+(defvar *token-buffer* nil
+  "A string READ-TOKEN gathers characters in, not in use (NIL while one
+is: a read the port's own reading starts gets one of its own).")
+
 (defun read-token (port)
-  (with-output-to-string (s)
+  (let ((buffer (or (loop (let ((b *token-buffer*))
+			    ;; taken at once, so that two threads can't share it
+			    (when (eq (sb-ext:compare-and-swap (symbol-value '*token-buffer*) b nil) b)
+			      (return b))))
+		    (make-string 64)))
+	(n 0))
+    (declare (type (simple-array character (*)) buffer) (fixnum n))
     (loop for c = (peekc port)
 	  until (delimiterp c)
-	  do (write-char (readc port) s))))
+	  do (when (= n (length buffer))
+	       (let ((bigger (make-string (* 2 n))))
+		 (replace bigger buffer)
+		 (setq buffer bigger)))
+	     (setf (schar buffer n) (readc port))
+	     (incf n))
+    (prog1 (subseq buffer 0 n)
+      (setq *token-buffer* buffer))))
 
 (defun ssym (name) (qs:intern-scheme-symbol name))
 

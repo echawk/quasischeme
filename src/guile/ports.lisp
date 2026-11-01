@@ -63,6 +63,8 @@
 
 (defun gport-p (x) (typep x 'gport))
 
+(setq *gport-class* (find-class 'gport))
+
 (defun make-port-buffer (size position)
   (vector (make-octets size) 0 0 qs:false position))
 
@@ -416,6 +418,19 @@ for); else NIL (read-char asks this per character)."
 	    (setf (svref rb 1) (1+ rpos))
 	    (code-char b)))))))
 
+(defun buffered-ascii-peek (port)
+  "As BUFFERED-ASCII-CHAR, the character not consumed (peek-char, and the
+reader's look ahead)."
+  (when (and (eq (class-of port) (load-time-value (find-class 'gport) t))
+	     (eq (gslot port codec) :utf-8) (gslot port bom-state))
+    (let* ((rb (gslot port rbuffer))
+	   (rpos (svref rb 1)))
+      (declare (simple-vector rb) (fixnum rpos))
+      (when (< rpos (the fixnum (svref rb 2)))
+	(let ((b (aref (the (simple-array (unsigned-byte 8) (*)) (svref rb 0)) rpos)))
+	  (when (< b 128)
+	    (code-char b)))))))
+
 (defun buffer-ascii-char (port char)
   "Put ASCII CHAR in PORT's write buffer, if PORT is an open, buffered
 UTF-8 output port with room there and no buffered input, its line and
@@ -609,8 +624,14 @@ there and no buffered input, its line and column kept: true if so."
       (loop for i from start below end do (port-write-char port (char string i)))))
 
 (defun port-unread-char (port char)
-  (unread-octets port (if (encodable-p char (codec port)) (char-octets char (codec port))
-			  (char-octets char :utf-8)))
+  (let ((code (char-code char)) (rpos (port-rpos port)))
+    ;; the character just read, an ASCII byte still in the buffer (the
+    ;; reader's, after the first character of an atom): back over it
+    (if (and (< code 128) (plusp rpos) (member (codec port) '(:utf-8 :latin-1))
+	     (= (aref (port-rbuf port) (1- rpos)) code))
+	(setf (port-rpos port) (1- rpos))
+	(unread-octets port (if (encodable-p char (codec port)) (char-octets char (codec port))
+				(char-octets char :utf-8)))))
   (if (char= char #\Newline)
       (decf (port-line* port))
       (when (plusp (port-column* port)) (decf (port-column* port)))))
@@ -628,8 +649,10 @@ there and no buffered input, its line and column kept: true if so."
   nil)
 
 (defmethod trivial-gray-streams:stream-peek-char ((p gport))
-  ;; read, then put the read position back where it was: the very bytes,
-  ;; a bad sequence included
+  ;; a buffered ASCII byte as it is; else read, then put the read position
+  ;; back where it was: the very bytes, a bad sequence included
+  (let ((c (buffered-ascii-peek p)))
+    (when c (return-from trivial-gray-streams:stream-peek-char c)))
   (unless (fill-input p)
     ;; at end of file, which stays pending for the next read
     (return-from trivial-gray-streams:stream-peek-char :eof))
@@ -1667,9 +1690,16 @@ end of file, or END: (delimiter-or-eof . count)."
 	    (when (or (consp x) (vectorp x) (garray-p x)
 		      (and (numberp x)
 			   (not (and (integerp x) (<= (- -1 +guile-fixnum-max+) x +guile-fixnum-max+)))))
-	      (setf (gethash x *source-properties*)
-		    (append (when (stringp (port-filename* p)) (list (cons (ssym "filename") (port-filename* p))))
-			    (list (cons (ssym "line") line) (cons (ssym "column") column)))))
+	      ;; the keys interned once (interning a name encodes it)
+	      (let ((keys (load-time-value (vector nil nil nil))))
+		(unless (svref keys 0)
+		  (setf (svref keys 0) (ssym "filename") (svref keys 1) (ssym "line")
+			(svref keys 2) (ssym "column")))
+		(setf (gethash x *source-properties*)
+		      (let ((tail (list (cons (svref keys 1) line) (cons (svref keys 2) column))))
+			(if (stringp (port-filename* p))
+			    (cons (cons (svref keys 0) (port-filename* p)) tail)
+			    tail)))))
 	    x)))))
 
 (setq *source-recorder* 'record-source)

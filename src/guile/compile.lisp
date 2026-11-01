@@ -283,6 +283,7 @@ references to these."
     ("struct-ref" 2 2) ("struct-set!" 3 3) ("struct-vtable" 1 1) ("vector-ref" 2 2) ("string-ref" 2 2)
     ("set-car!" 2 2) ("set-cdr!" 2 2) ("char=?" 2 2) ("vector-set!" 3 3)
     ("memq" 2 2) ("memv" 2 2) ("length" 1 1) ("append" 2 nil) ("list" 0 nil)
+    ("quotient" 2 2) ("remainder" 2 2) ("modulo" 2 2)
     ;; the host's, which the continuation transformation sees: an escape
     ;; (call/cc (lambda (k) ...)) of a K only called isn't a capture
     ("call-with-current-continuation" 1 1) ("call/cc" 1 1))
@@ -325,6 +326,33 @@ calls, if F is a reference to the root module's variable of a primitive in
 		   (eq root (module-variable* module name))
 		   name))))))))
 
+(defparameter *bytevector-ops*
+  '(("bytevector-length" 1 "%guile-bv-length") ("bytevector-u8-ref" 2 "%guile-bv-u8-ref")
+    ("bytevector-u8-set!" 3 "%guile-bv-u8-set!"))
+  "(rnrs bytevectors) procedures whose calls are open-coded, as Guile's
+resolve-primitives makes them primcalls: name, arguments, host helper.")
+
+(defun resolved-bytevector-op (f args)
+  "(helper . site) when the call (F . ARGS) calls one of *BYTEVECTOR-OPS*
+through (rnrs bytevectors)'s own variable (else NIL): the helper does the
+common case in line, and calls the site's value otherwise (its errors,
+its read-only check)."
+  (when (and *resolve-primitives* (member (node-type f) '(:toplevel-ref :module-ref)))
+    (let* ((name (node-field f 2))
+	   (entry (and (qs:scheme-symbol-p name)
+		       (assoc (qs:scheme-symbol-name name) *bytevector-ops* :test #'string=))))
+      (when (and entry (= (length args) (second entry)))
+	(let* ((module (if (eq (node-type f) :module-ref)
+			   (existing-module (node-field f 1) (truthy (node-field f 3)))
+			   (node-module f)))
+	       (rnrs (existing-module (list (ssym "rnrs") (ssym "bytevectors")) t))
+	       (v (and (module-p* module) (module-variable* module name))))
+	  (when (and v rnrs (eq v (module-variable* rnrs name)))
+	    (cons (third entry)
+		  (if (eq (node-type f) :module-ref)
+		      (make-site (node-field f 1) name (truthy (node-field f 3)) :module)
+		      (make-site (node-module f) name nil :toplevel)))))))))
+
 (defun compile-resolved-primitive (name args)
   (let ((string (qs:scheme-symbol-name name)))
     (if (and (string= string "-") (= (length args) 2)
@@ -340,7 +368,10 @@ calls, if F is a reference to the root module's variable of a primitive in
 					   ("struct-vtable" . "%guile-struct-vtable")
 					   (">=" . "%guile->=") ("=" . "%guile-=")
 					   ("null?" . "%guile-null?") ("not" . "%guile-not")
-					   ("symbol?" . "%guile-symbol?"))
+					   ("symbol?" . "%guile-symbol?")
+					   ;; fixnums in line, else the root's (flonums, errors)
+					   ("quotient" . "%guile-quotient") ("remainder" . "%guile-remainder")
+					   ("modulo" . "%guile-modulo"))
 				  :test #'string=))))
 	  ;; not of a predicate's value, which can't be #nil: the host's
 	  (when (and (string= string "not") (boolean-node-p (first args)))
@@ -438,9 +469,14 @@ apart as eqv? does if EQV."
 	   (compile-tree-il (node-field x 3))))
     (:call (let* ((f (node-field x 1)) (args (node-field x 2))
 		  (resolved (resolved-primitive f args))
+		  (bytevector-op (and (not resolved) (resolved-bytevector-op f args)))
 		  (body (inline-body-position f (length args))))
 	     (when resolved
 	       (return-from compile-tree-il (compile-resolved-primitive resolved args)))
+	     (when bytevector-op
+	       (return-from compile-tree-il
+		 (list* (core (car bytevector-op)) (quoted (cdr bytevector-op))
+			(mapcar #'compile-tree-il args))))
 	     ;; a prompt's or fluid binding's body: inline in Guile
 	     (cons (compile-tree-il f)
 		   (loop for a in args for i from 0
@@ -1246,6 +1282,9 @@ is (%guile-set! 'site value) or defines the same variable
     (let ((v (resolve-site-for-guard site)))
       (bool (and v (gvariable-safe-p v)))))
   (qsx:defhost "%guile-ref" (site) (site-ref site))
+  (qsx:defhost "%guile-bv-length" (site bv) (funcall (site-ref site) bv))
+  (qsx:defhost "%guile-bv-u8-ref" (site bv k) (funcall (site-ref site) bv k))
+  (qsx:defhost "%guile-bv-u8-set!" (site bv k b) (funcall (site-ref site) bv k b))
   ;; past the fixnums inlined (*GUILE-INLINE-PRIMITIVES*), flonums: the
   ;; host's arithmetic is the root procedure's for them, without its
   ;; lookup by name and its list of arguments.  Not 0 - 0.0, which is
@@ -1263,6 +1302,9 @@ is (%guile-set! 'site value) or defines the same variable
 					 (bool (,test x y))
 					 (funcall (root-value ,name) x y)))))))
     (comparisons ("<" <) (">" >) ("<=" <=) (">=" >=) ("=" =)))
+  (qsx:defhost "%guile-quotient" (n d) (funcall (root-value "quotient") n d))
+  (qsx:defhost "%guile-remainder" (n d) (funcall (root-value "remainder") n d))
+  (qsx:defhost "%guile-modulo" (n d) (funcall (root-value "modulo") n d))
   ;; null? and not, for which Emacs Lisp's nil, #nil, counts as the empty
   ;; list and as false
   (qsx:defhost "%guile-null?" (x) (bool (or (null x) (eq x *elisp-nil*))))
@@ -1329,6 +1371,8 @@ is (%guile-set! 'site value) or defines the same variable
      "%guile-nil:length" "%guile-nil:list?" "%guile-nil:reverse" "%guile-nil:last-pair"
      "%guile-nil:append"
      "%guile-ref" "%guile-struct-ref" "%guile-struct-set!" "%guile-struct-vtable" "%guile-make-struct/simple" "%guile-make-struct/no-tail" "%guile-safe-f" "%guile-parametric-p" "%guile-parametric-f" "%guile-note-parametric" "%guile-holds-p" "%guile-holds-map-p" "%guile-holds-for-each-p" "%guile-map1" "%guile-for-each1" "%guile-safe-ref-p" "%guile-downward-p" "%guile-note-guarded" "%guile-sub2" "%guile-<" "%guile->" "%guile-<=" "%guile->=" "%guile-=" "%guile-null?" "%guile-symbol?" "%guile-not" "%guile-true" "%guile-set!" "%guile-define!" "%guile-unsupported" "%guile-arity-error"
+     "%guile-bv-length" "%guile-bv-u8-ref" "%guile-bv-u8-set!"
+     "%guile-quotient" "%guile-remainder" "%guile-modulo"
      "%guile-with-meta" "%guile-inline"
      "%guile-nargs>=" "%guile-nargs-between" "%guile-keywords-fit?" "%guile-positional?" "%guile-check-no-more"
      "%guile-check-keywords" "%guile-keyword-ref")))
@@ -1402,6 +1446,25 @@ is (%guile-set! 'site value) or defines the same variable
 		      (cond ((and (typep x 'fixnum) (typep y 'fixnum)) (bool (,test x y)))
 			    ((and (typep x 'double-float) (typep y 'double-float)) (bool (,test x y)))
 			    (t :call))))
+    ;; a mutable bytevector's byte: else the site's procedure (its
+    ;; errors, and its refusal of a read-only bytevector, after which a
+    ;; mutable one is *LAST-MUTABLE-BYTEVECTOR*)
+    ("%guile-bv-length" (s bv)
+     (if (typep bv '(simple-array (unsigned-byte 8) (*))) (length bv) :call))
+    ("%guile-bv-u8-ref" (s bv k)
+     (if (and (typep bv '(simple-array (unsigned-byte 8) (*))) (typep k 'fixnum) (< -1 k (length bv)))
+	 (aref bv k)
+	 :call))
+    ("%guile-bv-u8-set!" (s bv k b)
+     (if (and (typep bv '(simple-array (unsigned-byte 8) (*))) (eq bv *last-mutable-bytevector*)
+	      (typep k 'fixnum) (< -1 k (length bv)) (typep b '(unsigned-byte 8)))
+	 (progn (setf (aref bv k) b) *unspecified*)
+	 :call))
+    ,@(loop for (name op) in '(("quotient" truncate) ("remainder" rem) ("modulo" mod))
+	    collect `(,(format nil "%guile-~A" name) (n d)
+		      (if (and (typep n 'fixnum) (typep d 'fixnum) (/= d 0))
+			  (values (,op n d))
+			  :call)))
     ;; #nil is made once, at load, and never replaced
     ("%guile-null?" (x) (bool (or (null x) (eq x (load-time-value *elisp-nil* t)))))
     ("%guile-symbol?" (x) (bool (and (qs:scheme-symbol-p x) (not (keywordp x)))))

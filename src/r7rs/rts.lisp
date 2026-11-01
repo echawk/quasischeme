@@ -192,7 +192,8 @@
 ;;; Each in two passes, sizing the result and then filling it: a string
 ;;; output stream or an adjustable vector, then a copy, cost 4x as much.
 
-(defun utf8-encode (string start end)
+(declaim (inline utf8-encode-1))
+(defun utf8-encode-1 (string start end)
   (declare (string string) (fixnum start end))
   (flet ((size (code)
 	   (cond ((< code #x80) 1) ((< code #x800) 2) ((< code #x10000) 3) (t 4))))
@@ -222,7 +223,17 @@
 			  (put (logior #x80 (logand code #x3F)))))))
 	out))))
 
-(defun utf8-decode (bv start end)
+(defun utf8-encode (string start end)
+  (declare (string string) (fixnum start end))
+  ;; the loops below for each kind of simple string, CHAR not dispatching
+  ;; on it per character (string->utf8 took 2.7 times Guile's)
+  (typecase string
+    ((simple-array character (*)) (utf8-encode-1 string start end))
+    (simple-base-string (utf8-encode-1 string start end))
+    (t (utf8-encode-1 string start end))))
+
+(declaim (inline utf8-decode-1))
+(defun utf8-decode-1 (bv start end)
   (declare (type bytevector bv) (fixnum start end))
   (flet ((continuation-bytes (b i)
 	   ;; how many bytes follow the lead byte B at I
@@ -256,6 +267,13 @@
 		   (incf j)
 		   (incf i (1+ n))))
 	out))))
+
+(defun utf8-decode (bv start end)
+  (declare (type bytevector bv) (fixnum start end))
+  ;; a simple bytevector's loop with AREF not dispatching per byte
+  (if (typep bv '(simple-array (unsigned-byte 8) (*)))
+      (utf8-decode-1 bv start end)
+      (utf8-decode-1 bv start end)))
 
 (defprim "string->utf8" (s &optional start end)
   (multiple-value-bind (start end) (range "string->utf8" (length s) start end)

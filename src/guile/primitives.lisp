@@ -7,6 +7,21 @@
 
 (in-package "QUASISCHEME-GUILE")
 
+(defun ascii-octets-string (bv start end)
+  "BV's bytes from START to END as a string, if all are ASCII; else NIL."
+  (let ((end (or end (length bv))))
+    (when (and (typep bv '(simple-array (unsigned-byte 8) (*)))
+	       (typep start 'fixnum) (typep end 'fixnum) (<= 0 start end (length bv)))
+      (locally (declare (type (simple-array (unsigned-byte 8) (*)) bv) (fixnum start end)
+			(optimize speed))
+	(when (loop for i of-type fixnum from start below end always (< (aref bv i) #x80))
+	  (let ((s (make-string (- end start))))
+	    (declare (type (simple-array character (*)) s))
+	    (loop for i of-type fixnum from start below end for j of-type fixnum from 0
+		  do (setf (schar s j) (code-char (aref bv i))))
+	    s))))))
+
+
 (defun scheme-equal (a b) (qs:scheme-equal-p a b))
 (defun scheme-eqv (a b) (or (eql a b) (and (numberp a) (numberp b) (= a b) (eq (type-of a) (type-of b)))))
 
@@ -643,12 +658,21 @@ string is made read-only or shared (READ-ONLY-STRING, SUBSTRING/SHARED).")
     ("string-map!" . 1) ("string-xcopy!" . 0))
   "The root's procedures that change a string, and which argument it is.")
 
+(defvar *last-mutable-bytevector* nil
+  "The bytevector a checking mutator last found mutable: its next change
+needs no lookup in the weak table (which takes a lock).  Forgotten
+whenever a bytevector is made read-only.")
+
 (defun read-only-bytevector (bv)
+  (setq *last-mutable-bytevector* nil)
   (setf (gethash bv *read-only-strings*) t)
   bv)
 
 (defun read-only-bytevector-p (bv)
-  (and (typep bv '(array (unsigned-byte 8) (*))) (gethash bv *read-only-strings*)))
+  (and (typep bv '(array (unsigned-byte 8) (*)))
+       (not (eq bv *last-mutable-bytevector*))
+       (or (gethash bv *read-only-strings*)
+	   (progn (setq *last-mutable-bytevector* bv) nil))))
 
 (defparameter +bytevector-mutators+
   '("bytevector-u8-set!" "bytevector-s8-set!" "bytevector-fill!" "bytevector-copy!")
@@ -660,12 +684,15 @@ compiled code), when called rather than open-coded.")
 read-only bytevector."
   (let ((f (and variable (gvariable-value variable))))
     (when (and (functionp f) (not (gethash f *checking-mutators*)))
-      (let ((checking (lambda (bv &rest args)
-			(let ((target (if (string= name "bytevector-copy!") (second args) bv)))
-			  (when (read-only-bytevector-p target)
-			    (guile-error (ssym "wrong-type-arg") name "Wrong type argument in position ~A: ~S"
-					 (list 1 target) (list target))))
-			(apply f bv args))))
+      (let* ((copy (string= name "bytevector-copy!"))
+	     (checking (lambda (bv &rest args)
+			 ;; the arguments not consed: F's own arity errors, still
+			 (declare (dynamic-extent args))
+			 (let ((target (if copy (second args) bv)))
+			   (when (read-only-bytevector-p target)
+			     (guile-error (ssym "wrong-type-arg") name "Wrong type argument in position ~A: ~S"
+					  (list 1 target) (list target))))
+			 (apply f bv args))))
 	(setf (gethash checking *checking-mutators*) t
 	      (gvariable-value variable) checking)))))
 
@@ -1119,7 +1146,14 @@ less than 0.0."
 		    (= x (ftruncate x))))))
     (unless (integral-p n) (wrong-type name 1 n))
     (unless (integral-p d) (wrong-type name 2 d)))
-  (when (zerop d) (guile-error (ssym "numerical-overflow") name "Numerical overflow" '()))
+  ;; named as Guile's, whose quotient, remainder and modulo are these
+  (when (zerop d)
+    (guile-error (ssym "numerical-overflow")
+		 (cond ((string= name "quotient") "truncate-quotient")
+		       ((string= name "remainder") "truncate-remainder")
+		       ((string= name "modulo") "floor-remainder")
+		       (t name))
+		 "Numerical overflow" qs:false))
   (if (and (integerp n) (integerp d))
       (funcall op n d)
       (coerce (funcall op (round n) (round d)) 'double-float)))
@@ -1471,10 +1505,13 @@ that name, if the host has one."
 	(cons "utf8->string"
 	      (lambda (bv &optional (start 0) (end nil))
 		(unless (typep bv 'qs-r6rs::octets) (wrong-type "utf8->string" 1 bv))
-		(handler-case (sb-ext:octets-to-string bv :external-format '(:utf-8 :replacement nil)
-							  :start start :end end)
-		  (sb-int:character-decoding-error ()
-		    (call-throw (ssym "decoding-error") (list "utf8->string" "input decoding error" +eilseq+ bv))))))
+		;; ASCII, the usual case, copied; else the host's decoder, which
+		;; refuses what Guile's does (overlong forms, surrogates)
+		(or (ascii-octets-string bv start end)
+		    (handler-case (sb-ext:octets-to-string bv :external-format '(:utf-8 :replacement nil)
+							      :start start :end end)
+		      (sb-int:character-decoding-error ()
+			(call-throw (ssym "decoding-error") (list "utf8->string" "input decoding error" +eilseq+ bv)))))))
 	;; the endianness is optional, big by default
 	(cons "utf16->string" (lambda (bv &optional (endianness (ssym "big")) endianness-mandatory)
 				(funcall (qsx:host-ref "utf16->string") bv endianness
