@@ -112,7 +112,7 @@ Speed (`bench/`, ecraven's r7rs-benchmarks, full continuations): all
 Chez Scheme's time as a geometric mean. On the same programs, Guile
 mode runs at <!-- bench geomean QuasischemeGuile/Guile -->0.60×<!-- /bench -->
 Guile 3.0.11's time, and Racket mode at
-<!-- bench geomean QuasischemeRacket/RacketBase -->1.04×<!-- /bench --> Racket
+<!-- bench geomean QuasischemeRacket/RacketBase -->1.03×<!-- /bench --> Racket
 CS's. `bench/run.sh modes` runs the programs in each mode, each its own
 column; R6RS mode is as fast as R7RS mode. See bench/RESULTS.md and
 bench/README.md.

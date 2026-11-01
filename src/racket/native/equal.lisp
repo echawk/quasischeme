@@ -8,8 +8,8 @@
 ;;;; compared by its type's prop:equal+hash, else field by field when its
 ;;;; type is transparent or prefab, else by identity.  The hash agrees:
 ;;;; prop:equal+hash's hash procedure, or the fields of a transparent
-;;;; struct.  Not yet: cycles (an equal? of cyclic data doesn't end, as
-;;;; Racket's does); a chaperoned box or hash table is compared through
+;;;; struct.  Cyclic and widely shared data take union-find (EQUAL*); a
+;;;; chaperoned box or hash table is compared through
 ;;;; its chaperone, a chaperoned struct by its fields underneath.
 
 (in-package "QUASISCHEME-RACKET")
@@ -25,22 +25,23 @@
 	    ((simple-vector-p v) (values (svref v 0) (svref v 1)))
 	    (t nil)))))
 
-(defun equal* (a b)
+(defun equal-step* (a b recur)
+  "One step of EQUAL*: A and B compared, their parts by RECUR."
   (cond ((eq a b) t)
 	;; symbols, fixnums and characters are equal? only when eq?/eqv?:
 	;; the common keys, answered before the other types are tried
 	((or (symbolp a) (symbolp b)) nil)
 	((typep a 'fixnum) (eql a b))
-	((consp a) (and (consp b) (equal* (car a) (car b)) (equal* (cdr a) (cdr b))))
+	((consp a) (and (consp b) (funcall recur (car a) (car b)) (funcall recur (cdr a) (cdr b))))
 	((numberp a) (racket-eqv a b))
 	((characterp a) (eql a b))
 	((stringp a) (and (stringp b) (string= a b)))
 	((typep a '(simple-array (unsigned-byte 8) (*)))
 	 (and (typep b '(simple-array (unsigned-byte 8) (*))) (equalp a b)))
 	((simple-vector-p a)
-	 (and (simple-vector-p b) (= (length a) (length b)) (every #'equal* a b)))
-	((rbox-p a) (and (rbox-p b) (equal* (box-ref* a) (box-ref* b))))
-	((mpair-p a) (and (mpair-p b) (equal* (mpair-car a) (mpair-car b)) (equal* (mpair-cdr a) (mpair-cdr b))))
+	 (and (simple-vector-p b) (= (length a) (length b)) (every recur a b)))
+	((rbox-p a) (and (rbox-p b) (funcall recur (box-ref* a) (box-ref* b))))
+	((mpair-p a) (and (mpair-p b) (funcall recur (mpair-car a) (mpair-car b)) (funcall recur (mpair-cdr a) (mpair-cdr b))))
 	((rpath-p a) (and (rpath-p b) (string= (rpath-string a) (rpath-string b))))
 	((hash-table-p* a) (hash-equal a b))
 	;; fxvectors and flvectors (more.lisp): flonums as eqv?
@@ -52,16 +53,49 @@
 	;; a stencil vector (data.lisp)
 	((typep a 'stencil)
 	 (and (typep b 'stencil) (= (stencil-mask a) (stencil-mask b))
-	      (every #'equal* (stencil-items a) (stencil-items b))))
+	      (every recur (stencil-items a) (stencil-items b))))
 	((struct-instance-p a)
 	 (and (struct-instance-p b)
 	      (eq (struct-of-type a) (struct-of-type b))
 	      (let ((eqp (equal+hash-procedures a)))
-		(cond (eqp (truthy (funcall eqp a b (lambda (x y) (bool (equal* x y))))))
+		(cond (eqp (truthy (funcall eqp a b (lambda (x y) (bool (funcall recur x y))))))
 		      ((transparent-p (struct-of-type a))
-		       (let ((n (struct-field-count a))) (and (= n (struct-field-count b)) (loop for i below n always (equal* (struct-field a i) (struct-field b i))))))
+		       (let ((n (struct-field-count a))) (and (= n (struct-field-count b)) (loop for i below n always (funcall recur (struct-field a i) (struct-field b i))))))
 		      (t nil)))))
 	(t nil)))
+
+;; Plain recursion first; past *EQUAL-BUDGET* nodes (src/core.lisp) it
+;; starts again with union-find, as Racket CS's equal? does (Adams and
+;; Dybvig, ICFP 2008): two compound objects already in one class are
+;; equal, and comparing two others merges their classes.  Shared
+;; substructure takes linear time, and cyclic data ends.
+
+(defun equal* (a b)
+  (when (eq a b) (return-from equal* t))
+  (let ((budget qs::*equal-budget*))
+    (declare (fixnum budget))
+    (block bounded
+      (labels ((walk (a b)
+		 (when (minusp (decf budget)) (return-from bounded nil))
+		 (equal-step* a b #'walk)))
+	(return-from equal* (walk a b))))
+    (let ((parents (make-hash-table :test 'eq)))
+      (labels ((class-root (x)
+		 (let ((p (gethash x parents)))
+		   (if (null p)
+		       x
+		       (setf (gethash x parents) (class-root p)))))
+	       (compound-p (x)
+		 (or (consp x) (simple-vector-p x) (mpair-p x) (rbox-p x)
+		     (struct-instance-p x)))
+	       (walk (a b)
+		 (if (and (compound-p a) (compound-p b))
+		     (let ((ra (class-root a)) (rb (class-root b)))
+		       (or (eq ra rb)
+			   (progn (setf (gethash ra parents) rb)
+				  (equal-step* a b #'walk))))
+		     (equal-step* a b #'walk))))
+	(walk a b)))))
 
 (defun hash-equal (a b)
   (and (hash-table-p* b)

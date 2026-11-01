@@ -48,13 +48,12 @@ measured against Chez.
 |---|---:|---:|---|
 | Quasischeme vs Chez Scheme | 0.96× | 23 of 57 | scheme 3.0×, ctak 3.0×, fibc 2.8×, matrix 2.2×, browse 2.1× |
 | Quasischeme `--guile` vs Guile | 0.60× | 41 of 54 | string 5.9×, bv2string 5.3×, pi 2.4×, slatex 2.0×, compiler 1.9× |
-| Quasischeme `--racket` vs Racket | 1.04× | 23 of 56 | matrix 3.0×, scheme 2.6×, conform 2.5×, compiler 2.4×, gcbench 2.0× |
+| Quasischeme `--racket` vs Racket | 1.03× | 24 of 57 | matrix 3.0×, scheme 2.6×, conform 2.5×, compiler 2.4×, gcbench 2.0× |
 <!-- /bench -->
 
 Open failures: in Guile mode, `dynamic` and `sum1` crash the collector
 (`heap_scavenge failure`, after some 100,000 `read`s from one port; not
-with escape-only continuations), and Racket mode's `equal` runs past the
-120 s limit.
+with escape-only continuations).
 
 Racket (`racket prog.rkt`) compiles each program as it loads it, Guile
 runs programs compiled with `guild compile -O3`; either way the
@@ -81,7 +80,7 @@ compilation is outside the timed loop.
 | divrec | 1.02 | 1.75 (1.70×) | 1.06 (1.04×) | 1.84 (1.80×) | 5.24 (5.11×) | 1.87 (1.82×) | 10.54 (10.29×) | 21.05 (20.54×) |
 | dynamic | 1.56 | 1.62 (1.04×) | 4.42 (2.84×) | 2.61 (1.68×) | 3.75 (2.41×) | crashed | 9.62 (6.18×) | 97.16 (62.47×) |
 | earley | 2.20 | 1.07 (0.48×) | 2.14 (0.97×) | 1.06 (0.48×) | 4.41 (2.00×) | 1.13 (0.51×) | 6.43 (2.92×) | crashed |
-| equal | 0.45 | 0.49 (1.09×) | 0.99 (2.20×) | crashed | crashed | 0.46 (1.02×) | 6.12 (13.61×) | 17.63 (39.20×) |
+| equal | 0.45 | 0.49 (1.09×) | 0.99 (2.20×) | 0.70 (1.55×) | crashed | 0.46 (1.02×) | 6.12 (13.61×) | 17.63 (39.20×) |
 | fft | 1.41 | 0.77 (0.54×) | 1.25 (0.89×) | 0.83 (0.59×) | 2.87 (2.04×) | 0.92 (0.65×) | 4.94 (3.50×) | 23.29 (16.52×) |
 | fib | 1.75 | 2.11 (1.21×) | 1.78 (1.01×) | 2.22 (1.26×) | 4.72 (2.69×) | 2.12 (1.21×) | 25.10 (14.32×) | 27.82 (15.87×) |
 | fibc | 0.26 | 0.74 (2.83×) | 0.73 (2.77×) | 0.75 (2.84×) | 25.49 (97.22×) | 1.39 (5.29×) | 8.00 (30.50×) | 49.01 (186.93×) |
@@ -122,7 +121,7 @@ compilation is outside the timed loop.
 | takl | 1.60 | 1.62 (1.01×) | 1.83 (1.14×) | 1.73 (1.08×) | 2.83 (1.77×) | 2.80 (1.75×) | 42.16 (26.29×) | 202.89 (126.54×) |
 | triangl | 1.27 | 0.86 (0.68×) | 1.17 (0.92×) | 1.05 (0.83×) | 3.37 (2.66×) | 3.01 (2.37×) | 12.23 (9.64×) | 35.96 (28.35×) |
 | wc | 0.87 | 0.91 (1.04×) | 2.62 (3.01×) | 1.49 (1.71×) | 5.40 (6.21×) | 5.68 (6.53×) | 11.34 (13.03×) | 166.40 (191.22×) |
-| **geometric mean** | **1.00×** | **0.96×** | **1.17×** | **1.20×** | **2.78×** | **1.64×** | **9.15×** | **35.68×** |
+| **geometric mean** | **1.00×** | **0.96×** | **1.17×** | **1.21×** | **2.78×** | **1.64×** | **9.15×** | **35.68×** |
 <!-- /bench -->
 
 Reproduce with `bench/run.sh quasischeme quasischeme-guile
