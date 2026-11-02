@@ -344,17 +344,21 @@ the same side of every finite OTHER."
 
 (defmacro def-compare (name op)
   `(progn
-     (defun ,name (a b &rest more)
-       (and (compare2 ',op a b)
-	    (loop for (x y) on (cons b more)
-		  while y
-		  always (compare2 ',op x y))))
+     (defun ,name (a &optional (b nil b-p) &rest more)
+       ;; one argument: true of a number (a real for an ordering), as
+       ;; Racket's and Chez's are
+       (if (not b-p)
+	   (if (,(if (eq op '=) 'numberp 'realp) a) t (error 'type-error :datum a :expected-type 'real))
+	   (and (compare2 ',op a b)
+		(loop for (x y) on (cons b more)
+		      while y
+		      always (compare2 ',op x y)))))
      ;; Two arguments, both fixnums or both double-floats: CL's own
      ;; comparison, inline (IEEE comparisons are already false for NaN
      ;; and order infinities).  The translator integrates (< a b) as a
      ;; call to this, so this is what Scheme arithmetic tests compile to.
-     (define-compiler-macro ,name (&whole form a b &rest more)
-       (if more
+     (define-compiler-macro ,name (&whole form a &optional (b nil b-p) &rest more)
+       (if (or more (not b-p))
 	   form
 	   (let ((x (gensym "A")) (y (gensym "B")))
 	     (list 'let (list (list x a) (list y b))

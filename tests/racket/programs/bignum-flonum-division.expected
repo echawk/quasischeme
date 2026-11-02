@@ -10,3 +10,4 @@ f: cannot modify a constant
 (err "expt: undefined for 0 and -1/2")
 4
 1.4142135623730951
+'(#t #t #t #t err #t #t 3 #t #f)

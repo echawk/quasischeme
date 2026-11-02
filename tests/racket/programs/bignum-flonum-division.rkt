@@ -17,3 +17,7 @@
                 (lambda () (string->number "1/2@0")) (lambda () (expt 0 -1)) (lambda () (expt 0 -1/2))
                 (lambda () (expt 1/2 -2)) (lambda () (expt 2 0.5)))])
   (printf "~s\n" (t th)))
+;; one argument: true of a number, as Racket's
+(require racket/fixnum racket/flonum)
+(define (t2 f) (with-handlers ([exn:fail? (lambda (e) 'err)]) (f)))
+(list (< 100) (apply < '(1)) (= 1) (>= 2.5) (t2 (lambda () (apply < '(a)))) (fx< 1) (fl< 1.0) (apply max '(3)) (< 1 2 3) (< 1 3 2))
