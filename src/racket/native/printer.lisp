@@ -101,8 +101,14 @@
   (let ((name (funcall (native-function (gethash "object-name" *natives*)) f)))
     (and (symbolp name) name (not (eq name qs:false)) (rname name))))
 
+(defvar *print-collecting* nil
+  "While a prop:custom-write procedure runs to find what it writes
+(CUSTOM-WRITE-CHILDREN): a list whose car collects the values written.")
+
 (defun print-value (x stream mode)
   "X on STREAM, MODE :write or :display."
+  (when *print-collecting*
+    (return-from print-value (push x (car *print-collecting*))))
   (if *print-options*
       (call-with-print-graph x (lambda () (print-value* x stream mode)))
       (let ((*print-options* (read-print-options)))
@@ -123,8 +129,17 @@
 
 (declaim (ftype function stencil-p stencil-mask stencil-items)) ; data.lisp
 
-(defun print-children (x o)
-  "The objects X's written form contains, and whether X can be marked at all."
+(defun custom-write-children (x)
+  "What X's prop:custom-write procedure writes recursively, as Racket's
+io/print/graph.rkt finds it: by running the procedure on a port that
+keeps nothing."
+  (let ((*print-collecting* (list '())))
+    (funcall (custom-write-procedure x) x (make-routport (rsym "nowhere")) qs:true)
+    (reverse (car *print-collecting*))))
+
+(defun print-children (x o &optional walk)
+  "The objects X's written form contains (if WALK: a prop:custom-write
+procedure is run to find them), and whether X can be marked at all."
   (cond ((consp x) (values (list (car x) (cdr x)) t))
 	((mpair-p x) (values (list (mpair-car x) (mpair-cdr x)) t))
 	((simple-vector-p x) (values (coerce x 'list) t))
@@ -132,7 +147,8 @@
 	((and (rbox-p x) (po-box o)) (values (list (box-ref* x)) t))
 	((and (or (ihash-p x) (rhash-p x)) (po-hash o))
 	 (values (loop for (k . v) across (entries x) collect k collect v) t))
-	((and (struct-instance-p x) (not (custom-write-procedure x)))
+	((custom-write-procedure x) (values (and walk (custom-write-children x)) t))
+	((struct-instance-p x)
 	 (let ((type (struct-of-type x)))
 	   (if (and (po-struct o) (or (struct-type-prefab-key type) (struct-visible-p x)))
 	       (values (cdr (coerce (struct-vector x) 'list)) t)
@@ -147,7 +163,7 @@ with its own stack, so a long or deep value can't exhaust the host's."
 	(graph (po-graph o))
 	(stack '()))
     (flet ((visit (obj)
-	     (multiple-value-bind (children container) (print-children obj o)
+	     (multiple-value-bind (children container) (print-children obj o t)
 	       (when container
 		 (let ((seen (gethash obj state)))
 		   (cond (seen
@@ -402,6 +418,8 @@ io/print/graph.rkt).  A list's spine is walked with a loop."
   "print: as write, with ' before what isn't self-quoting; what contains
 a transparent struct or a mutable pair as the call that makes it,
 (list (point 1 2)), (mcons a d)."
+  (when *print-collecting*
+    (return-from print-quoted (push x (car *print-collecting*))))
   (let ((*print-options* (or *print-options* (read-print-options)))
 	(*print-who* "print")
 	(*print-abbreviate* t))
@@ -489,7 +507,18 @@ not given."
 writes straight to the port (compiled code writes its bytes so)."
   (let ((f (custom-write-procedure x)))
     (if f
-	(progn (funcall f x (output-port port) mode) *void*)
+	(cond (*print-collecting* (push x (car *print-collecting*)) *void*)
+	      (t
+	       ;; its label first if it is in a cycle, or just its
+	       ;; label's reference
+	       (let ((*print-options* (or *print-options* (read-print-options))))
+		 (call-with-print-graph
+		  x (lambda ()
+		      (unless (and (marked-p x)
+				   (eq (let (r) (to-port port (lambda (s) (setq r (print-label x s)))) r)
+				       :reference))
+			(funcall f x (output-port port) mode)))))
+	       *void*))
 	(to-port port (lambda (s) (if (eq lisp-mode :print) (print-quoted x s) (print-value x s lisp-mode)))))))
 
 (defun to-port (port f)
