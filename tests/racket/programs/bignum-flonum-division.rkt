@@ -12,3 +12,8 @@
   (with-handlers ([exn:fail:contract:variable? (lambda (e) (displayln (exn-message e)))])
     (parameterize ([current-namespace (module->namespace ''c)])
       (eval '(set! f 2)))))
+(define (t f) (with-handlers ([(lambda (e) #t) (lambda (e) (list 'err (if (exn? e) (exn-message e) e)))]) (f)))
+(for ([th (list (lambda () (make-polar 1/2 0)) (lambda () (make-polar 1.0 0)) (lambda () (make-polar +inf.0 0))
+                (lambda () (string->number "1/2@0")) (lambda () (expt 0 -1)) (lambda () (expt 0 -1/2))
+                (lambda () (expt 1/2 -2)) (lambda () (expt 2 0.5)))])
+  (printf "~s\n" (t th)))

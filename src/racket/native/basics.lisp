@@ -527,7 +527,17 @@ lexical's name less the suffixes the linklet compiler gives it
 (defnative "char-utf-8-length" (c) (:leaf t)
   (let ((n (char-code c))) (cond ((< n #x80) 1) ((< n #x800) 2) ((< n #x10000) 3) (t 4))))
 (defnative "make-rectangular" (a b) (:leaf t) (complex a b))
-(defnative "make-polar" (m a) (:leaf t) (* m (cis a)))
+(defnative "expt" (z w) ()
+  ;; the host's, but for Racket's error for 0 to a negative power
+  (if (and (eql z 0) (realp w) (minusp w) (or (rationalp w) (not (qs::nan-p w))))
+      (do-raise (make-exn "exn:fail:contract:divide-by-zero"
+			  (format nil "expt: undefined for 0 and ~A" (written w))))
+      (funcall (qsx:host-ref "expt") z w)))
+
+(defnative "make-polar" (m a) (:leaf t)
+  ;; an exact zero angle: the magnitude itself, as Racket's (1/2@0 is
+  ;; 1/2, +inf.0@0 is +inf.0)
+  (if (eql a 0) m (* m (cis a))))
 (defnative "real-part" (z) (:leaf t) (realpart z))
 (defnative "imag-part" (z) (:leaf t) (imagpart z))
 (defnative "single-flonum?" (x) (:leaf t) (declare (ignore x)) qs:false)
@@ -605,11 +615,33 @@ lexical's name less the suffixes the linklet compiler gives it
 
 ;;; UTF-8, with Racket's arguments: an error character (or byte) and a range
 (defnative "bytes->string/utf-8" (b &optional (err-char qs:false) (start 0) end) (:leaf t)
-  (declare (ignore err-char))
-  (sb-ext:octets-to-string b :external-format '(:utf-8 :replacement #\?) :start start :end end))
+  ;; Racket's validity rules (UTF8-DECODE, data.lisp): a bad or cut-off
+  ;; sequence is an error, or ERR-CHAR for each of its bytes
+  (let* ((end (or end (length b)))
+	 (out (make-string (- end start)))
+	 (i start) (n 0))
+    (loop while (< i end)
+	  do (multiple-value-bind (code next status) (utf8-decode b i end)
+	       (cond ((eq status :ok) (setf (schar out n) (code-char code)) (setq i next))
+		     ((characterp err-char) (setf (schar out n) err-char) (setq i (1+ i)))
+		     (t (do-raise (make-exn "exn:fail:contract"
+					    (format nil "bytes->string/utf-8: byte string is not a well-formed UTF-8 encoding~%  byte string: ~A"
+						    (written b)))))))
+	     (incf n))
+    (subseq out 0 n)))
 (defnative "string->bytes/utf-8" (s &optional (err-byte qs:false) (start 0) end) (:leaf t)
   (declare (ignore err-byte))
   (sb-ext:string-to-octets s :external-format :utf-8 :start start :end end))
 (defnative "bytes-utf-8-length" (b &optional (err-char qs:false) (start 0) end) (:leaf t)
-  (declare (ignore err-char))
-  (length (sb-ext:octets-to-string b :external-format '(:utf-8 :replacement #\?) :start start :end end)))
+  ;; #f for a bad or cut-off sequence, unless ERR-CHAR stands for each of
+  ;; its bytes (UTF8-DECODE, data.lisp: Racket's validity rules)
+  (block bytes-utf-8-length
+    (let ((end (or end (length b))) (i start) (n 0))
+      (loop while (< i end)
+	    do (multiple-value-bind (code next status) (utf8-decode b i end)
+		 (declare (ignore code))
+		 (cond ((eq status :ok) (setq i next))
+		       ((characterp err-char) (setq i (1+ i)))
+		       (t (return-from bytes-utf-8-length qs:false))))
+	       (incf n))
+      n)))

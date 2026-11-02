@@ -2,3 +2,11 @@
 (0.0 1.0 2.0 -1.0 -2.0 4.0 1.0 -1.0)
 (0.0 1.0 2.0 2.0 1.0 -3.0 1.0 1.0)
 f: cannot modify a constant
+1/2
+1.0
++inf.0
+1/2
+(err "expt: undefined for 0 and -1")
+(err "expt: undefined for 0 and -1/2")
+4
+1.4142135623730951

@@ -46,7 +46,7 @@ one: every primitive the instances have that isn't host-shared."
     "eq?" "eqv?" "not" "boolean?"
     ;; numbers
     "+" "-" "*" "/" "=" "<" ">" "<=" ">=" "zero?" "positive?" "negative?" "odd?" "even?"
-    "abs" "max" "min" "quotient" "remainder" "modulo" "gcd" "lcm" "expt" "exp" "log" "sqrt"
+    "abs" "max" "min" "quotient" "remainder" "modulo" "gcd" "lcm" "exp" "log" "sqrt"
     "sin" "cos" "tan" "asin" "acos" "atan" "floor" "ceiling" "round" "truncate"
     "number?" "integer?" "rational?" "real?" "complex?" "exact?" "inexact?"
     "exact->inexact" "inexact->exact"

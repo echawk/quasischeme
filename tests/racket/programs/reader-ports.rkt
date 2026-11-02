@@ -27,3 +27,7 @@
 (define-cstruct _pt ([x _int] [y _int]))
 (define f (get-ffi-obj "abs" #f (_fun _pt -> _int)))
 (displayln (procedure? f))
+(for ([b (list (bytes 65 66) (bytes 244 144 128 128) (bytes 248 136 128 128 128) (bytes 237 160 128) (bytes 192 128) (bytes 65 255 66) (bytes 226 130) (bytes 226 130 172))])
+  (printf "~s ~s ~s ~s\n" (bytes-utf-8-length b) (bytes-utf-8-length b #\?)
+          (with-handlers ([exn? exn-message]) (bytes->string/utf-8 b))
+          (bytes->string/utf-8 b #\?)))

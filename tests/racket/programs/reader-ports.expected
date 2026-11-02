@@ -9,3 +9,11 @@ chars ((65533 65533 65533) (65533 65533 65533) (65533 65533 65533) (65533 65533 
 peek-char ((65533 65533 65533) (65533 65533 65533) (65533 65533 65533) (65533 65533 65533))
 refused
 #t
+2 2 "AB" "AB"
+#f 4 "bytes->string/utf-8: byte string is not a well-formed UTF-8 encoding\n  byte string: #\"\\364\\220\\200\\200\"" "????"
+#f 5 "bytes->string/utf-8: byte string is not a well-formed UTF-8 encoding\n  byte string: #\"\\370\\210\\200\\200\\200\"" "?????"
+#f 3 "bytes->string/utf-8: byte string is not a well-formed UTF-8 encoding\n  byte string: #\"\\355\\240\\200\"" "???"
+#f 2 "bytes->string/utf-8: byte string is not a well-formed UTF-8 encoding\n  byte string: #\"\\300\\200\"" "??"
+#f 3 "bytes->string/utf-8: byte string is not a well-formed UTF-8 encoding\n  byte string: #\"A\\377B\"" "A?B"
+#f 2 "bytes->string/utf-8: byte string is not a well-formed UTF-8 encoding\n  byte string: #\"\\342\\202\"" "??"
+1 1 "€" "€"
