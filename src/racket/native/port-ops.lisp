@@ -73,7 +73,7 @@
 ;;; Custom ports
 
 (defun check-init-position (who x)
-  (unless (or (and (integerp x) (plusp x)) (rinport-p x) (routport-p x) (eq x qs:false)
+  (unless (or (and (integerp x) (plusp x)) (rinport-p (unwrap-in x)) (routport-p (unwrap-out x)) (eq x qs:false)
 	      (arity-includes-p x 0))
     (contract-error who "(or/c exact-positive-integer? port? #f (procedure-arity-includes/c 0))" x)))
 

@@ -316,7 +316,11 @@
     ;; the host's own ports (those of racket/base's host layer)
     ((and stream (not rstruct)) (or (input-stream-p x) (output-stream-p x)))
     (t (or (pchannel-p x) (place-handle-p x)	; places (below)
-	   (and (struct-instance-p x) (nth-value 1 (property-value x *prop-evt*)))))))
+	   ;; a struct that is a port (prop:input-port, prop:output-port) is one too
+	   (and (struct-instance-p x)
+		(or (nth-value 1 (property-value x *prop-evt*))
+		    (nth-value 1 (property-value x *prop-input-port*))
+		    (nth-value 1 (property-value x *prop-output-port*))))))))
 
 (defnative "evt?" (x) (:leaf t) (bool (evt-value-p x)))
 

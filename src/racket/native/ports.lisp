@@ -818,6 +818,7 @@ event waiting; else NIL."
 
 (defun init-position-value (init base)
   "file-position of a custom port with init-position INIT after BASE more bytes."
+  (unless (functionp init) (setq init (unwrap-out (unwrap-in init))))
   (cond ((functionp init)
 	 (let ((v (funcall init))) (if (integerp v) (1- v) base)))
 	((rinport-p init) (funcall (native-function (gethash "file-position" *natives*)) init))

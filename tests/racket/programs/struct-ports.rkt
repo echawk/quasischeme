@@ -1,0 +1,12 @@
+#lang racket/base
+(struct wrap (p) #:property prop:output-port 0)
+(define o (open-output-string))
+(define w (wrap o))
+(displayln (evt? w))
+(define p (make-output-port 'x w w void))
+(write-string "hi" p)
+(flush-output p)
+(displayln (get-output-string o))
+(define p2 (make-output-port 'y w w void #f #f #f #f void w))
+(write-string "ab" p2)
+(displayln (file-position p2))
