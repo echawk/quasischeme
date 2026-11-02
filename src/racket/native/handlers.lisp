@@ -749,8 +749,10 @@ makes the procedure NAME names."
 (defnative "continuation-marks" (k &optional prompt-tag) ()
   (declare (ignore prompt-tag))
   (cond ((not (truthy k)) (qs-r6rs::make-mark-set '()))
+	((eq (gethash k *escape-continuations*) :dead)
+	 (racket-error "continuation-marks" "escape continuation not in the current continuation"))
 	((rthread-p k) (qs-r6rs::make-mark-set (if (eq k *main-thread*) (current-marks) '())))
-	((and (functionp k) (or (qsx::continuation-procedure-p k) (gethash k *composable-continuations*)))
+	((and (functionp k) (or (qsx::continuation-procedure-p k) (gethash k *composable-continuations*) (gethash k *escape-continuations*) (gethash k *delimited-continuations*)))
 	 (multiple-value-bind (marks found) (gethash k qs-r6rs::*continuation-marks*)
 	   (qs-r6rs::make-mark-set (if found marks (current-marks)))))
 	(t (arg-error "continuation-marks" "(or/c continuation? thread? #f)" k))))
@@ -810,16 +812,16 @@ the aborts abort-current-continuation makes do, without the throw)."
   (funcall proc (capture-composable-continuation tag)))
 
 (defnative "continuation?" (x) (:leaf t)
-  (bool (and (functionp x) (or (qsx::continuation-procedure-p x) (gethash x *composable-continuations*)))))
+  (bool (and (functionp x) (or (qsx::continuation-procedure-p x) (gethash x *composable-continuations*) (gethash x *escape-continuations*) (gethash x *delimited-continuations*)))))
 
 (defnative "call-in-continuation" (k proc) ()
-  (unless (and (functionp k) (or (qsx::continuation-procedure-p k) (gethash k *composable-continuations*)))
+  (unless (and (functionp k) (or (qsx::continuation-procedure-p k) (gethash k *composable-continuations*) (gethash k *escape-continuations*) (gethash k *delimited-continuations*)))
     (arg-error "call-in-continuation" "continuation?" k))
   (unless (accepts-arity-p proc 0)
     (arg-error "call-in-continuation" "(procedure-arity-includes/c 0)" proc))
-  ;; PROC's results go to K; Racket calls PROC in K's context, whose
-  ;; marks and parameterization this doesn't have
-  (multiple-value-call k (funcall proc)))
+  ;; PROC called in K's context (its frames, winders and prompts): its
+  ;; results are K's
+  (qsx::call-in-continuation k proc))
 
 ;;; ------------------------------------------------------------------
 ;;; Loggers and log receivers (racket/src/io/logger/)

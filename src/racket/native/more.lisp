@@ -327,10 +327,45 @@
 		(ms (- (get-internal-real-time) real0))
 		(ms (- sb-ext:*gc-run-time* gc0)))))))
 
-(defnative "call-with-current-continuation" (proc &optional prompt-tag) ()
-  ;; full, re-entrant: linklets are compiled for them (api.lisp)
-  (declare (ignore prompt-tag))
-  (qsx::full-call/cc proc))
+(defnative "call-with-current-continuation" (proc &optional (tag *default-prompt-tag*)) ()
+  ;; full, re-entrant: linklets are compiled for them (api.lisp); and,
+  ;; as Racket's, delimited by the nearest prompt tagged TAG, if any
+  (let ((prompt (and qsx::*full-continuations* (qsx::find-prompt tag))))
+    (if prompt
+	(delimited-call/cc proc tag prompt)
+	(qsx::full-call/cc proc))))
+
+(defun delimited-call/cc (proc tag prompt)
+  "call/cc whose continuation is the frames up to PROMPT, tagged TAG.
+Applied while the call's extent lasts, it returns from it; else it
+replaces the current continuation up to the nearest prompt tagged TAG,
+which stays, with its frames (and calls a thunk there, for
+call-in-continuation), as Racket's non-composable continuations do."
+  (let* ((frames (qsx::frames-inside prompt))
+	 (winders (ldiff qsx::*winders* (svref prompt 4)))
+	 (outside (assoc tag *prompt-marks*))
+	 (marks (if outside (ldiff (current-marks) (cdr outside)) '()))
+	 (catch-tag (list 'delimited-continuation))
+	 (live (list t)))
+    (flet ((k (&rest values)
+	     (if (car live)
+		 (throw catch-tag (values-list values))
+		 (let ((here (qsx::find-prompt tag)))
+		   (unless here
+		     (raise-exn "exn:fail:contract:continuation"
+				(format nil "continuation application: no corresponding prompt in the current continuation~%  tag: ~A"
+					(with-output-to-string (s) (print-value tag s :display)))))
+		   (qsx::abort-to-prompt/keep
+		    here
+		    (lambda ()
+		      (let ((qs-r6rs::*marks* (append marks (current-marks))))
+			(qsx::compose-continuation frames winders values))))))))
+      (setf (gethash #'k *delimited-continuations*) t)
+      (unwind-protect
+	   (block done
+	     (multiple-value-call #'qsx::call-in-or-values
+	       (catch catch-tag (return-from done (funcall proc #'k)))))
+	(setf (car live) nil)))))
 
 ;;; ------------------------------------------------------------------
 ;;; Load forms for the rest of the values compiled code may hold as

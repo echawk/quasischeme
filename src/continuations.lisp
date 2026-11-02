@@ -592,6 +592,25 @@ ESTABLISH again when rebuilt."
 (define-condition continuation-not-reentrant (control-error) ()
   (:report "continuation invoked after its extent ended, and not re-entrant (no base around its capture)"))
 
+;;; Calling a thunk in a continuation (Racket's call-in-continuation):
+;;; the continuation is invoked with +CALL-IN+ and the thunk, which runs
+;;; where the values would be returned -- inside the continuation's
+;;; frames, its winders wound -- and its values are the continuation's.
+
+(defvar +call-in+ (list :call-in) "The first argument of a continuation asked to call a thunk.")
+
+(defun call-in-or-values (&optional (a nil ap) &rest more)
+  "What a continuation's catch returns, given the values thrown to it: a
+thunk's values if they ask for one (+CALL-IN+), else themselves."
+  (declare (dynamic-extent more))
+  (cond ((not ap) (values))
+	((eq a +call-in+) (funcall (the function (car more))))
+	(t (apply #'values a more))))
+
+(defun call-in-continuation (k thunk)
+  "Call THUNK in continuation K: its values are K's."
+  (funcall k +call-in+ thunk))
+
 (defun escape-call/cc (f)
   "call/cc for a continuation only invoked during its extent: a catch,
 in a frame that re-establishes the catch if a continuation captured
@@ -599,12 +618,16 @@ inside is re-entered (and so the continuation still works there)."
   (let* ((tag (heap-cons 'continuation nil))
 	 (frame (vector :escape nil tag)))
     (declare (dynamic-extent frame))
-    (catch tag
-      (with-frame (frame)
-	(funcall f (note-continuation (caller-frame) (lambda (&rest values)
-		     (if (and values (eq (car values) :quasischeme-continuation-query))
-			 (cons tag nil)	; its identity (CONTINUATION=)
-			 (throw tag (values-list values))))))))))
+    (block done
+      ;; what is thrown may ask for a thunk to be called here
+      (multiple-value-call #'call-in-or-values
+	(catch tag
+	  (return-from done
+	    (with-frame (frame)
+	      (funcall f (note-continuation (caller-frame) (lambda (&rest values)
+			   (if (and values (eq (car values) :quasischeme-continuation-query))
+			       (cons tag nil) ; its identity (CONTINUATION=)
+			       (throw tag (values-list values)))))))))))))
 
 (defun note-continuation (frame k)
   (when *continuation-hook* (funcall *continuation-hook* k frame))
@@ -907,7 +930,9 @@ call returns, then continue the frame."
   "Re-establish FRAMES, outermost first, and return VALUES to the
 innermost."
   (if (null frames)
-      (values-list values)
+      (if (and values (eq (car values) +call-in+))
+	  (funcall (the function (cadr values))) ; CALL-IN-CONTINUATION's thunk
+	  (values-list values))
       (resume-frame (car frames) (lambda () (rebuild-frames (cdr frames) values)))))
 
 (defun shared-winders (a b)
@@ -957,7 +982,10 @@ with-continuation-barrier).  Other barriers only block re-entry."
 			(throw *base-tag* (lambda () (reenter frames winders values shared)))))
 		     (t (error 'continuation-not-reentrant)))))
 	(when *continuation-hook* (funcall *continuation-hook* #'k (caller-frame)))
-	(unwind-protect (catch tag (funcall f #'k))
+	(unwind-protect (block done
+			  ;; what is thrown may ask for a thunk called here
+			  (multiple-value-call #'call-in-or-values
+			    (catch tag (return-from done (funcall f #'k)))))
 	  (setf (car live) nil))))))
 
 
@@ -973,12 +1001,24 @@ with-continuation-barrier).  Other barriers only block re-entry."
 ;;; and returns what the outermost of them returns: there is no throw to
 ;;; a base, since the frames outside are the caller's own.
 
+(defvar +keep-prompt+ (list :keep-prompt)
+  "Thrown to a prompt as (+KEEP-PROMPT+ . thunk): the prompt stays, and
+THUNK runs inside it (a delimited continuation applied, ABORT-TO-PROMPT/KEEP).")
+
 (defun prompt-extent (frame thunk)
   "Call THUNK inside prompt FRAME; on an abort to it, call its handler with
-the composable continuation and the abort's values."
-  (let ((abort (catch (svref frame 2)
-		 (return-from prompt-extent (with-frame (frame) (funcall thunk))))))
-    (apply (svref frame 3) abort)))
+the composable continuation and the abort's values -- or, for an abort
+that keeps the prompt, run its thunk inside it."
+  (loop
+    (let ((abort (catch (svref frame 2)
+		   (return-from prompt-extent (with-frame (frame) (funcall thunk))))))
+      (if (and (consp abort) (eq (car abort) +keep-prompt+))
+	  (setq thunk (cdr abort))
+	  (return (apply (svref frame 3) abort))))))
+
+(defun abort-to-prompt/keep (prompt thunk)
+  "Unwind to PROMPT, a prompt frame, keeping it, and run THUNK inside it."
+  (throw (svref prompt 2) (cons +keep-prompt+ thunk)))
 
 (defun call-with-prompt (tag thunk handler)
   (let ((frame (vector :prompt nil (heap-cons 'prompt tag) handler *winders*)))

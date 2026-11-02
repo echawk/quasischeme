@@ -288,8 +288,21 @@ parameter holds a struct with prop:output-port or prop:input-port)."
 (defstruct (thread-cell (:constructor make-thread-cell* (value preserved))) value preserved)
 
 (defnative "call-with-continuation-barrier" (thunk) () (funcall thunk))
+(defvar *escape-continuations* (make-hash-table :test 'eq :weakness :key :synchronized t)
+  "The continuations call-with-escape-continuation gives (continuation?).")
+
+(defvar *delimited-continuations* (make-hash-table :test 'eq :weakness :key :synchronized t)
+  "The continuations call-with-current-continuation makes under a prompt
+(more.lisp, DELIMITED-CALL/CC).")
+
 (defnative "call-with-escape-continuation" (proc) ()
-  (funcall (qsx:host-ref "call-with-current-continuation") proc))
+  (funcall (qsx:host-ref "call-with-current-continuation")
+	   (lambda (k)
+	     ;; T while its extent lasts, then :DEAD (continuation-marks
+	     ;; refuses it, as Racket CS's)
+	     (setf (gethash k *escape-continuations*) t)
+	     (unwind-protect (funcall proc k)
+	       (setf (gethash k *escape-continuations*) :dead)))))
 (defnative "unsafe-root-continuation-prompt-tag" () (:instance "#%unsafe" :leaf t) *default-prompt-tag*)
 (defnative "reparameterize" (paramz) (:instance "#%paramz" :leaf t) paramz)
 
