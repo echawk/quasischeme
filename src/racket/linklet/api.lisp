@@ -172,13 +172,18 @@ time units), and how many: QUASISCHEME_RACKET_STATS prints them.")
 	    (/ (getf *stats* :compile) internal-time-units-per-second))))
 
 (defun undumpable-literal-p (core)
-  "Whether lowered CORE quotes a value a fasl can't hold: a procedure, or
-another object without a load form.  A macro can put such a value into
+  "Whether lowered CORE quotes a value a fasl can't hold: a procedure,
+an uninterned symbol, or another object without a load form.  A macro can put such a value into
 the code it makes (Racket's \"3-D syntax\"), which Racket compiles in
 memory, as is done for it here, uncached."
   (let ((seen (make-hash-table :test 'eq)))
     (labels ((value (x)
-	       (cond ((or (numberp x) (stringp x) (symbolp x) (characterp x)) nil)
+	       (cond ((and (symbolp x) x (null (symbol-package x)))
+		      ;; an uninterned symbol (a macro's gensym, class.rkt's
+		      ;; self): its identity, which the expander's syntax
+		      ;; objects share, a file's round trip loses
+		      t)
+		     ((or (numberp x) (stringp x) (symbolp x) (characterp x)) nil)
 		     ((gethash x seen) nil)
 		     (t (setf (gethash x seen) t)
 			(typecase x
