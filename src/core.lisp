@@ -1286,7 +1286,12 @@ what is on a cycle; 2, whatever is shared."
       (funcall proc (lambda (&rest vals)
 		      (if (and vals (eq (car vals) :quasischeme-continuation-query))
 			  (cons tag nil)	; its identity (src/continuations.lisp)
-			  (throw tag (values-list vals))))))))
+			  ;; its catch gone (its extent over, or the stack rebuilt
+			  ;; by a re-entry without it): an error, not a throw to
+			  ;; nowhere
+			  (handler-case (throw tag (values-list vals))
+			    (control-error ()
+			      (error "an escape continuation was invoked outside its extent")))))))))
 
 ;;; Checks that name their procedure, for the error: builtin.scm's car,
 ;;; vector-ref and the others, inline, check their arguments with these,

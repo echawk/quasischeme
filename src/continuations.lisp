@@ -627,7 +627,11 @@ inside is re-entered (and so the continuation still works there)."
 	      (funcall f (note-continuation (caller-frame) (lambda (&rest values)
 			   (if (and values (eq (car values) :quasischeme-continuation-query))
 			       (cons tag nil) ; its identity (CONTINUATION=)
-			       (throw tag (values-list values)))))))))))))
+			       ;; its catch gone (its extent over, or the stack
+			       ;; rebuilt without it): an error a handler can
+			       ;; catch, not a throw to nowhere
+			       (handler-case (throw tag (values-list values))
+				 (control-error () (error 'continuation-not-reentrant))))))))))))))
 
 (defun note-continuation (frame k)
   (when *continuation-hook* (funcall *continuation-hook* k frame))
@@ -975,12 +979,26 @@ with-continuation-barrier).  Other barriers only block re-entry."
 	       (when (and values (eq (car values) :quasischeme-continuation-query))
 		 (return-from k (cons frames winders)))
 	       (setq *shared-winders* '())
-	       (cond ((car live) (check-no-barrier here) (throw tag (values-list values)))
-		     ((and rebuildable *base-tag*)
-		      (let ((shared (shared-winders *winders* winders)))
-			(setq *shared-winders* shared)
-			(throw *base-tag* (lambda () (reenter frames winders values shared)))))
-		     (t (error 'continuation-not-reentrant)))))
+	       (flet ((reenter-it ()
+			(cond ((and rebuildable *base-tag*)
+			       (let ((shared (shared-winders *winders* winders)))
+				 (setq *shared-winders* shared)
+				 ;; a base no longer there (re-entered from a
+				 ;; winder's after during an escape): an error a
+				 ;; handler can catch
+				 (handler-case (throw *base-tag* (lambda () (reenter frames winders values shared)))
+				   (control-error () (error 'continuation-not-reentrant)))))
+			      (t (error 'continuation-not-reentrant)))))
+		 (if (car live)
+		     (progn
+		       (check-no-barrier here)
+		       ;; its extent's catch, unless the stack was rebuilt
+		       ;; around it since (a re-entry rebuilds frames, not
+		       ;; catches): a missing tag is an error before anything
+		       ;; unwinds, and then the continuation is re-entered
+		       (handler-case (throw tag (values-list values))
+			 (control-error () (reenter-it))))
+		     (reenter-it)))))
 	(when *continuation-hook* (funcall *continuation-hook* #'k (caller-frame)))
 	(unwind-protect (block done
 			  ;; what is thrown may ask for a thunk called here
