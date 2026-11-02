@@ -246,6 +246,17 @@ the trailing ones equal to the one before."
 	       (loop for i below n
 		     do (unless (zerop i) (write-char #\Space stream)) (p (svref x i)))
 	       (write-char #\) stream)))
+	    ;; fxvectors and flvectors (more.lisp), as Racket writes them
+	    ((typep x 'fxvector)
+	     (write-string "#fx(" stream)
+	     (loop for item across (fxvector-items x) for first = t then nil
+		   do (unless first (write-char #\Space stream)) (p item))
+	     (write-char #\) stream))
+	    ((typep x '(simple-array double-float (*)))
+	     (write-string "#fl(" stream)
+	     (loop for item across x for first = t then nil
+		   do (unless first (write-char #\Space stream)) (p item))
+	     (write-char #\) stream))
 	    ((stencil-p x)
 	     (format stream "#<stencil ~D" (stencil-mask x))
 	     (when (plusp (length (stencil-items x))) (write-char #\: stream))
@@ -364,6 +375,12 @@ struct as its constructor's application, (point 1 2); a mutable pair as
 		(po-struct *print-options*))
 	   (format stream "(~A" (rname (struct-type-name (struct-of-type x))))
 	   (loop for f across (struct-fields-copy x) do (write-char #\Space stream) (print-quoted f stream))
+	   (write-char #\) stream))
+	  ;; printed as the call that makes them: (fxvector 1 2)
+	  ((or (typep x 'fxvector) (typep x '(simple-array double-float (*))))
+	   (write-string (if (typep x 'fxvector) "(fxvector" "(flvector") stream)
+	   (loop for item across (if (typep x 'fxvector) (fxvector-items x) x)
+		 do (write-char #\Space stream) (print-value item stream :write))
 	   (write-char #\) stream))
 	  ((mpair-p x)
 	   (write-string "(mcons " stream)

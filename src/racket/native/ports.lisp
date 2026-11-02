@@ -545,12 +545,20 @@ linefeed's)."
 	      do (loop for i below n do (vector-push-extend (aref buf i) out)))
 	(coerce out 'octets))))
 
-(defun open-file-for-input (who name)
-  "The bytes of the file NAME, or Racket's exception."
+(defun open-file-for-input (who name &optional for-module)
+  "The bytes of the file NAME, or Racket's exception.  FOR-MODULE: opened
+for a module (open-input-file's 'module mode, the load handler's): a
+missing file is then the expander's missing-module exception, as
+Racket's io layer has it (port/file-port.rkt)."
   (ensure-lisp-module-file name)
   (let ((fd (handler-case (sb-posix:open name sb-posix:o-rdonly)
 	      (sb-posix:syscall-error (e)
-		(raise-errno who "cannot open input file" name (sb-posix:syscall-errno e))))))
+		(let ((errno (sb-posix:syscall-errno e)))
+		  (when (and for-module (boundp '*expander-instance*) (symbol-value '*expander-instance*))
+		    (funcall (funcall 'expander-export "maybe-raise-missing-module")
+			     (rsym who) name "" "" ""
+			     (format nil "~A; errno=~D" (sb-int:strerror errno) errno)))
+		  (raise-errno who "cannot open input file" name errno))))))
     (let ((st (sb-posix:fstat fd)))
       (when (sb-posix:s-isdir (sb-posix:stat-mode st))
 	(sb-posix:close fd)
@@ -577,9 +585,8 @@ NIL, FD open, for anything else."
 	(if (= got size) bytes (subseq bytes 0 got))))))
 
 (defnative "open-input-file" (path &rest mode) ()
-  (declare (ignore mode))
   (let* ((name (native-path "open-input-file" path))
-	 (bytes (open-file-for-input "open-input-file" name)))
+	 (bytes (open-file-for-input "open-input-file" name (member (rsym "module") mode))))
     (finish-inport (make-rinport bytes (make-rpath name)))))
 (defnative "open-input-string" (s &optional (name (rsym "string"))) ()
   (finish-inport (make-rinport (bytes-of s) name :kind :string)))
