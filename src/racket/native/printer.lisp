@@ -134,8 +134,8 @@
 	 (values (loop for (k . v) across (entries x) collect k collect v) t))
 	((and (struct-instance-p x) (not (custom-write-procedure x)))
 	 (let ((type (struct-of-type x)))
-	   (if (and (po-struct o) (or (struct-type-prefab-key type) (transparent-p type)))
-	       (values (coerce (struct-fields-copy x) 'list) t)
+	   (if (and (po-struct o) (or (struct-type-prefab-key type) (struct-visible-p x)))
+	       (values (cdr (coerce (struct-vector x) 'list)) t)
 	       (values nil nil))))
 	(t (values nil nil))))
 
@@ -205,8 +205,20 @@ print-unreadable is #f and X is written."
   "How many of vector X's elements print under print-vector-length: not
 the trailing ones equal to the one before."
   (let ((n (length x)))
-    (loop while (and (> n 1) (equal* (svref x (- n 1)) (svref x (- n 2)))) do (decf n))
+    (loop while (and (> n 1) (eql (aref x (- n 1)) (aref x (- n 2)))) do (decf n))
     n))
+
+(defun print-elements (prefix items vlen stream p)
+  "ITEMS (a vector) as PREFIX(...), calling P on each: under VLEN
+(print-vector-length, and not display) with the length after PREFIX
+and without the trailing elements equal to the one before."
+  (let ((n (if vlen (vector-elements-printed items) (length items))))
+    (write-string prefix stream)
+    (when vlen (format stream "~D" (length items)))
+    (write-char #\( stream)
+    (loop for i below n
+	  do (unless (zerop i) (write-char #\Space stream)) (funcall p (aref items i)))
+    (write-char #\) stream)))
 
 (defun print-value* (x stream mode)
   (cond ((not (marked-p x)) (print-value** x stream mode))
@@ -216,6 +228,7 @@ the trailing ones equal to the one before."
 (defun print-value** (x stream mode)
   (let ((o *print-options*))
     (labels ((p (x) (print-value* x stream mode))
+	     (vlen () (and (po-vlen o) (not (eq mode :display))))
 	     (unreadable (text) (unreadable-text x stream mode text)))
       (cond ((eq x *void*) (unreadable "#<void>"))
 	    ((eq x *eof*) (unreadable "#<eof>"))
@@ -240,23 +253,10 @@ the trailing ones equal to the one before."
 			      (p (car tail))
 			   finally (when tail (write-string " . " stream) (p tail)))
 		     (write-char (if (po-pair-curly o) #\} #\)) stream)))))
-	    ((simple-vector-p x)
-	     (let ((n (if (po-vlen o) (vector-elements-printed x) (length x))))
-	       (if (po-vlen o) (format stream "#~D(" (length x)) (write-string "#(" stream))
-	       (loop for i below n
-		     do (unless (zerop i) (write-char #\Space stream)) (p (svref x i)))
-	       (write-char #\) stream)))
+	    ((simple-vector-p x) (print-elements "#" x (vlen) stream #'p))
 	    ;; fxvectors and flvectors (more.lisp), as Racket writes them
-	    ((typep x 'fxvector)
-	     (write-string "#fx(" stream)
-	     (loop for item across (fxvector-items x) for first = t then nil
-		   do (unless first (write-char #\Space stream)) (p item))
-	     (write-char #\) stream))
-	    ((typep x '(simple-array double-float (*)))
-	     (write-string "#fl(" stream)
-	     (loop for item across x for first = t then nil
-		   do (unless first (write-char #\Space stream)) (p item))
-	     (write-char #\) stream))
+	    ((typep x 'fxvector) (print-elements "#fx" (fxvector-items x) (vlen) stream #'p))
+	    ((typep x '(simple-array double-float (*))) (print-elements "#fl" x (vlen) stream #'p))
 	    ((stencil-p x)
 	     (format stream "#<stencil ~D" (stencil-mask x))
 	     (when (plusp (length (stencil-items x))) (write-char #\: stream))
@@ -321,11 +321,10 @@ the trailing ones equal to the one before."
 		      (p (struct-type-prefab-key type))
 		      (loop for f across (struct-fields-copy x) do (write-char #\Space stream) (p f))
 		      (write-char #\) stream))
-		     ((and (transparent-p type) (po-struct o))
-		      (format stream "#(struct:~A" (rname (struct-type-name type)))
-		      (loop for f across (struct-fields-copy x) do (write-char #\Space stream) (p f))
-		      (write-char #\) stream))
-		     ((or (struct-type-prefab-key type) (transparent-p type))
+		     ((and (struct-visible-p x) (po-struct o))
+		      ;; the vector of struct->vector
+		      (print-elements "#" (struct-vector x) (vlen) stream #'p))
+		     ((or (struct-type-prefab-key type) (struct-visible-p x))
 		      (format stream "#<~A>" (rname (struct-type-name type))))
 		     ((typep x 'applicable-rstruct)
 		      (unreadable (format nil "#<procedure:~A>" (rname (struct-type-name type)))))
@@ -357,41 +356,111 @@ the trailing ones equal to the one before."
 	     (write-char #\| stream))
 	    (t (host-write x stream))))))
 
+(defvar *print-constructors* nil
+  "The objects print writes as the call that makes them (EQ hash table,
+value T), or NIL.")
+
+(defun constructor-p (x)
+  (and *print-constructors* (eq (gethash x *print-constructors*) t)))
+
+(defun find-constructors (x o)
+  "The table of the objects of X that print (as an expression) writes as
+the call that makes them, (list (point 1 2)), rather than quoted: a
+mutable pair, a transparent struct, and what contains one (Racket's
+io/print/graph.rkt).  A list's spine is walked with a loop."
+  (let ((state (make-hash-table :test 'eq))
+	(any nil))
+    (labels ((done (x unquoted)
+	       (setf (gethash x state) (if unquoted t :done))
+	       (when unquoted (setq any t))
+	       unquoted)
+	     (walk (x)
+	       (multiple-value-bind (children container) (print-children x o)
+		 (cond ((not container) nil)
+		       ((gethash x state) (eq (gethash x state) t))
+		       ((consp x)
+			(let* ((cells (loop for c = x then (cdr c)
+					    while (and (consp c) (not (gethash c state)))
+					    do (setf (gethash c state) :active)
+					    collect c))
+			       (unquoted (walk (cdr (car (last cells))))))
+			  (dolist (c (reverse cells) unquoted)
+			    (setq unquoted (done c (or (walk (car c)) unquoted))))))
+		       (t (setf (gethash x state) :active)
+			  (let ((unquoted nil))
+			    (dolist (c children)
+			      (when (walk c) (setq unquoted t)))
+			    (done x (cond ((stencil-p x) nil)
+					  ((mpair-p x) t)
+					  ((struct-instance-p x)
+					   (or unquoted (not (struct-type-prefab-key (struct-of-type x)))))
+					  (t unquoted)))))))))
+      (walk x)
+      (and any state))))
+
 (defun print-quoted (x stream)
-  "print: as write, with ' before what isn't self-quoting; a transparent
-struct as its constructor's application, (point 1 2); a mutable pair as
-(mcons a d)."
+  "print: as write, with ' before what isn't self-quoting; what contains
+a transparent struct or a mutable pair as the call that makes it,
+(list (point 1 2)), (mcons a d)."
   (let ((*print-options* (or *print-options* (read-print-options)))
 	(*print-who* "print")
 	(*print-abbreviate* t))
-    (call-with-print-graph x (lambda () (print-quoted* x stream)))))
+    (call-with-print-graph
+     x (lambda ()
+	 (let ((*print-constructors* (and (po-expr *print-options*) (find-constructors x *print-options*))))
+	   (print-quoted* x stream))))))
+
+(defun print-constructor (x stream)
+  "X, a constructor object (FIND-CONSTRUCTORS), as the call that makes it."
+  (flet ((p (x) (write-char #\Space stream) (print-quoted* x stream)))
+    (cond ((and (consp x) (abbreviation-prefix x))
+	   ;; (quote v) as 'v, v's form as a constructor's
+	   (write-string (abbreviation-prefix x) stream)
+	   (return-from print-constructor (print-quoted* (cadr x) stream)))
+	  ((consp x)
+	   ;; (list a b), or (list* a b tail) or (cons a tail) where a
+	   ;; cell after the first has a label or the list isn't proper
+	   (let* ((list-p (loop for c = (cdr x) then (cdr c)
+				while (and (consp c) (not (marked-p c)))
+				finally (return (null c))))
+		  (more (lambda (c) (and (consp c) (not (marked-p c))))))
+	     (write-string (cond (list-p "(list") ((funcall more (cdr x)) "(list*") (t "(cons")) stream)
+	     (loop for c = x then (cdr c)
+		   do (p (car c))
+		   while (funcall more (cdr c))
+		   finally (unless list-p (p (cdr c))))))
+	  ((simple-vector-p x)
+	   (write-string "(vector" stream)
+	   (loop for item across x do (p item)))
+	  ((rbox-p x) (write-string "(box" stream) (p (box-ref* x)))
+	  ((mpair-p x)
+	   (write-string "(mcons" stream) (p (mpair-car x)) (p (mpair-cdr x)))
+	  ((or (ihash-p x) (rhash-p x))
+	   (write-string (case (hash-kind x) (:eq "(hasheq") (:eqv "(hasheqv") (t "(hash")) stream)
+	   (loop for (k . v) across (entries x) do (p k) (p v)))
+	  (t
+	   (format stream "(~A" (rname (struct-type-name (struct-of-type x))))
+	   (loop for f across (struct-vector x (make-unquoted-ps "...")) for first = t then nil
+		 unless first do (p f))))
+    (write-char #\) stream)))
 
 (defun print-quoted* (x stream)
-  (progn
-    (cond ((not (po-expr *print-options*)) (print-value x stream :write))
+  (let ((o *print-options*))
+    (cond ((not (po-expr o)) (print-value x stream :write))
 	  ((and (marked-p x) (eq (print-label x stream) :reference)))
-	  ((and (struct-instance-p x) (transparent-p (struct-of-type x))
-		(not (struct-type-prefab-key (struct-of-type x)))
-		(po-struct *print-options*))
-	   (format stream "(~A" (rname (struct-type-name (struct-of-type x))))
-	   (loop for f across (struct-fields-copy x) do (write-char #\Space stream) (print-quoted f stream))
-	   (write-char #\) stream))
+	  ((constructor-p x) (print-constructor x stream))
 	  ;; printed as the call that makes them: (fxvector 1 2)
 	  ((or (typep x 'fxvector) (typep x '(simple-array double-float (*))))
 	   (write-string (if (typep x 'fxvector) "(fxvector" "(flvector") stream)
 	   (loop for item across (if (typep x 'fxvector) (fxvector-items x) x)
 		 do (write-char #\Space stream) (print-value item stream :write))
 	   (write-char #\) stream))
-	  ((mpair-p x)
-	   (write-string "(mcons " stream)
-	   (print-quoted (mpair-car x) stream)
-	   (write-char #\Space stream)
-	   (print-quoted (mpair-cdr x) stream)
-	   (write-char #\) stream))
 	  (t
 	   (when (or (and (symbolp x) x (not (eq x qs:true)) (not (eq x qs:false)))
 		     (consp x) (null x) (simple-vector-p x) (rbox-p x) (rkeyword-p x)
-		     (ihash-p x))
+		     (ihash-p x) (and (rhash-p x) (po-hash o))
+		     (and (struct-instance-p x) (po-struct o) (not (custom-write-procedure x))
+			  (struct-type-prefab-key (struct-of-type x))))
 	     (write-char #\' stream))
 	   (when (marked-p x) (setq *print-top-labeled* x))
 	   (print-value x stream :write)))))
@@ -429,9 +498,13 @@ writes straight to the port (compiled code writes its bytes so)."
 
 (defnative "write" (x &optional port) () (write-with-mode x port qs:true :write))
 (defnative "display" (x &optional port) () (write-with-mode x port qs:false :display))
-(defnative "print" (x &optional port quote-depth) ()
-  (declare (ignore quote-depth))
-  (write-with-mode x port 0 :print))
+(defnative "print" (x &optional port (quote-depth 0)) ()
+  (unless (member quote-depth '(0 1))
+    (contract-error "print" "(or/c 0 1)" quote-depth))
+  ;; at quote depth 1 the value is already quoted: written as write does
+  (if (eql quote-depth 1)
+      (write-with-mode x port 1 :write)
+      (write-with-mode x port 0 :print)))
 (defnative "writeln" (x &optional port) ()
   (to-port port (lambda (s) (print-value x s :write) (terpri s))))
 (defnative "displayln" (x &optional port) ()

@@ -583,15 +583,12 @@ TYPE or a subtype: its fields can be read and written directly."
 (defnative "struct-type-authentic?" (type) (:leaf t) (declare (ignore type)) qs:false)
 (defnative "struct-type-sealed?" (type) (:leaf t) (declare (ignore type)) qs:false)
 
-(defnative "struct?" (x) (:leaf t) (bool (struct-instance-p x)))
+(defnative "struct?" (x) (:leaf t) (bool (struct-visible-p x)))
 (defnative "struct-type?" (x) (:leaf t) (bool (struct-type-p x)))
 (defnative "struct-type-property?" (x) (:leaf t) (bool (struct-type-property-p x)))
-(defnative "struct->vector" (x &optional opaque) (:leaf t)
-  (declare (ignore opaque))
+(defnative "struct->vector" (x &optional (opaque (rsym "..."))) (:leaf t)
   (if (struct-instance-p x)
-      (concatenate 'simple-vector
-		   (vector (rsym (format nil "struct:~A" (rname (struct-type-name (struct-of-type x))))))
-		   (struct-fields-copy x))
+      (struct-vector x opaque)
       (vector (rsym "struct:?"))))
 (defstruct (inspector (:constructor make-inspector* (superior))) superior)
 (defvar *root-inspector* (make-inspector* nil))
@@ -617,6 +614,33 @@ items: their LR(0) automaton never ended when equal kernels weren't)."
 	     (let ((current (current-inspector*)))
 	       (loop for i = (inspector-superior inspector) then (inspector-superior i)
 		     while i thereis (eq i current)))))))
+
+(defun struct-type-chain (type)
+  "TYPE and its ancestors, the root first."
+  (loop with chain = '()
+	for ty = type then (struct-type-parent ty)
+	while (struct-type-p ty) do (push ty chain)
+	finally (return chain)))
+
+(defun struct-visible-p (x)
+  "struct?: X is a struct instance some of whose types aren't opaque to the
+current inspector."
+  (and (struct-instance-p x) (some #'transparent-p (struct-type-chain (struct-of-type x)))))
+
+(defun struct-vector (x &optional (opaque (rsym "...")))
+  "struct->vector of struct instance X: struct:NAME, then the fields of
+each of its types the current inspector can see, OPAQUE for each run of
+those it can't."
+  (let ((fields (struct-fields-copy x))
+	(items (list (rsym (format nil "struct:~A" (rname (struct-type-name (struct-of-type x)))))))
+	(dots nil))
+    (dolist (ty (struct-type-chain (struct-of-type x)))
+      (cond ((transparent-p ty)
+	     (loop for i from (- (struct-type-total ty) (struct-type-field-count ty)) below (struct-type-total ty)
+		   do (push (aref fields i) items))
+	     (setq dots nil))
+	    ((not dots) (push opaque items) (setq dots t))))
+    (coerce (nreverse items) 'simple-vector)))
 
 ;;; (current-inspector is a parameter: hash.lisp)
 (defnative "make-inspector" (&optional (superior (current-inspector*))) (:leaf t)
