@@ -183,10 +183,19 @@ properties."
 (defvar *prop-incomplete-arity* nil)
 
 (defun incomplete-arity-p (f)
+  "Whether F's arity leaves out required keywords (prop:incomplete-arity):
+F's own type's, or, an applicable struct whose procedure is a field,
+that procedure's (Racket CS's get-procedure-arity-mask follows it)."
   (and (struct-instance-p f)
        (let ((prop (or *prop-incomplete-arity*
 		       (setq *prop-incomplete-arity* (primitive "prop:incomplete-arity")))))
-	 (nth-value 1 (property-value f prop)))))
+	 (or (nth-value 1 (property-value f prop))
+	     (multiple-value-bind (spec owner) (applicable-procedure (struct-of-type f))
+	       (cond ((integerp spec)
+		      (let ((v (struct-field f (+ spec (- (struct-type-total owner) (struct-type-field-count owner))))))
+			(and (not (eq v f)) (incomplete-arity-p v))))
+		     ;; prop:procedure's own procedure, called with F first
+		     ((functionp spec) (incomplete-arity-p spec))))))))
 
 (defun procedure-mask (who f)
   (unless (functionp f) (arg-error who "procedure?" f))

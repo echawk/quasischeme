@@ -186,8 +186,13 @@ many bytes it takes; a bad sequence is #\\uFFFD, one byte."
 		    do (if (= (logand c #xC0) #x80)
 			   (setq code (logior (ash code 6) (logand c #x3F)))
 			   (return-from utf-8-char-at (values (code-char #xFFFD) 1))))
-	      (values (if (or (> code #x10FFFF) (<= #xD800 code #xDFFF)) (code-char #xFFFD) (code-char code))
-		      n))))))
+	      ;; past Unicode, a surrogate or overlong: the lead byte alone is
+	      ;; bad, each byte after it read again (one #\uFFFD per byte,
+	      ;; as Racket's decoder has it)
+	      (if (or (> code #x10FFFF) (<= #xD800 code #xDFFF)
+		      (< code (case n (2 #x80) (3 #x800) (t #x10000))))
+		  (values (code-char #xFFFD) 1)
+		  (values (code-char code) n)))))))
 
 (defun ip-end (p) (or (rinport-end p) (length (rinport-bytes p))))
 

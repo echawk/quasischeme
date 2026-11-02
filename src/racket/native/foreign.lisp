@@ -1059,7 +1059,18 @@ the collector next runs)."
 
 (defun make-caller (in-types out-type save-errno)
   "A function of a cpointer returning the Racket procedure that calls C
-there."
+there.  A struct or union passed or returned by value, unsupported: a
+procedure that says so when it's called, not when it's made (net/url's
+dependencies define such bindings as they load, and needn't call them)."
+  (if (some (lambda (ct) (member (fct-host-rep ct) '(:struct :union))) (cons out-type in-types))
+      (lambda (to-wrap)
+	(declare (ignore to-wrap))
+	(lambda (&rest args)
+	  (declare (ignore args))
+	  (unsupported "ffi-call" "a struct or union by value is not supported")))
+      (make-caller-1 in-types out-type save-errno)))
+
+(defun make-caller-1 (in-types out-type save-errno)
   (let* ((in-sigs (mapcar (lambda (c) (ffi-type "ffi-call" c)) in-types))
 	 (out-sig (ffi-type "ffi-call" out-type))
 	 (reps (mapcar #'fct-host-rep in-types))

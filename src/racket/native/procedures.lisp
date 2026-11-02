@@ -38,9 +38,19 @@
 			 ;; a result wrapper first, then the arguments
 			 (multiple-value-call (car results) (apply proc (cdr results)))
 			 (apply proc results))))
-		 (lambda (&rest args) (apply proc args)))))
+		 (lambda (&rest args) (apply proc args))))
+	(proc-arity (or (ignore-errors (arity-mask proc)) -1)))
+    ;; an applicable struct's chaperone is still a struct of its type
+    ;; (a?, its accessors, chaperone-struct of it), its calls through
+    ;; NEW: a struct layer redirecting none of its fields
+    (when (and (struct-instance-p proc) (not (rstruct-p proc)))
+      (let ((layer (make-instance 'applicable-cstruct :type (applicable-rstruct-type proc)
+						      :fields (applicable-rstruct-fields proc)
+						      :of proc :kind kind :procs '())))
+	(sb-mop:set-funcallable-instance-function layer new)
+	(setq new layer)))
     (setf (gethash new *impersonators*) (make-impersonation kind proc (plist->alist props))
-	  (gethash new *arity-masks*) (or (ignore-errors (arity-mask proc)) -1))
+	  (gethash new *arity-masks*) proc-arity)
     new))
 
 (defnative "chaperone-procedure" (proc wrapper &rest props) (:rumble "chaperone-procedure")
@@ -141,7 +151,16 @@ are approximate, so that isn't checked.)"
 ;;; the procedure itself here
 (defnative "procedure-specialize" (f) (:leaf t) f)
 (defnative "procedure-impersonator*?" (f) (:leaf t) (declare (ignore f)) qs:false)
-(defnative "procedure-extract-target" (f) (:leaf t) (declare (ignore f)) qs:false)
+(defnative "procedure-extract-target" (f) (:leaf t)
+  ;; an applicable struct whose procedure is one of its fields: that
+  ;; field's procedure (kw.rkt reduces and names a keyword procedure in
+  ;; one through it); else #f
+  (or (and (struct-instance-p f)
+	   (multiple-value-bind (spec owner) (applicable-procedure (struct-of-type f))
+	     (and (integerp spec)
+		  (let ((v (struct-field f (+ spec (- (struct-type-total owner) (struct-type-field-count owner))))))
+		    (and (functionp v) v)))))
+      qs:false))
 (defvar *single-valued-primitives* nil
   "The procedures of *host-shared* that return one value, once found (EQ table).")
 

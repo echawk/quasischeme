@@ -166,7 +166,14 @@ assigned, which schemify's and the expander's checks compare with.")
 (defnative "fxabs" (n) (:instance "#%flfxnum" :leaf t) (abs n))
 ;;; Pseudo-random generators: SBCL's random states
 (defstruct (prng (:constructor make-prng (state))) state)
-(defvar *current-prng* (make-parameter* (make-prng (make-random-state t))))
+(defvar *current-prng*
+  (make-parameter* (make-prng (make-random-state t))
+		   ;; a generator only, as Racket's guard has it
+		   (lambda (v)
+		     (unless (prng-p v)
+		       (contract-error "current-pseudo-random-generator" "pseudo-random-generator?" v))
+		     v)
+		   (rsym "current-pseudo-random-generator")))
 (define-primitive "#%kernel" "current-pseudo-random-generator" *current-prng*)
 (defnative "make-pseudo-random-generator" () (:leaf t) (make-prng (make-random-state t)))
 (defnative "pseudo-random-generator?" (x) (:leaf t) (bool (prng-p x)))

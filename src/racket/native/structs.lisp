@@ -383,6 +383,11 @@ numbers of arguments."
 		:constructor-name (and (truthy constructor-name) constructor-name)
 		:proc-spec (and (truthy proc-spec) proc-spec))))
     (multiple-value-bind (accessor mutator) (general-field-procedures type)
+      ;; known as this type's before the properties' guards get them: a
+      ;; guard may make field accessors of them (kw.rkt's
+      ;; prop:procedure-accessor, which chaperone-procedure chaperones)
+      (note-struct-procedure accessor :accessor type)
+      (note-struct-procedure mutator :mutator type)
       (install-struct-properties type props accessor mutator)
       ;; inspector 'prefab: a prefab struct type, the same for all who
       ;; make one of this name and shape
@@ -754,9 +759,23 @@ properties each with its value."
 		    (when (null (cdr args))
 		      (struct-chaperone-error who "missing redirection procedure after operation"
 					      "operation kind" "operation" "operation procedure" (written a)))
-		    (let ((redirect (cadr args))
-			  (op (and (functionp a) (gethash a *field-operations*)))
-			  (prop (and (functionp a) (gethash a *property-accessors*))))
+		    (let* ((redirect (cadr args))
+			   ;; an operation that is itself a chaperoned or impersonated
+			   ;; procedure: its accessor underneath, and a field read
+			   ;; through it, its wrappers run, then REDIRECT (Racket's
+			   ;; "use of chaperoned accessor to chaperone a structure")
+			   (base (loop with f = a
+				       for i = (and (functionp f) (impersonation f))
+				       while i do (setq f (impersonation-of i))
+				       finally (return f)))
+			   (op (and (functionp base) (gethash base *field-operations*)))
+			   (prop (and (functionp base) (gethash base *property-accessors*))))
+		      (when (and (not (eq base a)) op (eq (first op) :accessor))
+			(let ((outer redirect) (through a) (underlying v))
+			  (setq redirect (lambda (s val)
+					   (declare (ignore val))
+					   (let ((got (funcall through underlying)))
+					     (if (truthy outer) (funcall outer s got) got))))))
 		      (cond
 			((and op (eq (first op) :accessor))
 			 (destructuring-bind (type pos) (rest op)

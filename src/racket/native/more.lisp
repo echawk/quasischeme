@@ -264,9 +264,18 @@
 		      (setf (gethash x seen) c (rbox-value c) (walk (rbox-value x)))
 		      c))
 		   ((hash-placeholder-p x)
-		    (ihash-from-assocs (hash-placeholder-kind x)
-				       (mapcar (lambda (a) (cons (walk (car a)) (walk (cdr a))))
-					       (hash-placeholder-assocs x))))
+		    (if (null (hash-placeholder-assocs x))
+			(ihash-from-assocs (hash-placeholder-kind x) '()) ; the shared empty one
+			;; the table made first, so that a cycle back to it
+			;; (#0=#hash(("a" . #0#))) finds it, then filled
+			(let ((shell (make-ihash (hash-placeholder-kind x) nil 0)))
+			  (setf (gethash x seen) shell)
+			  (let ((h (ihash-from-assocs (hash-placeholder-kind x)
+						      (mapcar (lambda (a) (cons (walk (car a)) (walk (cdr a))))
+							      (hash-placeholder-assocs x)))))
+			    (setf (ihash-root shell) (ihash-root h)
+				  (ihash-count shell) (ihash-count h))
+			    shell))))
 		   (t x))))
     (walk v)))
 
