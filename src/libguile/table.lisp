@@ -26,6 +26,11 @@
 ;;;;   DEFVARARGS  a variadic function, written in core.c, which calls
 ;;;;            the Lisp side with the arguments' count and the
 ;;;;            arguments.
+;;;;   DEFT     a function with C types that calls a Scheme procedure of
+;;;;            Guile's with its arguments, converted to Lisp (a
+;;;;            scm_t_wchar to a character), and converts its result
+;;;;            back (a boolean to 1 or 0 for an int, a character to its
+;;;;            code): scm_c_bitvector_ref is bitvector-ref.
 ;;;;
 ;;;; Types: :scm, :void, :int, :uint, :long, :ulong, :size, :ssize,
 ;;;; :int8 ... :uint64, :intmax, :uintmax, :intptr, :uintptr, :double,
@@ -72,6 +77,9 @@
 
 (defmacro defvarargs (name return args &rest options)
   `(add-api (make-api ,name ,return ',args :varargs ,@options)))
+
+(defmacro deft (name return args scheme &rest options)
+  `(add-api (make-api ,name ,return ',args :typed :scheme ,scheme ,@options)))
 
 (defmacro defs (name scheme req &optional (opt 0) rest &rest options)
   `(add-api (make-api ,name :scm
@@ -441,6 +449,60 @@
 (defc "scm_gc_unregister_collectable_memory" :void (:ptr :size :string))
 (defc "scm_remember_upto_here" :void (:scm))
 (defc "scm_internal_hash_fold" :scm (:ptr :ptr :scm :scm))
+
+;;; The manual pairs these two the wrong way round (api-i18n.texi):
+;;; scm_char_locale_downcase is char-locale-downcase
+(defs "scm_char_locale_downcase" "char-locale-downcase" 1 1 nil)
+(defs "scm_char_locale_upcase" "char-locale-upcase" 1 1 nil)
+
+;;; ------------------------------------------------------------------
+;;; Scheme procedures with C types (DEFT)
+
+(deft "scm_c_angle" :double (:scm) "angle")
+(deft "scm_c_magnitude" :double (:scm) "magnitude")
+(deft "scm_c_make_polar" :scm (:double :double) "make-polar")
+(deft "scm_c_round" :double (:double) "round")
+(deft "scm_c_truncate" :double (:double) "truncate")
+(deft "scm_from_signed_integer" :scm (:intmax) "values")
+(deft "scm_from_unsigned_integer" :scm (:uintmax) "values")
+(deft "scm_from_wchar" :scm (:wchar) "values")
+(deft "scm_to_wchar" :wchar (:scm) "values")
+(deft "scm_c_downcase" :wchar (:wchar) "char-downcase")
+(deft "scm_c_upcase" :wchar (:wchar) "char-upcase")
+(deft "scm_c_titlecase" :wchar (:wchar) "char-titlecase")
+(deft "scm_c_array_length" :size (:scm) "array-length")
+(deft "scm_c_array_rank" :size (:scm) "array-rank")
+(deft "scm_c_array_ref_1" :scm (:scm :ssize) "array-ref")
+(deft "scm_c_array_ref_2" :scm (:scm :ssize :ssize) "array-ref")
+(deft "scm_c_array_set_1_x" :void (:scm :scm :ssize) "array-set!")
+(deft "scm_c_array_set_2_x" :void (:scm :scm :ssize :ssize) "array-set!")
+(deft "scm_c_make_bitvector" :scm (:size :scm) "make-bitvector")
+(deft "scm_c_bitvector_length" :size (:scm) "bitvector-length")
+(deft "scm_c_bitvector_ref" :scm (:scm :size) "bitvector-ref")
+(deft "scm_c_bitvector_set_x" :void (:scm :size :scm) "bitvector-set!")
+(deft "scm_c_bitvector_bit_is_set" :int (:scm :size) "bitvector-bit-set?")
+(deft "scm_c_bitvector_bit_is_clear" :int (:scm :size) "bitvector-bit-clear?")
+(deft "scm_c_bitvector_set_bit_x" :void (:scm :size) "bitvector-set-bit!")
+(deft "scm_c_bitvector_clear_bit_x" :void (:scm :size) "bitvector-clear-bit!")
+(deft "scm_c_bitvector_set_bits_x" :void (:scm :scm) "bitvector-set-bits!")
+(deft "scm_c_bitvector_clear_bits_x" :void (:scm :scm) "bitvector-clear-bits!")
+(deft "scm_c_bitvector_set_all_bits_x" :void (:scm) "bitvector-set-all-bits!")
+(deft "scm_c_bitvector_clear_all_bits_x" :void (:scm) "bitvector-clear-all-bits!")
+(deft "scm_c_bitvector_flip_all_bits_x" :void (:scm) "bitvector-flip-all-bits!")
+(deft "scm_c_bitvector_count" :size (:scm) "bitvector-count")
+(deft "scm_c_bitvector_count_bits" :size (:scm :scm) "bitvector-count-bits")
+(deft "scm_c_make_weak_vector" :scm (:size :scm) "make-weak-vector")
+(deft "scm_c_weak_vector_ref" :scm (:scm :size) "weak-vector-ref")
+(deft "scm_c_weak_vector_set_x" :void (:scm :size :scm) "weak-vector-set!")
+(deft "scm_c_string_utf8_length" :size (:scm) "string-utf8-length")
+(deft "scm_c_substring_copy" :scm (:scm :size :size) "substring/copy")
+(deft "scm_c_substring_read_only" :scm (:scm :size :size) "substring/read-only")
+(deft "scm_c_substring_shared" :scm (:scm :size :size) "substring/shared")
+(deft "scm_c_thread_exited_p" :int (:scm) "thread-exited?")
+(deft "scm_c_put_char" :void (:scm :wchar) "put-char")
+(deft "scm_c_put_string" :void (:scm :scm :size :size) "put-string")
+(deft "scm_eof_object" :scm () "eof-object")
+(deft "scm_flush" :void (:scm) "force-output")
 
 ;;; ------------------------------------------------------------------
 ;;; The table's signature: an FNV-1a hash of each entry's name and

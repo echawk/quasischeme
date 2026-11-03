@@ -12,7 +12,8 @@
 # 1. its C type, as the C compiler reports it for an initialization
 #    with a mismatched type: only functions all of whose arguments and
 #    whose result are SCM are kept;
-# 2. the Scheme procedure of its name in Guile's root module, by
+# 2. the Scheme procedure of its name in Guile's root module (or the
+#    modules impl.lisp's GUILE-PROCEDURE looks in), by
 #    libguile's naming (scm_char_less_p is char<?, scm_cons_star cons*,
 #    scm_sys_foo %foo, _x is !, _to_ is ->), and that procedure's arity
 #    from the guile on PATH.
@@ -45,6 +46,17 @@ sed -n "s/^.*types\.c:\([0-9]*\):[0-9]*: error: .*incompatible type 'SCM (\([^']
 # 2. the procedures and their arities
 cat > "$tmp/arity.scm" <<'EOF'
 (use-modules (ice-9 rdelim) (ice-9 regex))
+;; the modules a name is looked for in, as impl.lisp's GUILE-PROCEDURE does
+(define modules
+  (cons the-root-module
+        (map resolve-interface '((ice-9 ports) (oop goops) (ice-9 textual-ports) (ice-9 binary-ports)
+                                 (ice-9 weak-vector) (ice-9 threads) (system foreign) (srfi srfi-4 gnu)
+                                 (ice-9 i18n) (ice-9 local-eval) (system vm program)))))
+(define (lookup sym)
+  (let loop ((ms modules))
+    (and (pair? ms)
+         (let ((v (and (module-defined? (car ms) sym) (module-ref (car ms) sym))))
+           (if (procedure? v) v (loop (cdr ms)))))))
 (define (subst s from to) (regexp-substitute/global #f from s 'pre to 'post))
 (define (variants s)
   (let* ((s (subst s "_to_" "->"))
@@ -66,9 +78,8 @@ cat > "$tmp/arity.scm" <<'EOF'
     (let loop ((names (append (if sys (map (lambda (x) (string-append "%" x)) (variants s)) '())
                               (variants s))))
       (and (pair? names)
-           (let* ((sym (string->symbol (car names)))
-                  (v (and (module-defined? the-root-module sym) (module-ref the-root-module sym))))
-             (if (procedure? v)
+           (let ((v (lookup (string->symbol (car names)))))
+             (if v
                  (cons (car names) (procedure-minimum-arity v))
                  (loop (cdr names))))))))
 (let loop ()

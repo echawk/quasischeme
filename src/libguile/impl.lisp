@@ -238,7 +238,9 @@ names start scm_from_, scm_to_ and scm_is_.")
       (gethash name (symbol-value (pg *guile-primitives*)))
       (ignore-errors (qsx:host-ref name))
       ;; defined in a module of Guile's own (ice-9 ports)
-      (loop for module in '("guile" "ice-9 ports" "oop goops")
+      (loop for module in '("guile" "ice-9 ports" "oop goops" "ice-9 textual-ports" "ice-9 binary-ports"
+			    "ice-9 weak-vector" "ice-9 threads" "system foreign" "srfi srfi-4 gnu"
+			    "ice-9 i18n" "ice-9 local-eval" "system vm program")
 	    do (let ((value (scm "catch" qs:true
 				 (lambda ()
 				   (scm "module-ref" (scm "resolve-module" (mapcar (pg ssym) (uiop:split-string module)))
@@ -290,7 +292,24 @@ names start scm_from_, scm_to_ and scm_is_.")
 	do (setf (aref *impls* (api-index api))
 		 (case (api-kind api)
 		   (:scheme (scheme-impl api))
+		   (:typed (typed-impl api))
 		   (t (missing-impl api))))))
+
+(defun typed-impl (api)
+  "A DEFT entry's implementation: its Scheme procedure, called with the
+arguments converted (a scm_t_wchar to a character), the result converted
+back (a boolean to 1 or 0 for an int, a character to its code)."
+  (let ((name (api-scheme api)) (procedure nil) (types (api-args api)) (return (api-return api)))
+    (make-entry-function
+     api
+     (lambda (&rest args)
+       (unless procedure (setq procedure (guile-procedure name)))
+       (let ((result (apply procedure (loop for a in args for type in types
+					    collect (if (eq type :wchar) (code-char a) a)))))
+	 (case return
+	   ((:int :bool) (cond ((eq result qs:false) 0) ((integerp result) result) (t 1)))
+	   (:wchar (if (characterp result) (char-code result) result))
+	   (t result)))))))
 
 ;;; ------------------------------------------------------------------
 ;;; Loading the library
