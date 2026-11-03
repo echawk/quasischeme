@@ -1,14 +1,15 @@
-;;;; Write api.c and ids.h from the table (table.lisp, scheme.lisp):
+;;;; Write api.c and ids.h from the table (table.lisp, scheme.lisp, probed.lisp):
 ;;;;   sbcl --script gen.lisp OUTPUT-DIRECTORY
 ;;;; src/libguile/Makefile runs it.  It first writes missing.lisp: every
 ;;;; function in exports-3.0.11.txt (what GNU Guile 3.0.11's libguile
 ;;;; exports) that the table doesn't have yet.  The system loads
-;;;; table.lisp, scheme.lisp and missing.lisp in the same order, so the
-;;;; entries' indexes agree.
+;;;; table.lisp, scheme.lisp, probed.lisp and missing.lisp in the same
+;;;; order, so the entries' indexes agree.
 
 (defvar *here* (make-pathname :name nil :type nil :defaults *load-truename*))
 (load (merge-pathnames "table.lisp" *here*))
 (load (merge-pathnames "scheme.lisp" *here*))
+(load (merge-pathnames "probed.lisp" *here*))
 (in-package "QUASISCHEME-LIBGUILE")
 
 (with-open-file (out (merge-pathnames "missing.lisp" cl-user::*here*) :direction :output :if-exists :supersede)

@@ -358,6 +358,7 @@
   :serial t
   :components ((:file "table")
 	       (:file "scheme")
+	       (:file "probed")
 	       (:file "missing")
 	       (:file "abi")
 	       (:file "bridge")
