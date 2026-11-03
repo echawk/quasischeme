@@ -1,0 +1,33 @@
+#lang racket/base
+(define was-always? #f)
+(define-struct o (x y z)
+  #:property prop:equal+hash (list
+                              (lambda (a b equal? now?)
+                                (set! was-always? (not now?))
+                                (and (equal? (o-x a) (o-x b))
+                                     (equal? (o-z a) (o-z b))))
+                              (lambda (a hash now?)
+                                (set! was-always? (not now?))
+                                (+ (hash (o-x a)) (* 9 (hash (o-z a))))))
+  #:mutable)
+(displayln (list (equal? (make-o 1 2 3) (make-o 1 20 3)) was-always?))
+(displayln (list (equal-always? (make-o 1 2 3) (make-o 1 20 3)) was-always?))
+(displayln (list (equal-always? (make-o 1 2 3) (make-o 1 20 30)) was-always?))
+(displayln (= (equal-hash-code (make-o 1 2 3)) (equal-hash-code (make-o 1 20 3))))
+(displayln (list (= (equal-always-hash-code (make-o 1 2 3)) (equal-always-hash-code (make-o 1 20 3))) was-always?))
+(define h (make-hash))
+(hash-set! h (make-o 1 2 3) 'a)
+(displayln (hash-ref h (make-o 1 99 3) #f))
+(define got-here? #f)
+(struct foo2 (f g) #:transparent
+  #:property prop:equal+hash
+  (list (λ (a b recur) #f) (λ (a recur) 0) (λ (a recur) (set! got-here? #t) 0)))
+(void (equal-secondary-hash-code (list (foo2 0 "ggg"))))
+(displayln got-here?)
+(struct foo (f g)
+  #:property prop:equal+hash
+  (list (λ (a b recur) #f) (λ (a recur) 'wrong) (λ (a recur) 'wrong)))
+(displayln (with-handlers ([exn:fail:contract? (lambda (e) (regexp-match? #rx"hash procedure returned a value other than an exact integer" (exn-message e)))])
+  (equal-hash-code (foo 1 2))))
+(define (cyc z) (letrec ([t (make-o #f 0 z)]) (set-o-x! t t) t))
+(displayln (list (equal? (cyc 0) (cyc 0)) (equal? (cyc 0) (cyc 1)) (equal-always? (cyc 0) (cyc 0)) (equal-always? (cyc 0) (cyc 1))))

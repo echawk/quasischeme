@@ -388,6 +388,11 @@ numbers of arguments."
       ;; prop:procedure-accessor, which chaperone-procedure chaperones)
       (note-struct-procedure accessor :accessor type)
       (note-struct-procedure mutator :mutator type)
+      (when (and (symbolp inspector) inspector (string= (rname inspector) "prefab")
+		 (or props (truthy proc-spec) (truthy guard)))
+	(racket-error "make-struct-type" "~A disallowed for non-generative structure type~%  structure type name: ~A"
+		      (cond (props "properties") ((truthy proc-spec) "procedure specification") (t "guard"))
+		      (printed-quoted name)))
       (install-struct-properties type props accessor mutator)
       ;; inspector 'prefab: a prefab struct type, the same for all who
       ;; make one of this name and shape
@@ -690,22 +695,64 @@ its parent key (or NIL)."
 
 (defun rkey (key) key)
 
+(defun prefab-key-levels (key)
+  "KEY's levels, each (count auto-count), the type's own first; or
+:INVALID if KEY isn't a prefab key (as Racket's prefab-key?: a mutable
+field index must be below its level's field count)."
+  (if (and key (symbolp key) (not (eq key qs:true)) (not (eq key qs:false)))
+      (list (list nil 0))
+      (let ((rest key) (levels '()))
+	(loop
+	  (unless (and (consp rest) (car rest) (symbolp (car rest))) (return :invalid))
+	  (pop rest)
+	  (let ((n nil) (auto 0))
+	    (when (and rest (integerp (car rest)))
+	      (unless (>= (car rest) 0) (return :invalid))
+	      (setq n (pop rest)))
+	    (when (and rest (consp (car rest)))
+	      (let ((a (pop rest)))
+		(unless (and (consp (cdr a)) (null (cddr a)) (integerp (car a)) (>= (car a) 0))
+		  (return :invalid))
+		(setq auto (car a))))
+	    (when (and rest (vectorp (car rest)) (not (stringp (car rest))))
+	      (let ((v (pop rest)))
+		(unless (every (lambda (i) (and (integerp i) (>= i 0) (or (null n) (< i (+ n auto))))) v)
+		  (return :invalid))))
+	    ;; a parent's field count is written
+	    (when (and levels (null n)) (return :invalid))
+	    (push (list n auto) levels)
+	    (when (null rest) (return (nreverse levels))))))))
+
+(defun check-prefab-key (who key field-count)
+  "Raise Racket's error unless KEY is a prefab key for FIELD-COUNT fields."
+  (let ((levels (prefab-key-levels key)))
+    (when (eq levels :invalid) (contract-error who "prefab-key?" key))
+    (let ((declared (loop for (n auto) in levels sum (+ (or n 0) auto))))
+      (unless (if (every #'first levels) (= declared field-count) (<= declared field-count))
+	(racket-error who "mismatch between prefab key and field count~%  prefab key: ~A~%  field count: ~A"
+		      (printed-quoted key) field-count)))))
+
 (defun normalized-prefab-key (name mutable parent)
   (let ((own (append (list name) (and mutable (list (coerce mutable 'simple-vector))))))
     (if parent
-	(append own (let ((pk (struct-type-prefab-key parent))) (if (symbolp pk) (list pk) pk)))
+	;; the parent's levels with its own field count, as (v w 2)
+	(append own (let ((pk (struct-type-prefab-key parent))
+			  (n (struct-type-field-count parent)))
+		      (if (symbolp pk) (list pk n) (list* (car pk) n (cdr pk)))))
 	(if (cdr own) own name))))
 
 (defnative "prefab-struct-key" (v) (:leaf t)
   (let ((type (and (struct-instance-p v) (struct-of-type v))))
     (or (and type (struct-type-prefab-key type)) qs:false)))
 (defnative "make-prefab-struct" (key &rest fields) (:leaf t)
+  (check-prefab-key "make-prefab-struct" key (length fields))
   (let ((type (prefab-struct-type key (length fields))))
     (make-instance-of type (coerce fields 'simple-vector))))
 (defnative "prefab-key->struct-type" (key field-count) (:leaf t)
+  (check-prefab-key "prefab-key->struct-type" key field-count)
   (prefab-struct-type key field-count))
 (defnative "prefab-key?" (x) (:leaf t)
-  (bool (or (symbolp x) (and (consp x) (symbolp (car x))))))
+  (bool (not (eq (prefab-key-levels x) :invalid))))
 (defnative "prefab-struct-type-key+field-count" (type) (:leaf t)
   (if (and (struct-type-p type) (struct-type-prefab-key type))
       (cons (struct-type-prefab-key type) (struct-type-total type))

@@ -43,6 +43,12 @@ strategy is linklet/no-constants (LINKLET-KEY).")
 
 (defvar *racket-signature* nil)
 
+(defparameter *expansion-revision* 2
+  "Raised when a native's change alters what expansion leaves in a .zo or
+a linklet's constants, or the .zo encoding changes (1: a prefab key
+names its parents' field counts, (v w 2); 2: a .zo keeps lambdas'
+names and locations): the natives aren't in the signature otherwise.")
+
 (defun racket-signature ()
   "What compiled linklets depend on besides their source
 (COMPUTE-RACKET-SIGNATURE), computed once per process."
@@ -52,12 +58,12 @@ strategy is linklet/no-constants (LINKLET-KEY).")
 
 (defun compute-racket-signature ()
   "What compiled linklets depend on: the build signature, the
-continuations mode, the compiler's and this file's dates, and how
+continuations mode, *EXPANSION-REVISION*, the compiler's and this file's dates, and how
 primitive names lower (*HOST-SHARED*, *HOST-ALIASES*).  Not the natives
 themselves: compiled code calls every primitive by its name, a host
 global (native.lisp), whichever native is behind it."
   (let ((root (asdf:system-source-directory :quasischeme)))
-    (format nil "~A ~A~{ ~A~} ~36R" (qsx::build-signature) qsx::*full-continuations*
+    (format nil "~A ~A ~A~{ ~A~} ~36R" (qsx::build-signature) qsx::*full-continuations* *expansion-revision*
 	    ;; native.lisp too: which natives are primitives that call no
 	    ;; procedure changes what the continuation transformation makes
 	    (loop for file in '("src/racket/linklet/compiler.lisp" "src/racket/cache.lisp"
@@ -291,12 +297,31 @@ its linklets' forms as text, one after another.")
 (defun zo-text-bytes (x)
   (bytes-of (with-output-to-string (s) (print-value x s :write))))
 
+(defun zo-linklet-form (x)
+  "Linklet form X without its correlated objects, but those of its
+lambda and case-lambda forms, whose inferred name and source location
+name the procedure (compiler.lisp, INFERRED-PROCEDURE-NAME): so a module
+loaded from its .zo compiles as it did from source."
+  (cond ((correlated-p x)
+	 (let ((e (zo-linklet-form (correlated-e x))))
+	   (if (or (form-p e "lambda") (form-p e "case-lambda"))
+	       (list (rsym "#%quasischeme-correlated") e
+		     (or (correlated-property x (rsym "inferred-name")) qs:false)
+		     (or (correlated-source x) qs:false) (or (correlated-line x) qs:false)
+		     (or (correlated-column x) qs:false) (or (correlated-position x) qs:false)
+		     (or (correlated-span x) qs:false))
+	       e)))
+	((form-p x "quote") (correlated->datum x))
+	((consp x) (let ((a (zo-linklet-form (car x))) (d (zo-linklet-form (cdr x))))
+		     (if (and (eq a (car x)) (eq d (cdr x))) x (cons a d))))
+	(t (correlated->datum x))))
+
 (defun zo-encode (x)
   (cond ((compiled-linklet-p x)
 	 ;; with its cache key, a digest of the linklet before this round
 	 ;; trip: what it was compiled under, so reading it finds that code
 	 (let* ((key (compiled-linklet-source-key x))
-		(text (zo-text-bytes (zo-encode (correlated->datum (linklet-source-form x)))))
+		(text (zo-text-bytes (zo-encode (zo-linklet-form (linklet-source-form x)))))
 		(start (fill-pointer *zo-forms*)))
 	   (loop for b across text do (vector-push-extend b *zo-forms*))
 	   (list* (rsym "#%quasischeme-linklet") (or (compiled-linklet-name x) qs:false)
@@ -374,6 +399,13 @@ bundle being decoded (*ZO-BYTES*)."
 		 ((string= head "#%quasischeme-extflonum") (make-extflonum (second x)))
 		 ((string= head "#%quasischeme-srcloc")
 		  (apply (primitive "srcloc") (mapcar #'zo-decode (cdr x))))
+		 ((string= head "#%quasischeme-correlated")
+		  (destructuring-bind (e name source line column position span) (cdr x)
+		    (flet ((opt (v) (if (eq v qs:false) nil (zo-decode v))))
+		      (make-correlated (zo-decode e) :source (opt source) :line (opt line) :column (opt column)
+						     :position (opt position) :span (opt span)
+						     :props (and (not (eq name qs:false))
+								 (list (cons (rsym "inferred-name") name)))))))
 		 ((string= head "#%quasischeme-prefab")
 		  (apply (primitive "make-prefab-struct") (mapcar #'zo-decode (cdr x))))
 		 (t (cons (zo-decode (car x)) (zo-decode (cdr x)))))))

@@ -18,12 +18,42 @@
 (define-primitive "#%kernel" "prop:equal+hash" *prop-equal+hash*)
 
 (defun equal+hash-procedures (x)
-  "X's prop:equal+hash: its equal procedure and hash procedure, or NIL."
+  "X's prop:equal+hash: its equal procedure, hash procedure and secondary
+hash procedure, and whether they take Racket's newer protocol's last
+argument (a list of two procedures: now?, false for equal-always?), or NIL."
   (multiple-value-bind (v found) (property-value x *prop-equal+hash*)
     (when found
-      (cond ((consp v) (values (first v) (second v)))
-	    ((simple-vector-p v) (values (svref v 0) (svref v 1)))
+      (cond ((and (consp v) (null (cddr v))) (values (first v) (second v) nil t))
+	    ((consp v) (values (first v) (second v) (third v) nil))
+	    ((simple-vector-p v) (values (svref v 0) (svref v 1) (and (> (length v) 2) (svref v 2)) nil))
 	    (t nil)))))
+
+(defvar *equal-bounded* nil
+  "While EQUAL-WITH-CYCLES first recurs plainly: the catch tag that
+abandons it for union-find.")
+(defvar *custom-equal-depth* 0
+  "How many prop:equal+hash equal procedures are running, each a stack of
+Racket frames: past a few, a cyclic value may exhaust the stack before
+the budget ends, so the plain recursion is abandoned.")
+
+(defvar *secondary-hash* nil "Whether structs hash by their prop:equal+hash's secondary procedure.")
+
+(defun call-equal-procedure (eqp new a b recur always)
+  "EQP, a prop:equal+hash equal procedure, on A and B (NEW: of the newer
+protocol; ALWAYS: for equal-always?)."
+  (let ((*custom-equal-depth* (1+ *custom-equal-depth*)))
+    (when (and *equal-bounded* (> *custom-equal-depth* 64))
+      (throw *equal-bounded* nil))
+    (truthy (if new (funcall eqp a b recur (bool (not always))) (funcall eqp a b recur)))))
+
+(defun call-hash-procedure (hashp new x recur always)
+  "HASHP, a prop:equal+hash hash procedure, on X: an exact integer."
+  (let ((h (if new (funcall hashp x recur (bool (not always))) (funcall hashp x recur))))
+    (unless (integerp h)
+      (error 'racket-error :who "equal-hash-code" :type "exn:fail:contract"
+			   :message (format nil "hash procedure returned a value other than an exact integer~%  result: ~A"
+					    (printed-quoted h))))
+    (logand h most-positive-fixnum)))
 
 (defun equal-step* (a b recur)
   "One step of EQUAL*: A and B compared, their parts by RECUR."
@@ -57,8 +87,9 @@
 	((struct-instance-p a)
 	 (and (struct-instance-p b)
 	      (eq (struct-of-type a) (struct-of-type b))
-	      (let ((eqp (equal+hash-procedures a)))
-		(cond (eqp (truthy (funcall eqp a b (lambda (x y) (bool (funcall recur x y))))))
+	      (multiple-value-bind (eqp hashp hash2p new) (equal+hash-procedures a)
+		(declare (ignore hashp hash2p))
+		(cond (eqp (call-equal-procedure eqp new a b (lambda (x y) (bool (funcall recur x y))) nil))
 		      ((transparent-p (struct-of-type a))
 		       (let ((n (struct-field-count a))) (and (= n (struct-field-count b)) (loop for i below n always (funcall recur (struct-field a i) (struct-field b i))))))
 		      (t nil)))))
@@ -70,16 +101,24 @@
 ;; equal, and comparing two others merges their classes.  Shared
 ;; substructure takes linear time, and cyclic data ends.
 
-(defun equal* (a b)
-  (when (eq a b) (return-from equal* t))
+(declaim (inline equal-with-cycles))
+(defun equal-with-cycles (a b step)
+  "Whether A and B are equal by STEP (a b recur), recursion first, then
+union-find past the budget."
+  (when (eq a b) (return-from equal-with-cycles t))
   (let ((budget qs::*equal-budget*))
     (declare (fixnum budget))
     (block bounded
       (labels ((walk (a b)
 		 (when (minusp (decf budget)) (return-from bounded nil))
-		 (equal-step* a b #'walk)))
-	(return-from equal* (walk a b))))
-    (let ((parents (make-hash-table :test 'eq)))
+		 (funcall step a b #'walk)))
+	(let* ((tag (list nil))
+	       (*equal-bounded* tag))
+	  (catch tag
+	    (return-from equal-with-cycles (walk a b))))))
+    (let ((parents (make-hash-table :test 'eq))
+	  (*equal-bounded* nil)
+	  (*custom-equal-depth* 0))
       (labels ((class-root (x)
 		 (let ((p (gethash x parents)))
 		   (if (null p)
@@ -93,9 +132,12 @@
 		     (let ((ra (class-root a)) (rb (class-root b)))
 		       (or (eq ra rb)
 			   (progn (setf (gethash ra parents) rb)
-				  (equal-step* a b #'walk))))
-		     (equal-step* a b #'walk))))
+				  (funcall step a b #'walk))))
+		     (funcall step a b #'walk))))
 	(walk a b)))))
+
+(defun equal* (a b)
+  (equal-with-cycles a b #'equal-step*))
 
 (defun hash-equal (a b)
   (and (hash-table-p* b)
@@ -135,8 +177,9 @@
 	((rpath-p x) (mix 11 (logand (sxhash (rpath-string x)) most-positive-fixnum)))
 	((hash-table-p* x) (mix 13 (length (entries x))))
 	((struct-instance-p x)
-	 (multiple-value-bind (eqp hashp) (equal+hash-procedures x)
-	   (cond (eqp (logand (funcall hashp x (lambda (y) (equal-hash* y (1+ depth)))) most-positive-fixnum))
+	 (multiple-value-bind (eqp hashp hash2p new) (equal+hash-procedures x)
+	   (declare (ignore hash2p))
+	   (cond (eqp (call-hash-procedure hashp new x (lambda (y) (equal-hash* y (1+ depth))) nil))
 		 ((transparent-p (struct-of-type x))
 		  (let ((h (eq-hash (struct-of-type x))))
 		    (loop for i below (min 8 (struct-field-count x))

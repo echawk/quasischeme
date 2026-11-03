@@ -1,0 +1,25 @@
+make-prefab-struct: mismatch between prefab key and field count
+  prefab key: '(foo 2999999999999999)
+  field count: 1
+make-prefab-struct: mismatch between prefab key and field count
+  prefab key: '(foo 5 bar 2999999999999999)
+  field count: 1
+make-prefab-struct: contract violation
+  expected: prefab-key?
+  given: '(foo 5 (1 #f) #(1) bar 2 #(99999))
+#t
+#t
+#s(p 1 2)
+#s(p 1 2)
+make-prefab-struct: contract violation
+  expected: prefab-key?
+  given: '(p 1 q)
+make-prefab-struct: contract violation
+  expected: prefab-key?
+  given: '(p 1 (q 1))
+make-prefab-struct: mismatch between prefab key and field count
+  prefab key: '(p 3)
+  field count: 2
+(#t #t #t #f #f #f #t #f)
+((v #(0) w 2) (u v 1 #(0) w 2))
+(#t 4)
