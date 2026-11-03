@@ -94,7 +94,7 @@ lists them all:
 | `,disassemble expr` `,x` | the native code of a procedure |
 | `,lisp expr` | the Lisp an expression compiles to, or a procedure defined at the REPL (or by a file `,load`ed there) |
 | `,asm expr` | the machine code of a procedure (a name or a `lambda`), or of any other expression compiled but not run |
-| `,backtrace [all]` `,bt` | the last error's backtrace; `all` keeps the evaluator's and the REPL's own frames |
+| `,backtrace [lisp \| all]` `,bt` | the last error's backtrace, as the calls of the program's procedures, innermost first; `lisp` shows Lisp's frames instead, `all` with the evaluator's and the REPL's own |
 | `,error-info` `,e` | the last error again, with its condition type |
 | `,values` `,v` | the values printed so far, numbered |
 | `,option [name [value]]` `,o` | show or set options (below) |
@@ -163,11 +163,33 @@ src/repl/racket.lisp for the text, and Racket's reader finds the data
 in it. History is kept for Racket separately, and Tab completes the names
 bound in the current namespace.
 
-## Not yet
+## Backtraces
 
-- Backtraces name Lisp's frames. A Scheme procedure defined at the
-  REPL shows as a `(LAMBDA ...)`, since psyntax's lambdas share compiled
-  code by shape (`canonical-lambda`, src/psyntax.lisp).
+`,bt` shows the calls that were in progress, innermost first, by the
+procedures' names in the source and with their arguments as the
+language writes them:
+
+```
+r7rs> (define (f x) (car x))
+r7rs> (define (g y) (+ 1 (f y)))
+r7rs> (g 5)
+;; Error: not a pair 5
+r7rs> ,bt
+  0: (f 5)
+  1: (g 5)
+```
+
+A procedure that a `define` at the REPL makes is compiled with its
+name, so it also prints by it (`#{Procedure f}`, Chez's
+`#<procedure f>`); psyntax shares the compiled code of other lambdas
+by shape (`canonical-lambda`, src/psyntax.lisp), and those show as
+`#<procedure>`. A procedure the continuation transformation made a
+state machine keeps its name too. An argument SBCL didn't keep shows as
+`_`. Code compiled inline in a top-level form (a named `let` typed at
+the prompt) has no frame of its own. Lisp's frames are behind
+`,bt lisp`.
+
+## Not yet
 - Guile's `,trace` fails: it traces through the VM's hooks, and
   natively compiled procedures don't run them.
 - The Lisp API's `r7rs:repl` and friends (for use inside a Lisp REPL)

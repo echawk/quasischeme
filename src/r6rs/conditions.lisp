@@ -243,12 +243,35 @@ type), so there only a compound type is asked about."
 	     (member type '(function compiled-function))
 	     (subtypep 'function type)))
 
+(defparameter *type-error-messages*
+  '((cons . "not a pair") (list . "not a pair") (simple-vector . "not a vector")
+    (vector . "not a vector") (simple-string . "not a string") (string . "not a string")
+    ((integer 0) . "not an exact nonnegative integer") (integer . "not an exact integer")
+    (rational . "not a rational number") (double-float . "not a flonum") (real . "not a real number")
+    (number . "not a number") (character . "not a character") (symbol . "not a symbol")
+    (sequence . "not a list or vector") (hash-table . "not a hash table") (stream . "not a port"))
+  "A Lisp type error's message by the type it expected: the first whose
+type contains it.")
+
+(defun type-error-message (expected)
+  (cdr (assoc-if (lambda (type) (ignore-errors (subtypep expected type))) *type-error-messages*)))
+
+(defun condition-text (c)
+  "C's report on one line: its lines joined by a space."
+  (let ((text (let ((*print-circle* t)) (princ-to-string c))))
+    (with-output-to-string (s)
+      (let ((space nil))
+	(loop for ch across (string-trim '(#\Space #\Newline) text)
+	      do (if (member ch '(#\Space #\Newline #\Tab))
+		     (setq space t)
+		     (progn (when space (write-char #\Space s) (setq space nil))
+			    (write-char ch s))))))))
+
 (defun foreign-condition-message (c)
   "The message and irritants a Scheme handler sees for Lisp condition C.
 Applying a non-procedure shows up in Lisp as calling an undefined
 function (#f is a symbol) or as a type error expecting a function."
-  ;; *print-circle*: an irritant may be a cyclic list
-  (flet ((plain () (values (remove #\Newline (let ((*print-circle* t)) (princ-to-string c))) '())))
+  (flet ((plain () (values (condition-text c) '())))
     (typecase c
       ((or undefined-function unbound-variable)
        (if (eq (cell-error-name c) qs:false)
@@ -257,20 +280,40 @@ function (#f is a symbol) or as a type error expecting a function."
 	     (if name
 		 (values (format nil "variable ~a is not bound" name) '())
 		 (plain)))))
+      #+sbcl
+      (sb-int:invalid-array-index-error
+       (values "index out of range" (list (type-error-datum c) (sb-kernel::invalid-array-index-error-array c))))
+      #+sbcl
+      (sb-kernel:bounding-indices-bad-error
+       (let ((bounds (type-error-datum c)))
+	 (values "start and end out of range"
+		 (append (if (consp bounds) (list (car bounds) (cdr bounds)) '())
+			 (list (sb-kernel::bounding-indices-bad-object c))))))
+      #+sbcl
+      (sb-kernel:index-too-large-error
+       (values "index out of range" (list (type-error-datum c))))
       (type-error
-       (cond ((expects-function-p (type-error-expected-type c))
-	      (values "attempt to apply non-procedure" (list (type-error-datum c))))
-	     ;; car/cdr of a non-pair (builtin.scm checks with (the cons x))
-	     ((member (type-error-expected-type c) '(cons list))
-	      (values "not a pair" (list (type-error-datum c))))
-	     ((eq (type-error-expected-type c) 'simple-vector)
-	      (values "not a vector" (list (type-error-datum c))))
-	     ((eq (type-error-expected-type c) 'simple-string)
-	      (values "not a string" (list (type-error-datum c))))
-	     (t (plain))))
+       (let ((expected (type-error-expected-type c)))
+	 (cond ((expects-function-p expected)
+		(values "attempt to apply non-procedure" (list (type-error-datum c))))
+	       ;; car/cdr of a non-pair (builtin.scm checks with (the cons x))
+	       ((type-error-message expected)
+		(values (type-error-message expected) (list (type-error-datum c))))
+	       (t (plain)))))
+      (division-by-zero
+       (values "division by zero" (ignore-errors (arithmetic-error-operands c))))
       ;; THROW to a dead tag: see QS:CALL-WITH-ESCAPE
       (control-error
        (values "continuation invoked after its extent ended (continuations are escape-only)" '()))
+      (program-error
+       ;; SBCL's "F called with invalid number of arguments: N"
+       (let* ((text (condition-text c))
+	      (at (search "invalid number of arguments: " text)))
+	 (if at
+	     (values "wrong number of arguments"
+		     (list (or (ignore-errors (parse-integer text :start (+ at 29) :junk-allowed t))
+			       (subseq text (+ at 29)))))
+	     (plain))))
       (t (plain)))))
 
 (defun describe-condition (c stream)

@@ -173,6 +173,115 @@ their source names, and the Scheme package prefixes left out."
     #+sbcl (ignore-errors (sb-debug:print-backtrace :count 60 :stream s))
     #-sbcl (format s "(no backtrace on this Lisp)")))
 
+(defvar *last-frames* '()
+  "The frames of the last error, innermost first: (name . arguments) each,
+as SBCL's debugger has them.")
+
+(defun capture-frames ()
+  #+sbcl (let ((frames '()))
+	   (ignore-errors
+	    (sb-debug:map-backtrace
+	     (lambda (frame)
+	       (multiple-value-bind (name args) (ignore-errors (sb-debug::frame-call frame))
+		 (push (cons name (if (listp args) args '())) frames)))
+	     :count 100))
+	   (nreverse frames))
+  #-sbcl '())
+
+;;; A frame as a Scheme call.  psyntax names a procedure by a gensym,
+;;; |g$...$N|, whose source name is on its plist; the continuation
+;;; transformation makes some procedures state machines, |%machineg$...$N|,
+;;; whose first three arguments are the machine's own; a lambda shared
+;;; by shape (psyntax.lisp, CANONICAL-LAMBDA) has %%SHARED-V parameters
+;;; and no name.  Host procedures (car, vector-ref) are Lisp functions
+;;; of the Scheme packages.
+
+(defparameter *scheme-frame-packages*
+  '("REVISED^4-SCHEME" "LIBRARY psyntax host")
+  "Packages whose functions are Scheme procedures (the host's).")
+
+(defun frame-procedure (name)
+  "The Scheme name of the procedure a frame named NAME runs (a string),
+and how many of its arguments to leave out; or NIL for a frame of Lisp's."
+  (labels ((scheme-symbol-p (s)
+	     (and (symbolp s) s (eq (symbol-package s) (find-package "SCHEME"))))
+	   (of-symbol (s)
+	     (let ((source (or (source-name s)
+			       ;; a copy of psyntax's symbol (the compiler's)
+			       (and (scheme-symbol-p s)
+				    (source-name (find-symbol (symbol-name s) "SCHEME"))))))
+	       (cond (source (values (string source) 0))
+		     ((qsx::machine-name-p s)
+		      ;; %machine[*]g$...$N[|name]: its procedure's name after the |
+		      (values (or (qsx::machine-procedure-name s) "#<procedure>")
+			      (if (qsx::machine-rest-p s) :rest 3)))
+		     ((scheme-symbol-p s) (values (qs:scheme-symbol-name s) 0))
+		     ((and (symbolp s) (symbol-package s)
+			   (member (package-name (symbol-package s)) *scheme-frame-packages* :test #'string=))
+		      (values (string-left-trim "." (string-downcase (symbol-name s))) 0))
+		     ((and (symbolp s) (eq (symbol-package s) (find-package "QS"))
+			   (eql 0 (search "SCHEME" (symbol-name s))))
+		      ;; SCHEME+, SCHEME-QUOTIENT: + and quotient
+		      (values (string-left-trim "-" (string-downcase (subseq (symbol-name s) 6))) 0))))))
+    (cond ((symbolp name) (of-symbol name))
+	  ;; code compiled for a top-level form, its loops and lambdas inline
+	  ((equal name "top level form") (values "<top level>" most-positive-fixnum))
+	  ((not (consp name)) nil)
+	  ((member (car name) '(labels flet #+sbcl sb-int:named-lambda)) (of-symbol (second name)))
+	  ((eq (car name) :racket) (values (string (second name)) 0))
+	  ((and (eq (car name) 'lambda) (consp (cdr name))
+		(let ((params (second name)))
+		  (loop for p = params then (cdr p)
+			thereis (if (consp p) (scheme-symbol-p (car p)) (scheme-symbol-p p))
+			while (consp p))))
+	   (values "#<procedure>" 0)))))
+
+(defun scheme-frames (frames)
+  "FRAMES (CAPTURE-FRAMES) from the one that signalled to the REPL's,
+those of Scheme procedures, as (name . arguments)."
+  (let* ((signal (position-if (lambda (f)
+				(let ((n (car f)))
+				  (and (symbolp n)
+				       (member (symbol-name n) '("%SIGNAL" "ERROR" "CERROR" "INTERNAL-ERROR")
+					       :test #'string=))))
+			      frames :from-end t
+				     :end (or (position-if #'repl-frame-p frames) (length frames))))
+	 (frames (subseq frames (if signal (1+ signal) 0)
+			 (or (position-if #'repl-frame-p frames) (length frames)))))
+    (loop for (name . args) in frames
+	  for (procedure skip) = (multiple-value-list (frame-procedure name))
+	  when procedure
+	    collect (cons procedure
+			  (cond ((not (listp args)) '())
+				;; a machine's rest list, spread as it was passed
+				((eq skip :rest)
+				 (let ((args (nthcdr 3 args)))
+				   (if (and args (listp (car (last args))))
+				       (append (butlast args) (car (last args)))
+				       args)))
+				(t (nthcdr (min skip (length args)) args)))))))
+
+(defun repl-frame-p (frame)
+  "Is FRAME one of the REPL's or the evaluator's, below the program's?"
+  (let ((n (car frame)))
+    (and (symbolp n) (symbol-package n)
+	 (or (string= (package-name (symbol-package n)) "QUASISCHEME-REPL")
+	     (member (symbol-name n) '("EVAL-TOP-LEVEL" "EVAL-AT-REPL" "CALL-WITHOUT-EXPANDER-LOCK")
+		     :test #'string=))
+	 t)))
+
+(defun frame-text (frame)
+  "FRAME, (name . arguments), as a call, written in the current language."
+  (with-output-to-string (s)
+    (write-char #\( s)
+    (write-string (car frame) s)
+    (dolist (a (cdr frame))
+      (write-char #\Space s)
+      (if #+sbcl (typep a 'sb-debug::unprintable-object) #-sbcl nil
+	  (write-string "_" s)
+	  (write-string (handler-case (value-text a) (error () "#<?>")) s)))
+    (write-char #\) s)))
+
 (defmacro with-repl-errors ((&key) &body body)
   "Run BODY; an error or an interrupt is reported, its backtrace kept
 for ,bt, and NIL returned."
@@ -188,7 +297,8 @@ for ,bt, and NIL returned."
 	       (format (out) "~A~%" (colored ";; Interrupted" :yellow))
 	       (return nil))
 	     (unless (typep e 'storage-condition)
-	       (setq *last-backtrace* (capture-backtrace)))
+	       (setq *last-backtrace* (capture-backtrace)
+		     *last-frames* (capture-frames)))
 	     (setq *last-error* e)
 	     (show-error e)
 	     (return nil))))

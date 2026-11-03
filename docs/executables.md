@@ -48,6 +48,24 @@ Differences from running the program:
   `#lang racket`.  `--racket=cs` is not supported.
 - `-L` and `GUILE_LOAD_PATH` apply to the build only.
 
+## Seeing the Common Lisp
+
+```sh
+bin/quasischeme [MODE-FLAG] --emit-lisp FILE [-o OUT]
+```
+
+writes the Common Lisp that `--compile` compiles FILE to, instead of
+compiling or running it: to OUT if `-o` is given, else to the standard
+output. It is the code after expansion, the optimizer (cp0, cptypes,
+cpletrec) and, with full continuations (the default), the continuation
+transformation. `--continuations=escape` shows the code without the
+transformation. Names are psyntax's gensyms (`|g$...$N|`); a procedure
+the transformation made a state machine has a `%machine` function. As
+with `--compile`, the program's own libraries are expanded and
+compiled but not written out, and Guile's module and macro forms run.
+Racket's modules are not supported yet. At the REPL, `,lisp EXPR` shows
+the same for one expression (docs/repl.md).
+
 ## Sizes and the runtime options
 
 The executable is 140 MB (Racket: 200 MB for `racket/base`, 500 MB for

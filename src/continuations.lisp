@@ -2270,6 +2270,25 @@ called on the spot) may make a call that captures, in any position."
 (defun fresh ()
   (funcall (host-ref "gensym")))
 
+(defun fresh-named (source)
+  "A fresh variable with SOURCE (a string, or NIL) as its source name."
+  (let ((g (fresh)))
+    (when source (setf (get g :source-name) source))
+    g))
+
+(defun lambda-marker-name (l)
+  "The name a '(:scheme-name . id) first in lambda L's body gives it, a string."
+  (multiple-value-bind (marker) (racket-name-marker (caddr l))
+    (and marker (eq (car (cadr marker)) :scheme-name)
+	 (qs:scheme-symbol-name (cdr (cadr marker))))))
+
+(defun fresh-from (v)
+  "A fresh variable standing for V: with V's source name, for backtraces."
+  (let ((g (fresh))
+	(source (and (symbolp v) (get v :source-name))))
+    (when source (setf (get g :source-name) source))
+    g))
+
 (defparameter +machine-prefix+ "%machine"
   "The start of the name of a machine's function, which tells a backtrace
 (src/guile/stacks.lisp) its frames from others.")
@@ -2280,7 +2299,8 @@ procedure's last parameter is a rest list), and with PROCEDURE-NAME (a
 Scheme symbol), the procedure's, after a |."
   (let* ((g (fresh))
 	 (name (format nil "~A~:[~;*~]~A~@[|~A~]" +machine-prefix+ rest (symbol-name g)
-		       (and procedure-name (qs:scheme-symbol-name procedure-name)))))
+		       (and procedure-name
+			    (if (stringp procedure-name) procedure-name (qs:scheme-symbol-name procedure-name))))))
     (if (symbol-package g) (intern name (symbol-package g)) (make-symbol name))))
 
 (defun machine-rest-p (machine)
@@ -2468,20 +2488,24 @@ procedure with such a body needs no machine."
 
 (defun racket-name-marker (body)
   "BODY's leading '(:racket-name . id), --racket's name for its lambda
-(src/racket/linklet/compiler.lisp, NAME-LAMBDA), and BODY without it."
+(src/racket/linklet/compiler.lisp, NAME-LAMBDA), or '(:scheme-name . id),
+a REPL definition's (HOST-EVAL), and BODY without it."
   (if (and (consp body) (keyword-p (car body) "BEGIN") (consp (cdr body))
-	   (quote-form-p (cadr body)) (consp (cadr (cadr body))) (eq (car (cadr (cadr body))) :racket-name))
+	   (quote-form-p (cadr body)) (consp (cadr (cadr body)))
+	   (member (car (cadr (cadr body))) '(:racket-name :scheme-name)))
       (values (cadr body) (if (cdddr body) (cons (car body) (cddr body)) (caddr body)))
       (values nil body)))
 
-(defun transform-lambda (e &optional self)
+(defun transform-lambda (e &optional self binder)
   "Lambda E transformed, a --racket name marker kept first in the result's
 body.  SELF: the variable a letrec or definition binds to E, if E is a
-known procedure."
+known procedure; BINDER: that variable, known or not (its source name
+names E's machine, for backtraces)."
   (multiple-value-bind (safe body) (safe-code-marker (caddr e))
     (when safe (setq e (list (car e) (cadr e) body))))
   (multiple-value-bind (marker body) (racket-name-marker (caddr e))
-    (let ((l (transform-lambda-1 (if marker (list (car e) (cadr e) body) e) self)))
+    (let ((l (transform-lambda-1 (if marker (list (car e) (cadr e) body) e) self
+				 (if (and marker (eq (car (cadr marker)) :scheme-name)) (cdr (cadr marker)) binder))))
       (labels ((named (l)
 		 (cond ((and (lambda-form-p l) (null (cdddr l)))
 			(list (car l) (cadr l) (list (sym "begin") marker (caddr l))))
@@ -2512,8 +2536,14 @@ W running M instead while one is in force.")
       (let ((*stack-limit* nil))
 	(error 'stack-limit-reached)))))
 
-(defun transform-lambda-1 (e &optional self)
+(defun transform-lambda-1 (e &optional self binder)
   (multiple-value-bind (body name) (strip-procedure-name (caddr e))
+    (unless name
+      (setq name (and (symbolp binder)
+		      (or (get binder :source-name)
+			  ;; a REPL definition's own name (TRANSFORM-LAMBDA)
+			  (and (symbol-package binder) (not (find #\$ (symbol-name binder)))
+			       binder)))))
     (let ((formals (cadr e)))
       (if (tail-simple-p body)
 	  `(,(car e) ,formals ,(let ((body (keep-tail-frames (simple body))))
@@ -2539,7 +2569,8 @@ spot)."
 (defun transform-bound-lambda (variable value)
   "VALUE, bound to VARIABLE by a letrec or definition, transformed."
   (if (lambda-form-p value)
-      (transform-lambda value (and *known-procedures* (gethash variable *known-procedures*) variable))
+      (transform-lambda value (and *known-procedures* (gethash variable *known-procedures*) variable)
+			variable)
       (simple value)))
 
 ;;; ------------------------------------------------------------------
@@ -3360,7 +3391,9 @@ place of the reference the lambda makes."
 	 (checks '()))			; the other variables' guards
     (when (and l (listp formals) (null (cdr (last formals))) (every #'symbolp formals)
 	       (<= (tree-size l) *self-call-size-limit*))
-      (let* ((f (fresh)) (w (fresh)) (m (fresh))
+      (let* ((f (fresh-named (or (lambda-marker-name l)
+				 (and (symbolp (second definition)) (get (second definition) :source-name)))))
+	     (w (fresh)) (m (fresh))
 	     (inert (inert-body-p (caddr l) definition (length formals)))
 	     ;; the positions a parametric F takes safe procedures in
 	     (assumed (and *parametric-note-hook* *assumed-safe-variables*
@@ -3548,7 +3581,7 @@ stays one (FIND-SAFE-PROCEDURES knows a variable bound to one lambda)."
 	     (let ((renames '()))
 	       (labels ((walk (f)
 			  (cond ((null f) nil)
-				((symbolp f) (let ((n (fresh))) (push (cons f n) renames) n))
+				((symbolp f) (let ((n (fresh-from f))) (push (cons f n) renames) n))
 				(t (cons (walk (car f)) (walk (cdr f)))))))
 		 (values (walk formals) renames))))
 	   (walk (x env)
@@ -3560,7 +3593,7 @@ stays one (FIND-SAFE-PROCEDURES knows a variable bound to one lambda)."
 		      (list* (car x) formals
 			     (mapcar (lambda (b) (walk b (append renames env))) (cddr x)))))
 		   ((keyword-p (car x) "LETREC")
-		    (let* ((renames (mapcar (lambda (b) (cons (car b) (fresh))) (cadr x)))
+		    (let* ((renames (mapcar (lambda (b) (cons (car b) (fresh-from (car b)))) (cadr x)))
 			   (env (append renames env)))
 		      (list* (car x)
 			     (mapcar (lambda (b) (list (rename (car b) env) (walk (cadr b) env))) (cadr x))

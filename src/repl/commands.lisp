@@ -92,13 +92,22 @@ Ctrl-C cancels, Ctrl-D on an empty line quits." :gray)))))
       (format (out) "~A~%" (if (and *interactive* (option :color)) (highlight (pretty text)) (pretty text))))))
 
 (define-command (backtrace bt) (text)
-  "Show the backtrace of the last error: ,bt [all] (all: the REPL's own
-frames and the error system's too)."
-  (if *last-backtrace*
-      (format (out) "~A" (if (string-equal text "all")
-			     *last-backtrace*
-			     (readable-text (trim-backtrace *last-backtrace*))))
-      (say "No error yet.")))
+  "Show the backtrace of the last error, innermost call first: ,bt [lisp | all]
+(lisp: as Lisp's frames, the program's; all: the REPL's own and the error
+system's too)."
+  (let ((frames (and (not (member text '("all" "lisp") :test #'string-equal))
+		     (scheme-frames *last-frames*))))
+    (cond ((not *last-backtrace*) (say "No error yet."))
+	  ((string-equal text "all") (format (out) "~A" *last-backtrace*))
+	  (frames
+	   (loop for frame in frames
+		 for i from 0
+		 do (format (out) "~3D: ~A~%" i (frame-text frame)))
+	   (finish-output (out)))
+	  ((string-equal text "lisp")
+	   (format (out) "~A" (readable-text (trim-backtrace *last-backtrace*))))
+	  (t (say "~A" (colored ";; No frames of the program's: the error is in the top-level form (,bt lisp shows Lisp's)"
+				:gray))))))
 
 (define-command (error-info e) ()
   "Show the last error again, with its condition type."

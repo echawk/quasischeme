@@ -94,6 +94,10 @@ check "--no-userinit skips it" "no" env HOME=$tmp/home sh -c "$PS --no-userinit 
 printf '(error "broken rc")\n' > $tmp/home/.sbclrc
 check "an error in it is reported, and the program runs" "3" env HOME=$tmp/home sh -c "$PS -p '(+ 1 2)' 2>/dev/null"
 
+printf '(import (scheme base) (scheme write))\n(define (twice x) (* 2 x))\n(display (twice 21))\n' > $tmp/emit.scm
+check "--emit-lisp writes the Lisp, not running it" "yes" sh -c "$PS --emit-lisp $tmp/emit.scm | grep 'compiles to (r7rs' >/dev/null && echo yes"
+check "--chez --emit-lisp -o" "yes" sh -c "printf '(display 1)' > $tmp/emit2.scm; $PS --chez --emit-lisp $tmp/emit2.scm -o $tmp/emit2.lisp && grep -q 'compiles to (chez' $tmp/emit2.lisp && echo yes"
+
 check "error exit" "Error: not a pair 5" sh -c "$PS -e '(car 5)' 2>&1 | head -1"
 check "repl" "3" sh -c "printf '(+ 1 2)\n,q\n' | $PS | grep -v '^Quasischeme' | tr -d '> r7s' "
 

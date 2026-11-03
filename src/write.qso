@@ -230,7 +230,13 @@
                 (CDR (THE-WHO CONS "cdr" L)))
           (WRITE-STRING "}" PORT))
         (IF (PROCEDUREP OBJ)
-            (WRITE-STRING "#{Procedure}" PORT)
+            (LET ((NAME (PROCEDURE-DISPLAY-NAME OBJ)))
+              (IF (TRUEP NAME)
+                  (PROGN
+                    (WRITE-STRING "#{Procedure " PORT)
+                    (WRITE-STRING NAME PORT)
+                    (WRITE-STRING "}" PORT))
+                  (WRITE-STRING "#{Procedure}" PORT)))
             (IF (INPUT-PORT-P OBJ)
                 (WRITE-STRING "#{Input-port}" PORT)
                 (IF (OUTPUT-PORT-P OBJ)
@@ -306,8 +312,8 @@
                    PORT)
                   (PROG (.I.0)
                     (SETQ .I.0 1)
-                    (GO |.loop.499|)
-                    |.loop.499|
+                    (GO |.loop.500|)
+                    |.loop.500|
                     (LET ((I .I.0))
                       (OR (SCHEME>= I LEN)
                           (PROGN
@@ -315,7 +321,7 @@
                              (CHAR-DOWNCASE (CHECKED-SCHAR "string-ref" S I))
                              PORT)
                             (SETQ .I.0 (SCHEME+ I 1))
-                            (GO |.loop.499|))))))
+                            (GO |.loop.500|))))))
                 (DISPLAY NAME PORT)))))
       (DISPLAY NAME PORT)))
 (SET-VALUE-FROM-FUNCTION 'DISPLAY-TYPE-NAME 'SCHEME::DISPLAY-TYPE-NAME)

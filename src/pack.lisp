@@ -55,6 +55,7 @@
 	   "LIST->BYTEVECTOR"		;reader #u8(...)
 	   ;; Chez's boxes and fxvectors: reader #&x and #vfx(...)
 	   "BOX" "MAKE-BOX" "BOX-P" "BOX-CONTENTS" "LIST->FXVECTOR" "FXVECTOR-P"
+	   "PROCEDURE-DISPLAY-NAME"	;write's #{Procedure name}
 	   ;; and stencil vectors, #5vs(...)
 	   "STENCIL-VECTOR" "MAKE-STENCIL-VECTOR" "STENCIL-VECTOR-P" "STENCIL-VECTOR-MASK"
 	   "STENCIL-VECTOR-ELEMENTS" "STENCIL-VECTOR-MASK-WIDTH"

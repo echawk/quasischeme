@@ -133,8 +133,9 @@ keyword (a macro or special form of the translator's)."
 	finally (return (if (and l (symbolp l)) (append vars (list l)) vars))))
 
 (defun name-marker-p (e)
-  ;; psyntax's, or --racket's (src/racket/linklet/compiler.lisp)
-  (and (quote-p e) (consp (cadr e)) (member (car (cadr e)) '(:procedure-name :racket-name))))
+  ;; psyntax's, --racket's (src/racket/linklet/compiler.lisp), or a
+  ;; REPL definition's (HOST-EVAL)
+  (and (quote-p e) (consp (cadr e)) (member (car (cadr e)) '(:procedure-name :racket-name :scheme-name))))
 
 ;;; ------------------------------------------------------------------
 ;;; Analysis: every variable the form binds, how, and whether it's assigned
@@ -348,6 +349,9 @@ terminate)."
 						   (symbol-name v))
 				   (incf *cp-counter*)))))
     (setf (gethash new *vi*) (gethash v *vi*))
+    ;; the program's name for it, for backtraces
+    (let ((source (and (symbolp v) (get v :source-name))))
+      (when source (setf (get new :source-name) source)))
     new))
 
 (defmacro with-cp-bindings ((vars cpbs) &body body)

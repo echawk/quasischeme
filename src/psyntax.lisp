@@ -861,10 +861,26 @@ understood is just not shared."
 			(walk form))))
 	(cons key (nreverse constants))))))
 
+(defvar *definition-name* nil
+  "While EVAL-TOP-LEVEL evaluates (define (name ...) ...) or (define name
+(lambda ...)): NAME, a Scheme symbol, which HOST-EVAL gives the
+procedure, so that it prints and shows in backtraces by its name.")
+
+(defun named-core-lambda (form name)
+  "Core lambda FORM with '(:scheme-name . NAME) first in its body, which
+TRANSLATE-CORE makes the compiled function's name."
+  (list (car form) (cadr form)
+	(list* (sym "begin") (list (sym "quote") (cons :scheme-name name)) (cddr form))))
+
 (defun host-eval (form)
   "Translate and evaluate core FORM in *HOST*; a lambda expression by a
 compiled function shared with the others of its shape (see
-CANONICAL-LAMBDA)."
+CANONICAL-LAMBDA), but a definition's, which is compiled with its name."
+  (let ((name *definition-name*))
+    (when (and name (consp form) (symbolp (car form)) (string= (symbol-name (car form)) "LAMBDA")
+	       (consp (cdr form)) (consp (cddr form)))
+      (setq *definition-name* nil)
+      (return-from host-eval (host-eval-1 (named-core-lambda form name)))))
   (let ((shared (canonical-lambda form)))
     (if (null shared)
 	(host-eval-1 form)
@@ -1073,8 +1089,12 @@ TOP-LEVEL begin's forms are compiled one by one: its biggest counts."
   "LISP with each #'(lambda args '(:racket-name . id) ...) made
 #'(sb-int:named-lambda (:racket id) args ...): --racket's let-bound
 procedures keep their names (object-name) when the continuation
-transformation makes them state machines."
-  (labels ((marker-p (x) (and (consp x) (eq (car x) 'quote) (consp (cadr x)) (eq (car (cadr x)) :racket-name)))
+transformation makes them state machines.  '(:scheme-name . id), a REPL
+definition's (HOST-EVAL), makes #'(sb-int:named-lambda id args ...)."
+  (labels ((marker-p (x) (and (consp x) (eq (car x) 'quote) (consp (cadr x))
+			      (member (car (cadr x)) '(:racket-name :scheme-name))))
+	   (lisp-name (m)
+	     (if (eq (car (cadr m)) :racket-name) (list :racket (cdr (cadr m))) (cdr (cadr m))))
 	   (walk (x)
 	     (cond ((atom x) x)
 		   ((eq (car x) 'quote) x)
@@ -1088,7 +1108,7 @@ transformation makes them state machines."
 			  (let ((body (if (marker-p (car body))
 					  (cdr body)
 					  (cons (cons 'progn (cddr (car body))) (cdr body)))))
-			    #+sbcl `(function (sb-int:named-lambda (:racket ,(cdr (cadr m))) ,(cadr l) ,@(mapcar #'walk body)))
+			    #+sbcl `(function (sb-int:named-lambda ,(lisp-name m) ,(cadr l) ,@(mapcar #'walk body)))
 			    #-sbcl `(function (lambda ,(cadr l) ,@(mapcar #'walk body))))
 			  (cons (car x) (walk (cdr x))))))
 		   (t (let ((a (walk (car x))) (d (walk (cdr x))))
@@ -1706,9 +1726,20 @@ define-library forms (src/r7rs/front.lisp).")
 
 (defvar *top-level-self-calls*)		; src/continuations.lisp
 
+(defun definition-name (form)
+  "NAME, if FORM is (define (NAME . formals) ...) or (define NAME (lambda ...))."
+  (flet ((named (x name) (and (symbolp x) x (string= (qs:scheme-symbol-name x) name))))
+    (and (consp form) (named (car form) "define") (consp (cdr form))
+	 (let ((target (cadr form)))
+	   (cond ((and (consp target) (symbolp (car target)) (car target)))
+		 ((and (symbolp target) target (consp (cddr form)) (consp (caddr form))
+		       (named (car (caddr form)) "lambda"))
+		  target))))))
+
 (defun eval-top-level (form)
   "Evaluate FORM at the REPL, in (quasischeme interaction)."
-  (let ((*top-level-self-calls* t))
+  (let ((*top-level-self-calls* t)
+	(*definition-name* (definition-name form)))
     (funcall (entry "psyntax:eval-top-level") form)))
 
 (defun expand (form &optional (env (funcall (entry "psyntax:environment")

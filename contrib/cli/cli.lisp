@@ -91,6 +91,10 @@
                    given: the libraries and the program are compiled
                    into it, and it takes its own arguments
                    (docs/executables.md)
+  --emit-lisp FILE instead of running FILE, write the Common Lisp it
+                   compiles to (to standard output, or to OUT given by
+                   -o), as --compile compiles it: after expansion, the
+                   optimizer and the continuation transformation
   -o, --output OUT the executable's file name, for --compile
   -D FEATURE       a cond-expand feature, for --compile
   --version        print the version and exit
@@ -123,6 +127,8 @@ name first (see -l and --quicklisp; docs/interop.md).
 (defvar *standard* :r7rs)
 (defvar *compile-file* nil "--compile: the program to make an executable of.")
 (defvar *compile-output* nil "-o: the executable's file name.")
+(defvar *emit-lisp-file* nil "--emit-lisp: the program whose Lisp to write.")
+(defvar *emit-lisp* nil "While --emit-lisp compiles: the stream COMPILE-THUNK writes each form to.")
 (defvar *precompile-failed* nil "Did a library fail to precompile?")
 (defvar *script* nil "Running as one of SRFI 22's script interpreters?")
 
@@ -361,6 +367,8 @@ running them."
 (defun compile-thunk (form)
   "FORM, a Lisp form as QSX::TRANSLATE-TOP-LEVEL makes them, compiled to a
 function of no arguments that runs it as HOST-EVAL would."
+  (when *emit-lisp*
+    (format *emit-lisp* "~A~%" (string-left-trim '(#\Newline) (quasischeme-repl::lisp-text form))))
   (let ((thunk
 	  (and (< (qsx::tree-size form) qsx::*interpret-limit*)
 	       (handler-case
@@ -554,6 +562,25 @@ and compiled; a function that runs them."
   (uiop:dump-image (or output (namestring (make-pathname :type nil :defaults file)))
 		   :executable t))
 
+(defun emit-lisp (file output)
+  "Write the Common Lisp that FILE, a program in the mode of *STANDARD*,
+compiles to: to the file OUTPUT, or the standard output."
+  (unless (probe-file file) (die "no such file: ~A" file))
+  (when (eq *standard* :racket)
+    (die "--emit-lisp: not for Racket's modules yet"))
+  (quasischeme-api::ensure-psyntax)
+  (flet ((emit (stream)
+	   (format stream ";;; The Common Lisp that ~A compiles to (~(~A~), ~:[escape-only~;full~] continuations)~%~%"
+		   file *standard* qsx::*full-continuations*)
+	   (let ((*emit-lisp* stream))
+	     (handler-bind ((serious-condition #'report-and-exit))
+	       (compile-program file)))
+	   (finish-output stream)))
+    (if output
+	(with-open-file (s output :direction :output :if-exists :supersede)
+	  (emit s))
+	(emit *standard-output*))))
+
 (defun compile-r7rs (args)
   (let ((output nil) (file nil))
     (loop while args do
@@ -682,6 +709,20 @@ those of PARSED, a list of the mode's own parser's values."
   (destructuring-bind (more file file-args more-interactive) parsed
     (values (append (reverse actions) more) file file-args (or interactive more-interactive))))
 
+(defun take-emit-lisp (args)
+  "ARGS, a mode's own command line, without --emit-lisp FILE (and its -o
+OUT), which are ours: set from them."
+  (let ((at (position "--emit-lisp" args :test #'string=)))
+    (if (null at)
+	args
+	(let ((rest (append (subseq args 0 at) (nthcdr (+ at 2) args))))
+	  (setq *emit-lisp-file* (or (nth (1+ at) args) (die "--emit-lisp needs an argument")))
+	  (let ((o (position-if (lambda (a) (member a '("-o" "--output") :test #'string=)) rest)))
+	    (when o
+	      (setq *compile-output* (or (nth (1+ o) rest) (die "-o needs an argument"))
+		    rest (append (subseq rest 0 o) (nthcdr (+ o 2) rest)))))
+	  rest))))
+
 (defun parse-arguments (args)
   "Returns (values actions file file-args interactive), ACTIONS being a
 list of (:eval text) / (:print text)."
@@ -703,14 +744,18 @@ list of (:eval text) / (:print text)."
 		;; the rest is the language's own command line
 		((string= a "--chez")
 		 (setq *standard* :chez)
-		 (return-from parse-arguments (native-arguments actions interactive (parse-chez-arguments* args))))
+		 (return-from parse-arguments
+		   (native-arguments actions interactive (parse-chez-arguments* (take-emit-lisp args)))))
 		((string= a "--guile")
 		 (setq *standard* :guile)
-		 (return-from parse-arguments (native-arguments actions interactive (parse-guile-arguments args))))
+		 (return-from parse-arguments
+		   (native-arguments actions interactive (parse-guile-arguments (take-emit-lisp args)))))
 		((or (string= a "--racket") (uiop:string-prefix-p "--racket=" a))
 		 (setq *standard* :racket)
 		 (handler-case (qsr:select-strategy (and (find #\= a) (subseq a (1+ (position #\= a)))))
 		   (error (e) (die "~A" e)))
+		 (when (member "--emit-lisp" args :test #'string=)
+		   (die "--emit-lisp: not for Racket's modules yet"))
 		 (setq *racket-arguments* args *racket-command-line* t)
 		 (return-from parse-arguments (values (nreverse actions) nil '() interactive)))
 		((member a '("-e" "--eval") :test #'string=) (push (list :eval (value)) actions))
@@ -725,6 +770,7 @@ list of (:eval text) / (:print text)."
 		((string= a "--precompile") (push (list :precompile (value)) actions))
 		((string= a "--no-userinit") (setq *userinit* nil))
 		((string= a "--compile") (setq *compile-file* (value)))
+		((string= a "--emit-lisp") (setq *emit-lisp-file* (value)))
 		((member a '("-o" "--output") :test #'string=) (setq *compile-output* (value)))
 		((string= a "-D") (push (value) qsl:*scheme-features*))
 		((string= a "--continuations=full")
@@ -867,7 +913,7 @@ is reported, and the program runs anyway."
 	  (case kind
 	    (:lisp-system (quasischeme-interop:load-lisp-system text))
 	    ;; with --compile, an empty one isn't the REPL guile would start
-	    (:guile-command-line (unless (and *compile-file* (null text))
+	    (:guile-command-line (unless (and (or *compile-file* *emit-lisp-file*) (null text))
 				   (run-guile-command-line text)))
 	    ;; a file of linklet forms (tests/racket/linklets/), with --racket
 	    (:linklets (qsr:load-file text) (finish-output) (uiop:quit 0))
@@ -891,6 +937,10 @@ is reported, and the program runs anyway."
       (when *compile-file*
 	(when file (die "--compile takes the program's name, not also ~A" file))
 	(build-executable *compile-file* *compile-output*))
+      (when *emit-lisp-file*
+	(when file (die "--emit-lisp takes the program's name, not also ~A" file))
+	(emit-lisp *emit-lisp-file* *compile-output*)
+	(uiop:quit 0))
       (when (and *racket-command-line* (not *lisp-repl*))
 	(uiop:quit (qsr::run-racket-command-line
 		    *racket-arguments*
@@ -901,7 +951,10 @@ is reported, and the program runs anyway."
 	(if *script* (run-script file) (run-file file))))
     (finish-output)
     (cond (*lisp-repl* (lisp-repl))
-	  ((or interactive (and (null file) (null actions)))
+	  ;; -l and --quicklisp only set up: with no program, the REPL
+	  ((or interactive
+	       (and (null file)
+		    (every (lambda (a) (member (car a) '(:lisp-system :quicklisp))) actions)))
 	   (repl)))
     (finish-output)
     (uiop:quit (if *precompile-failed* 1 0))))

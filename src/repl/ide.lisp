@@ -57,6 +57,8 @@ error that stopped it (whose backtrace BACKTRACE then shows), or NIL."
 				 (lambda (e)
 				   (setf quasischeme-repl::*last-backtrace*
 					 (quasischeme-repl::capture-backtrace)
+					 quasischeme-repl::*last-frames*
+					 (quasischeme-repl::capture-frames)
 					 quasischeme-repl::*last-error* e))))
 		  (dolist (form (funcall (quasischeme-repl::language-read-forms l) text))
 		    (setq result (value-strings
@@ -146,10 +148,15 @@ LANGUAGE: its output."
 
 (defun backtrace ()
   "The backtrace of the last error, as ,bt shows it."
-  (if quasischeme-repl::*last-backtrace*
-      (quasischeme-repl::readable-text
-       (quasischeme-repl::trim-backtrace quasischeme-repl::*last-backtrace*))
-      "No error yet."))
+  (let ((frames (quasischeme-repl::scheme-frames quasischeme-repl::*last-frames*)))
+    (cond ((not quasischeme-repl::*last-backtrace*) "No error yet.")
+	  (frames
+	   (with-output-to-string (s)
+	     (loop for frame in frames
+		   for i from 0
+		   do (format s "~3D: ~A~%" i (quasischeme-repl::frame-text frame)))))
+	  (t (quasischeme-repl::readable-text
+	      (quasischeme-repl::trim-backtrace quasischeme-repl::*last-backtrace*))))))
 
 (defun form-complete-p (text)
   "Is TEXT complete: parentheses closed, no string or comment open?"

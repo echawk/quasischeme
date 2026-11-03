@@ -1966,19 +1966,9 @@ reaches it goes to the invoker.")
 ;;; Procedures: a procedure is its own code object here
 
 (defun procedure-name-string (f)
-  (let* ((name (ignore-errors
-		#+sbcl (sb-kernel:%fun-name (if (sb-kernel:closurep f) (sb-kernel:%closure-fun f) f))
-		#-sbcl (nth-value 2 (function-lambda-expression f))))
-	 (name (cond ((and name (symbolp name)) name)
-		     ((and (consp name) (member (car name) '(flet labels)) (symbolp (cadr name)))
-		      (cadr name)))))
-    (when name
-      ;; the host's procedures are Lisp symbols, .NAME for one DEFUNE
-      ;; defines, upper case; a name with a $ is the compiler's own
-      (let ((s (string-left-trim "." (symbol-name name))))
-	(cond ((or (zerop (length s)) (find #\$ s)) nil)
-	      ((string= s (string-upcase s)) (string-downcase s))
-	      (t s))))))
+  "F's name as Chez shows it, or NIL (QS:PROCEDURE-DISPLAY-NAME)."
+  (let ((name (qs:procedure-display-name f)))
+    (and (stringp name) name)))
 
 (defprim "chez:sys-code-name" (f)
   (or (and (functionp f) (procedure-name-string f)) qs:false))

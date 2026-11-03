@@ -464,6 +464,27 @@ docs/interop.md): named by inverting case, like a Scheme symbol, so
        (or (not (consp obj))
 	   closures-might-be-conses-p)))
 
+(defun procedure-display-name (f)
+  "The name to show procedure F by, a string, or FALSE: a Scheme
+procedure's (a definition's, or psyntax's gensym's source name), a host
+procedure's (car, as REVISED^4-SCHEME::CAR or .CAR)."
+  (let ((name #+sbcl (ignore-errors (sb-kernel:%fun-name (if (sb-kernel:closurep f) (sb-kernel:%closure-fun f) f)))
+	      #-sbcl (ignore-errors (nth-value 2 (function-lambda-expression f)))))
+    (when (and (consp name) (member (car name) '(labels flet :racket)) (consp (cdr name)))
+      (setq name (cadr name)))
+    (or (and name (symbolp name)
+	     (let ((scheme (find-package "SCHEME"))
+		   (source (get name :source-name)))
+	       (cond (source (string source))
+		     ((find #\$ (symbol-name name)) nil)
+		     ((eq (symbol-package name) scheme) (scheme-symbol-name name))
+		     ;; the host's: Lisp symbols, .NAME for one DEFUNE defines
+		     (t (let ((s (string-left-trim "." (symbol-name name))))
+			  (cond ((zerop (length s)) nil)
+				((string= s (string-upcase s)) (string-downcase s))
+				(t s)))))))
+	false)))
+
 ; Mumble
 
 (declaim (inline booleanp char-whitespace-p char-numeric-p output-port-p))
