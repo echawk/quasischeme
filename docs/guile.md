@@ -141,7 +141,15 @@ libguile is:
   `abort-to-prompt`, and `%exception-handler`. See stage 4.
 - **Evaluation:** `primitive-eval`, `primitive-load`,
   `primitive-load-path` and `%load-path`. These call stage 2's compiler
-  one top-level form at a time.
+  one top-level form at a time. A file loaded is compiled (and cached);
+  what the program passes to `eval` or `primitive-eval` (and C passes
+  to libguile's `scm_eval`, `scm_primitive_eval`, `scm_c_eval_string`)
+  is interpreted, as Guile's evaluator interprets it, by SBCL's
+  interpreter: sb-eval, or sb-fasteval in an SBCL built with it
+  (docs/optimizations.md). An eval costs about 0.05 ms rather than the
+  0.3 ms of compiling it (Guile: 0.01 to 0.04), and the procedures it
+  makes are interpreted, as in Guile. `QUASISCHEME_GUILE_EVAL=compile`
+  compiles them instead.
 
 ### Stage 2: a Tree-IL compiler (done)
 

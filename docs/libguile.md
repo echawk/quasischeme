@@ -314,7 +314,10 @@ build/libguile, and compares ghostscript's rendering of the two PDFs.
 Status: the same page. Over 100,000 calls into libguile in the run,
 and all of LilyPond's Scheme (scm/*.scm, ly/*.ly) runs in Guile mode.
 Speed (arm64 container, warm module cache, a small score): about 3.7 s
-here against 1.0 s on real Guile; 7.5 s before dirty tracking. Opening
+here against 1.0 s on real Guile; 7.5 s before dirty tracking. (That
+was before `scm_primitive_eval` was interpreted, as Guile's is, rather
+than compiled: 0.3 to 0.5 ms an eval before, 0.05 ms after; not yet
+measured on LilyPond.) Opening
 the seven Emmentaler sizes went from 3.9 s to 0.5 s. What is left is
 Guile mode's own: compiling LilyPond's top-level Scheme forms
 (`scm_primitive_eval`, 1,100 calls, about 1.4 s, most of it SBCL's

@@ -301,6 +301,25 @@ version (src/continuations.lisp)."
 ;;; 1,400 conses.  SBCL's interpreter runs it at once.  A form with a
 ;;; lambda is compiled: its procedures may run many times.
 
+(defvar *interpret-eval* nil
+  "True while the program's own eval or primitive-eval runs (and so
+libguile's scm_eval, scm_primitive_eval and scm_c_eval_string): the form
+is evaluated by SBCL's interpreter, as Guile's evaluator interprets what
+eval is given, rather than compiled.  The procedures it makes are
+interpreted too, as in Guile; a file loaded, or compile's 'value, is
+still compiled.  QUASISCHEME_GUILE_EVAL=compile compiles every form.")
+
+(defvar *eval-mode* nil "QUASISCHEME_GUILE_EVAL, read once per process: :interpret or :compile.")
+#+sbcl (pushnew (lambda () (setq *eval-mode* nil)) sb-ext:*init-hooks*)
+
+(defun call-with-interpreted-eval (thunk)
+  "Call THUNK, an eval of the program's, with *INTERPRET-EVAL* as
+QUASISCHEME_GUILE_EVAL says (interpreted unless it says compile)."
+  (unless *eval-mode*
+    (setq *eval-mode* (if (equal (uiop:getenv "QUASISCHEME_GUILE_EVAL") "compile") :compile :interpret)))
+  (let ((*interpret-eval* (eq *eval-mode* :interpret)))
+    (funcall thunk)))
+
 (defvar *interpret-trivial-forms* t
   "True to evaluate a top-level form that makes no procedure with SBCL's
 interpreter rather than its compiler.")
@@ -336,12 +355,16 @@ constructs of *INTERPRETABLE-HEADS* or functions."
 		   (flatten-top-level-lets core)
 		   core)))
     ;; bound either way: what this form loads is its own
-    (let ((sb-ext:*evaluator-mode* (if (and *interpret-trivial-forms* (trivial-core-p core))
+    (let ((sb-ext:*evaluator-mode* (if (or *interpret-eval*
+					   (and *interpret-trivial-forms* (trivial-core-p core)))
 				       :interpret
 				       :compile)))
       ;; Guile's code checks a stack limit (call-with-stack-overflow-handler)
       (let ((qsx::*frameless-stack-checks* t))
-	(qsx:host-eval core)))))
+	(if *interpret-eval*
+	    ;; not HOST-EVAL's shared lambdas, which keep compiled code
+	    (qsx::host-eval-1 core)
+	    (qsx:host-eval core))))))
 
 ;;; A big top-level form is compiled in pieces: src/psyntax.lisp hoists
 ;;; the definitions of a top-level letrec* (each procedure its own
@@ -416,6 +439,15 @@ Lisp's message TEXT about keyword arguments."
 
 (defun condition-throw-arguments (c)
   "The key and throw arguments for Lisp condition C."
+  ;; a call with the wrong number of arguments in code SBCL's interpreter
+  ;; runs (*INTERPRET-EVAL*): sb-eval's own condition, "Too many
+  ;; arguments in (1 2) to satisfy lambda list (A)"
+  (let ((type (find-symbol "INTERPRETED-PROGRAM-ERROR" "SB-EVAL")))
+    (when (and type (typep c type) (search "arguments in" (princ-to-string c)))
+      (return-from condition-throw-arguments
+	(values (ssym "wrong-number-of-args")
+		(list qs:false "Wrong number of arguments (~A)"
+		      (list (remove #\Newline (princ-to-string c))) qs:false)))))
   (flet ((message (key subr message args)
 	   (values (ssym key) (list subr message args qs:false))))
     (typecase c
@@ -741,7 +773,8 @@ continuation captured in it)."
   "Load FILENAME: from its compiled fasl if the cache has one (cache.lisp),
 otherwise form by form, each compiled into the cache as it runs."
   (when *trace-loads* (format *trace-output* "~&;; loading ~A~%" filename))
-  (let* ((cacheable (and *cacheable-load* (guile-cache-p)))
+  (let* ((*interpret-eval* nil)		; compiled, even from an eval
+	 (cacheable (and *cacheable-load* (guile-cache-p)))
 	 (value *unspecified*)		; the last form's, as Guile's primitive-load returns
 	 (*cacheable-load* nil)
 	 (*current-load-file* filename)
@@ -1111,16 +1144,18 @@ not with Guile's behaviour.")
     (def "module-local-variable" (lambda (m name) (or (module-local-variable* m name) qs:false)))
     (def "module-transformer" (lambda (m) (if (module-p* m) (module-slot m +module-transformer+) qs:false)))
     (def "define!" (lambda (name value) (define-in-module *current-module* name value)))
-    (def "primitive-eval" #'primitive-eval)
+    ;; the program's own evals are interpreted, as Guile's are (*INTERPRET-EVAL*)
+    (def "primitive-eval" (lambda (x) (call-with-interpreted-eval (lambda () (primitive-eval x)))))
     ;; compile's `value' through Guile's compiler and the VM, or natively
     ;; (*GUILE-COMPILER*, above)
     (def "%compile-value-via-bytecode?"
 	 (lambda () (bool (not (eq (guile-compiler) :native)))))
     (def "%eval-tree-il" (lambda (tree module)
 			   (let ((*current-module* (if (module-p* module) module *current-module*))
-				 (*literals-read-only* t))
+				 (*literals-read-only* t)
+				 (*interpret-eval* nil))
 			     (eval-tree-il tree))))
-    (def "eval" #'guile-eval)
+    (def "eval" (lambda (x module) (call-with-interpreted-eval (lambda () (guile-eval x module)))))
     (def "primitive-load" #'primitive-load)
     (def "primitive-load-path" #'primitive-load-path)
     (def "%search-load-path" (lambda (name) (or (search-load-path name) qs:false)))
