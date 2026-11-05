@@ -809,7 +809,7 @@ pass doesn't know."
 				     (setq out new)
 				     (unless changed (return))))
 			  (when (>= level 2)
-			    (setq out (cpdx (cptypes out))))
+			    (setq out (cpdx (cpcommonize (cptypes out)))))
 			  (incf (first *cp0-stats*))
 			  (list :ok out))))))
 	    (when (or *cp0-trace* (uiop:getenv "QUASISCHEME_OPTIMIZE_TRACE"))
