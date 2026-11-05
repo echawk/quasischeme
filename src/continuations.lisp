@@ -3167,6 +3167,19 @@ capture, when one doesn't.")
   "A call of F, just found to be a procedure that can't capture: not a site."
   `(funcall ,f ,@args))
 
+(defparameter *guard-lambda-arguments-limit* 100
+  "The most conses of lambda arguments a guarded call (GUARD-DEFINITION's
+fast and slow paths) may copy: each is in both paths, with the guarded
+calls inside it, so the copies double at each level of nesting.  Without
+a limit, Guile's compute-contification (499 conses of core) became
+229,000 conses of Lisp, and link-objects 205,000, which SBCL couldn't
+compile in 4 GB; with 400, link-objects still did.")
+
+(defun small-lambda-arguments-p (call)
+  "Whether CALL's lambda arguments are small enough to copy (*GUARD-LAMBDA-ARGUMENTS-LIMIT*)."
+  (<= (loop for a in (cdr call) when (lambda-form-p a) sum (tree-size a))
+      *guard-lambda-arguments-limit*))
+
 (defparameter *self-call-size-limit* 4000
   "The biggest procedure, in conses, whose calls of itself are guarded:
 it is compiled twice.")
@@ -3438,7 +3451,7 @@ place of the reference the lambda makes."
 					     ,(car e) ,@(mapcar #'guard (cdr e))))))
 				    ;; a call of a top-level variable that holds a
 				    ;; calling primitive's procedure, passed safe ones
-				    ((guarded-calling-call e definition)
+				    ((and (guarded-calling-call e definition) (small-lambda-arguments-p e))
 				     (destructuring-bind (check . name) (guarded-calling-call e definition)
 				       (let* ((positions (cdr (assoc name *procedure-arguments* :test #'string=)))
 					      ;; a procedure argument as it is (a lambda, a safe
@@ -3476,6 +3489,7 @@ place of the reference the lambda makes."
 				    ;; be safe procedures: the procedure it holds, if safe,
 				    ;; or its parametric F, if it needs them only there
 				    ((and *parametric-check-hook* (consp (car e)) (listp (cdr e))
+					  (small-lambda-arguments-p e)
 					  (not (eq (funcall *self-reference-hook* (car e) definition) :reads))
 					  (some #'candidate-p (cdr e))
 					  (funcall *parametric-check-hook* (car e)
