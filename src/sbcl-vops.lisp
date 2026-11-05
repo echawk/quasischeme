@@ -139,9 +139,11 @@ anything else uses it (but moves of it): (VECTOR A B ...)'s stores."
   ;; variables, copied to the stack before the call (QS-STACK-COPY-n).
   (defconstant +qs-site-magic+ #x5153534954454d4b)
 
-  (defconstant +qs-site-mark-arity+ 20
+  (defconstant +qs-site-mark-arity+ 16
     "The most values a site's mark can take: QS-SITE-MARK-n has n.  A site
-with more keeps a portable frame (SBCL fails to pack QS-STACK-COPY-32).")
+with more keeps a portable frame.  SBCL 2.6.10 keeps two bits of each
+VOP argument's tags in 32 (QS-STACK-COPY-17 fails to load), and fails
+to pack QS-STACK-COPY-32.")
 
   (eval-when (:compile-toplevel :load-toplevel :execute)
     (defun qs-site-mark-name (n)

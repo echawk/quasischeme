@@ -22,7 +22,7 @@
        (sb-alien:with-alien ((ws (sb-alien:array (sb-alien:unsigned 16) 4)))
 	 (let ((request #+darwin #x40087468 #+linux #x5413 #-(or darwin linux) nil)
 	       (fd (if *term-out* (sb-sys:fd-stream-fd *term-out*) 1)))
-	   (and request (sb-unix:unix-ioctl fd request (sb-alien:alien-sap ws))
+	   (and request (sb-posix:ioctl fd request (sb-alien:sap-alien (sb-alien:alien-sap ws) (* t)))
 		(plusp (sb-alien:deref ws 1))
 		(cons (sb-alien:deref ws 0) (sb-alien:deref ws 1))))))
       (cons 24 80)))

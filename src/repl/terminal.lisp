@@ -61,7 +61,7 @@ prints.  Bracketed paste is on, so a paste arrives as one insertion."
        (sb-alien:with-alien ((ws (sb-alien:array (sb-alien:unsigned 16) 4)))
 	 (let ((request #+darwin #x40087468 #+linux #x5413 #-(or darwin linux) nil))
 	   (when (and request
-		      (sb-unix:unix-ioctl 1 request (sb-alien:alien-sap ws)))
+		      (sb-posix:ioctl 1 request (sb-alien:sap-alien (sb-alien:alien-sap ws) (* t))))
 	     (let ((cols (sb-alien:deref ws 1)))
 	       (and (> cols 0) cols))))))
       (ignore-errors (parse-integer (uiop:getenv "COLUMNS")))
