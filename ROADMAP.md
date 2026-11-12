@@ -39,6 +39,8 @@ Guix building `hello` rather than only its derivation; Racket, whose
 
 ## Where things stand
 
+> **Superseded by docs/harness/roadmap.md (2026-11-12)**: the baseline is roadmap §3.2, re-run on 2026-11-12, and `docs/harness/baseline.md` once QSM-0.4 records it. The text below is kept as history.
+
 | runner | result |
 |---|---|
 | `tests/run-r7rs-tests.lisp` (chibi's R7RS suite) | 978 of 978 (977 with `--continuations=escape`) |
@@ -134,6 +136,8 @@ Compiled libraries are cached as fasls (src/library-cache.lisp). Left:
 
 ## 3. Continuations
 
+> **Superseded by docs/harness/roadmap.md (2026-11-12)**: Milestone 2 (QSM-2.1 to QSM-2.9). The text below is kept as history.
+
 Full, re-entrant and delimited continuations are the default
 (docs/continuations.md). Next, from its "Further work": frame-aware
 versions of the Lisp primitives that call Scheme (the sorts, R6RS's
@@ -173,6 +177,8 @@ chibi's or Gauche's leniency, such as duplicate pattern variables in
 
 ## 6. The other Schemes' modes
 
+> **Superseded by docs/harness/roadmap.md (2026-11-12)**: Milestones 4 (Guile and libguile), 5 (Racket) and 7 (Chez). The text below is kept as history.
+
 - **Chez** (docs/chez.md): what's left is the missing procedures that
   aren't Chez's internals, and the mats that still fail; busy work.
 - **Guile** (docs/guile.md, docs/guile-vm.md): the suite's last
@@ -203,7 +209,7 @@ chibi's or Gauche's leniency, such as duplicate pattern variables in
   between top-level procedures), chosen by a flag, an environment
   variable or an importable declaration, as C compilers' flags are,
   since it changes what redefinition does.
-- **Portability** beyond SBCL: implementation-specific code goes
+- *Superseded by docs/harness/roadmap.md (2026-11-12): Milestone 3. The text is kept as history.* **Portability** beyond SBCL: implementation-specific code goes
   through portability libraries (float-features, cl-unicode,
   trivial-gray-streams, trivial-cltl2, trivial-garbage,
   bordeaux-threads); left per implementation are `disable-float-traps`,

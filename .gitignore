@@ -6,3 +6,11 @@
 bin/
 boot/build/
 /build/
+
+# The user's untracked notes and scratch (read-only history; see AGENTS.md)
+/claude-current
+/claude-session
+/166-error.out
+/tmp/
+# Local agent settings
+.claude/settings.local.json

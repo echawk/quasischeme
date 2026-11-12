@@ -497,3 +497,16 @@ The big ones; `ROADMAP.md` has the rest, and what 1.0 left out.
   of libguile's C functions (634 of 1,793 are stubs), are still to
   come; Guile mode's code runs slower than R7RS mode's where top-level
   procedures call each other (docs/guile.md, "Speed").
+
+## Project plan and agent workflow
+
+Work on QuasiScheme is planned as tickets for coding agents, with
+reviewer gates per milestone. [`docs/harness/roadmap.md`](docs/harness/roadmap.md)
+is the plan of record (decisions, the verified baseline, milestones and
+tickets), [`docs/harness/TICKETS.md`](docs/harness/TICKETS.md) is the
+status board, [`docs/harness/agent-protocol.md`](docs/harness/agent-protocol.md)
+is the ticket lifecycle, and [`AGENTS.md`](AGENTS.md) holds the rules
+every agent follows. Handoff, review and gate notes are in `notes/`.
+To work a ticket, open the repository in Claude Code and say "start the
+next ticket"; to review, "review QSM-N.n"; to close a milestone, "run
+gate N".
