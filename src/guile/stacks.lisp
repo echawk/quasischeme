@@ -183,8 +183,11 @@ innermost first, and the frame the next run out is at."
 		      (ra (svref stack (- fp 1)))
 		      (link (svref stack (- fp 2)))
 		      (end (or top (vm-sp vm))))
-		 (when (typep proc 'vm-program)
-		   (let ((g (make-gframe :vm (procedure-name* proc) proc
+		 ;; Guile's compiler may reuse local 0 once the closure is
+		 ;; dead: such a frame is known by its IP, if it called out
+		 ;; (a Lisp procedure's frame here is in Lisp's backtrace)
+		 (when (or (typep proc 'vm-program) (and next-ip (not (functionp proc))))
+		   (let ((g (make-gframe :vm (and (typep proc 'vm-program) (procedure-name* proc)) proc
 					 (subseq stack (+ fp 1) (max (+ fp 1) (1+ end)))
 					 (vm-frame-ip vm fp next-ip))))
 		     (push g frames)))

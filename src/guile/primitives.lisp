@@ -1298,19 +1298,26 @@ less than 0.0."
 (defvar *signal-handlers* (make-hash-table) "signal -> (Guile handler . flags)")
 (defvar *original-interrupt-handlers* (make-hash-table) "signal -> SBCL's own handler")
 
+;;; SBCL's runtime keeps SIGPROF for its own profiler (a Lisp handler of
+;;; it never runs), so Guile's SIGPROF and ITIMER_PROF, which statprof
+;;; samples with, are SIGVTALRM and ITIMER_VIRTUAL: CPU time too, though
+;;; only the program's, not the system's for it.
+(defun os-signal (signum)
+  (if (= signum sb-unix:sigprof) sb-unix:sigvtalrm signum))
+
 (defguile "sigaction" (signum &optional (handler nil handler-p) (flags 0) thread)
   (declare (ignore thread))
   (unless (integerp signum) (wrong-type "sigaction" 1 signum))
   (let ((previous (gethash signum *signal-handlers* (cons 0 0))))
     (when handler-p
       (flet ((install (lisp-handler)
-	       (let ((old (sb-sys:enable-interrupt signum lisp-handler)))
+	       (let ((old (sb-sys:enable-interrupt (os-signal signum) lisp-handler)))
 		 (unless (nth-value 1 (gethash signum *original-interrupt-handlers*))
 		   (setf (gethash signum *original-interrupt-handlers*) old)))))
 	(cond ((eq handler qs:false)
 	       ;; the handler there was before Guile's
 	       (multiple-value-bind (original found) (gethash signum *original-interrupt-handlers*)
-		 (when found (sb-sys:enable-interrupt signum original)))
+		 (when found (sb-sys:enable-interrupt (os-signal signum) original)))
 	       (remhash signum *signal-handlers*))
 	      ((integerp handler)
 	       ;; SIG_DFL or SIG_IGN
@@ -1321,13 +1328,14 @@ less than 0.0."
 	      ((functionp handler)
 	       (install (lambda (signal info context)
 			  (declare (ignore info context))
-			  (funcall handler signal)))
+			  (funcall handler (if (= signal (os-signal signum)) signum signal))))
 	       (setf (gethash signum *signal-handlers*) (cons handler flags)))
 	      (t (wrong-type "sigaction" 2 handler)))))
     previous))
 
 (defun itimer-which (which)
-  (case which (0 :real) (1 :virtual) (2 :profile) (t (wrong-type "setitimer" 1 which))))
+  ;; ITIMER_PROF: ITIMER_VIRTUAL, as its signal is (OS-SIGNAL)
+  (case which (0 :real) ((1 2) :virtual) (t (wrong-type "setitimer" 1 which))))
 
 (defun itimer-values (results)
   "(interval . value) of UNIX-SETITIMER's or UNIX-GETITIMER's values, as

@@ -120,7 +120,7 @@
 exec ~A --guile \"$@\"
 " (guile-string *quasischeme-command*))
 		      top (concatenate 'string top "/libguile")
-		      (if *verbose* "(register-reporter user-reporter)" "")
+		      (if *verbose* "(register-reporter (lambda args (apply user-reporter args) (force-output)))" "")
 		      (concatenate 'string name ".test") (guile-string path)
 		      (concatenate 'string name ".test")
 		      "(format (current-error-port) \"file aborted: ~s ~s~%\" key args)"))
